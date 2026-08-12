@@ -5,6 +5,7 @@
 *.dll
 *.so
 *.dylib
+*.o
 
 # Test artifacts
 *.test
