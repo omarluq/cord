@@ -1,107 +1,67 @@
-package cord
+package cord_test
 
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestExecute_BoundsConcurrency(t *testing.T) {
+func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 	t.Parallel()
 
 	const (
-		nodeCount   = 8
-		concurrency = 2
+		seed   = uint8(0x53)
+		trials = 64
 	)
 
-	var (
-		active atomic.Int32
-		peak   atomic.Int32
-	)
+	random := propertyRandom(seed)
+	for trial := range trials {
+		nodeCount := 2 + random.next(19)
+		states := make([]atomic.Bool, int(nodeCount))
+		workflows := make([]cord.Workflow[int, int], int(nodeCount))
+		workflows[0] = cord.New().From("property", func(_ context.Context, value int) (int, error) {
+			states[0].Store(true)
 
-	started := make(chan struct{}, nodeCount)
-	release := make(chan struct{})
-	plan := make([]node, 0, nodeCount+1)
-	plan = append(plan, node{
-		id:      1,
-		parents: []nodeID{},
-		invoke: func(_ context.Context, _ []any) (any, error) {
-			return 1, nil
-		},
-	})
-
-	parents := make([]nodeID, 0, nodeCount)
-	for index := range nodeCount {
-		id := nodeID(index + 2)
-		parents = append(parents, id)
-		plan = append(plan, node{
-			id:      id,
-			parents: []nodeID{1},
-			invoke: func(ctx context.Context, _ []any) (any, error) {
-				current := active.Add(1)
-				defer active.Add(-1)
-
-				updatePeak(&peak, current)
-
-				started <- struct{}{}
-
-				select {
-				case <-release:
-					return 1, nil
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			},
+			return value, nil
 		})
+
+		for identifier := uint8(1); identifier < nodeCount; identifier++ {
+			left := random.next(identifier)
+			right := random.next(identifier)
+			current := identifier
+
+			workflows[int(current)] = cord.Join(workflows[int(left)], workflows[int(right)]).Then(
+				func(_ context.Context, leftValue, rightValue int) (int, error) {
+					if !states[int(left)].Load() || !states[int(right)].Load() {
+						return 0, errors.New("node started before a dependency completed")
+					}
+
+					runtime.Gosched()
+					states[int(current)].Store(true)
+
+					return leftValue + rightValue, nil
+				},
+			)
+		}
+
+		_, err := workflows[int(nodeCount)-1].Run(t.Context(), 1)
+		require.NoError(t, err, "seed=%x, trial=%d", seed, trial)
 	}
-
-	tail := nodeID(nodeCount + 2)
-	plan = append(plan, node{
-		id:      tail,
-		parents: parents,
-		invoke: func(_ context.Context, inputs []any) (any, error) {
-			return len(inputs), nil
-		},
-	})
-
-	done := make(chan struct{})
-
-	var (
-		output any
-		runErr error
-	)
-	go func() {
-		output, runErr = execute(t.Context(), plan, tail, 0, make(chan struct{}, concurrency))
-
-		close(done)
-	}()
-
-	for range concurrency {
-		receiveSignal(t, started, "waiting for workflow node to start")
-	}
-
-	assert.EqualValues(t, concurrency, active.Load())
-	assert.EqualValues(t, concurrency, peak.Load())
-	close(release)
-	receiveSignal(t, done, "waiting for workflow execution to finish")
-
-	require.NoError(t, runErr)
-	assert.Equal(t, nodeCount, output)
 }
 
-func TestExecute_BoundsConcurrencyAcrossRuns(t *testing.T) {
+func TestWorkflow_RuntimeBoundsConcurrencyAcrossRuns(t *testing.T) {
 	t.Parallel()
 
-	const (
-		runCount    = 4
-		concurrency = 2
-	)
+	concurrency := max(1, runtime.GOMAXPROCS(0))
+	runCount := concurrency + 1
 
 	var (
 		active atomic.Int32
@@ -110,33 +70,26 @@ func TestExecute_BoundsConcurrencyAcrossRuns(t *testing.T) {
 
 	started := make(chan struct{}, runCount)
 	release := make(chan struct{})
-	slots := make(chan struct{}, concurrency)
-	plan := []node{
-		{
-			id:      1,
-			parents: []nodeID{},
-			invoke: func(ctx context.Context, _ []any) (any, error) {
-				current := active.Add(1)
-				defer active.Add(-1)
+	flow := cord.New().From("bounded", func(ctx context.Context, value int) (int, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
 
-				updatePeak(&peak, current)
+		updatePeak(&peak, current)
 
-				started <- struct{}{}
+		started <- struct{}{}
 
-				select {
-				case <-release:
-					return 1, nil
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			},
-		},
-	}
+		select {
+		case <-release:
+			return value, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	})
 
 	var waitGroup sync.WaitGroup
-	for range runCount {
+	for index := range runCount {
 		waitGroup.Go(func() {
-			_, err := execute(t.Context(), plan, 1, 0, slots)
+			_, err := flow.Run(t.Context(), index)
 			assert.NoError(t, err)
 		})
 	}
@@ -146,237 +99,56 @@ func TestExecute_BoundsConcurrencyAcrossRuns(t *testing.T) {
 	}
 
 	assert.EqualValues(t, concurrency, active.Load())
-
-	select {
-	case <-started:
-		require.FailNow(t, "runtime concurrency limit was exceeded")
-	case <-time.After(50 * time.Millisecond):
-	}
-
 	close(release)
 	waitGroup.Wait()
 	assert.EqualValues(t, concurrency, peak.Load())
 }
 
-func TestInputAs_HandlesNilByTargetType(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		check func() bool
-		name  string
-		want  bool
-	}{
-		{name: "interface", check: func() bool {
-			_, ok := inputAs[any](nil)
-
-			return ok
-		}, want: true},
-		{name: "pointer", check: func() bool {
-			_, ok := inputAs[*int](nil)
-
-			return ok
-		}, want: true},
-		{name: "map", check: func() bool {
-			_, ok := inputAs[map[string]int](nil)
-
-			return ok
-		}, want: true},
-		{name: "slice", check: func() bool {
-			_, ok := inputAs[[]int](nil)
-
-			return ok
-		}, want: true},
-		{name: "function", check: func() bool {
-			_, ok := inputAs[func()](nil)
-
-			return ok
-		}, want: true},
-		{name: "channel", check: func() bool {
-			_, ok := inputAs[chan int](nil)
-
-			return ok
-		}, want: true},
-		{name: "integer", check: func() bool {
-			_, ok := inputAs[int](nil)
-
-			return ok
-		}, want: false},
-		{name: "boolean", check: func() bool {
-			_, ok := inputAs[bool](nil)
-
-			return ok
-		}, want: false},
-		{name: "struct", check: func() bool {
-			_, ok := inputAs[struct{}](nil)
-
-			return ok
-		}, want: false},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, test.want, test.check())
-		})
-	}
-
-	var pointer *int
-
-	value, ok := inputAs[*int](pointer)
-	assert.True(t, ok)
-	assert.Nil(t, value)
-}
-
-func TestExecute_PanicPreservesErrorIdentity(t *testing.T) {
+func TestWorkflow_PanicPreservesErrorIdentity(t *testing.T) {
 	t.Parallel()
 
 	expected := errors.New("panic cause")
-	plan := []node{{
-		id:      1,
-		parents: []nodeID{},
-		invoke: func(_ context.Context, _ []any) (any, error) {
-			panic(expected)
-		},
-	}}
+	flow := cord.New().From("panic", func(_ context.Context, _ int) (int, error) {
+		panic(expected)
+	})
 
-	slots := make(chan struct{}, 1)
-	_, err := execute(t.Context(), plan, 1, nil, slots)
+	_, err := flow.Run(t.Context(), 0)
 
 	require.ErrorIs(t, err, expected)
 	require.ErrorContains(t, err, "workflow step panicked")
-	assert.Empty(t, slots)
-
-	successPlan := []node{{
-		id:      1,
-		parents: []nodeID{},
-		invoke: func(_ context.Context, _ []any) (any, error) {
-			return "ok", nil
-		},
-	}}
-	output, err := execute(t.Context(), successPlan, 1, nil, slots)
-	require.NoError(t, err)
-	assert.Equal(t, "ok", output)
 }
 
-func TestExecute_WaitsForSiblingAfterPanic(t *testing.T) {
+func TestWorkflow_WaitsForSiblingAfterPanic(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
 	stopped := make(chan struct{})
-	plan := []node{
-		{
-			id:      1,
-			parents: []nodeID{},
-			invoke: func(_ context.Context, _ []any) (any, error) {
-				return 1, nil
-			},
-		},
-		{
-			id:      2,
-			parents: []nodeID{1},
-			invoke: func(ctx context.Context, _ []any) (any, error) {
-				close(started)
-				<-ctx.Done()
-				close(stopped)
+	root := cord.New().From("siblings", func(_ context.Context, value int) (int, error) {
+		return value, nil
+	})
+	left := root.Then(func(ctx context.Context, value int) (int, error) {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
 
-				return nil, ctx.Err()
-			},
-		},
-		{
-			id:      3,
-			parents: []nodeID{1},
-			invoke: func(_ context.Context, _ []any) (any, error) {
-				<-started
-				panic("branch failed")
-			},
-		},
-	}
+		return value, ctx.Err()
+	})
+	right := root.Then(func(_ context.Context, _ int) (int, error) {
+		<-started
+		panic("branch failed")
+	})
+	flow := cord.Join(left, right).Then(func(_ context.Context, leftValue, rightValue int) (int, error) {
+		return leftValue + rightValue, nil
+	})
 
-	_, err := execute(t.Context(), plan, 3, nil, make(chan struct{}, 2))
+	_, err := flow.Run(t.Context(), 1)
 
-	require.Error(t, err)
 	require.ErrorContains(t, err, "branch failed")
 
 	select {
 	case <-stopped:
 	default:
-		require.FailNow(t, "execute returned before the sibling stopped")
-	}
-}
-
-func TestExecute_CancellationWhileWaitingForGlobalSlot(t *testing.T) {
-	t.Parallel()
-
-	slots := make(chan struct{}, 1)
-	slots <- struct{}{}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	plan := []node{{
-		id:      1,
-		parents: []nodeID{},
-		invoke: func(_ context.Context, _ []any) (any, error) {
-			require.FailNow(t, "step ran without a slot")
-
-			return nil, assert.AnError
-		},
-	}}
-
-	_, err := execute(ctx, plan, 1, nil, slots)
-
-	require.ErrorIs(t, err, context.Canceled)
-}
-
-func TestExecute_WaitsForCanceledSiblings(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-
-	started := make(chan struct{})
-	stopped := make(chan struct{})
-	plan := []node{
-		{
-			id:      1,
-			parents: []nodeID{},
-			invoke: func(_ context.Context, _ []any) (any, error) {
-				return 1, nil
-			},
-		},
-		{
-			id:      2,
-			parents: []nodeID{1},
-			invoke: func(ctx context.Context, _ []any) (any, error) {
-				close(started)
-				<-ctx.Done()
-				close(stopped)
-
-				return nil, ctx.Err()
-			},
-		},
-		{
-			id:      3,
-			parents: []nodeID{1},
-			invoke: func(ctx context.Context, _ []any) (any, error) {
-				select {
-				case <-started:
-					return nil, assert.AnError
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			},
-		},
-	}
-
-	_, err := execute(ctx, plan, 3, 0, make(chan struct{}, 2))
-
-	require.ErrorIs(t, err, assert.AnError)
-
-	select {
-	case <-stopped:
-	default:
-		require.FailNow(t, "execute returned before the canceled sibling stopped")
+		require.FailNow(t, "workflow returned before the sibling stopped")
 	}
 }
 
@@ -400,4 +172,16 @@ func updatePeak(peak *atomic.Int32, current int32) {
 			return
 		}
 	}
+}
+
+type propertyRandom uint8
+
+func (random *propertyRandom) next(limit uint8) uint8 {
+	value := uint8(*random)
+	value ^= value << 3
+	value ^= value >> 5
+	value ^= value << 1
+	*random = propertyRandom(value)
+
+	return value % limit
 }

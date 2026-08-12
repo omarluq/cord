@@ -188,18 +188,24 @@ func TestWorkflow_RunPreservesNilInterfaceOutputs(t *testing.T) {
 
 	runtime := cord.New()
 	root := runtime.From("nil-interface", func(_ context.Context, _ int) (any, error) {
-		return nil, nil
+		var output any
+
+		return output, nil
 	})
 	flow := root.Then(func(_ context.Context, value any) (any, error) {
 		assert.Nil(t, value)
 
-		return nil, nil
+		var output any
+
+		return output, nil
 	})
 	joined := cord.Join(root, flow).Then(func(_ context.Context, left, right any) (any, error) {
 		assert.Nil(t, left)
 		assert.Nil(t, right)
 
-		return nil, nil
+		var output any
+
+		return output, nil
 	})
 
 	result, err := joined.Run(t.Context(), 1)
@@ -215,7 +221,9 @@ func TestWorkflow_RunPreservesNilCapableOutputs(t *testing.T) {
 		t.Parallel()
 
 		flow := cord.New().From("nil-pointer", func(_ context.Context, _ int) (*int, error) {
-			return nil, nil
+			var output *int
+
+			return output, nil
 		})
 		result, err := flow.Run(t.Context(), 1)
 
@@ -227,7 +235,9 @@ func TestWorkflow_RunPreservesNilCapableOutputs(t *testing.T) {
 		t.Parallel()
 
 		flow := cord.New().From("nil-map", func(_ context.Context, _ int) (map[string]int, error) {
-			return nil, nil
+			var output map[string]int
+
+			return output, nil
 		})
 		result, err := flow.Run(t.Context(), 1)
 
@@ -239,7 +249,9 @@ func TestWorkflow_RunPreservesNilCapableOutputs(t *testing.T) {
 		t.Parallel()
 
 		flow := cord.New().From("nil-slice", func(_ context.Context, _ int) ([]int, error) {
-			return nil, nil
+			var output []int
+
+			return output, nil
 		})
 		result, err := flow.Run(t.Context(), 1)
 

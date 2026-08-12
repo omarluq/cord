@@ -48,11 +48,9 @@ linters:
     - unconvert
     - unparam
     - whitespace
-    - testpackage
     - paralleltest
     - tparallel
     - wastedassign
-    - nilnil
     - exhaustruct_v5
     - varnamelen
     - forbidigo
@@ -68,6 +66,7 @@ linters:
     - forcetypeassert
     - makezero
     - nilnesserr
+    - nilnil
     - nosprintfhostport
     - rowserrcheck
     - sqlclosecheck
@@ -78,6 +77,7 @@ linters:
     - modernize
     - perfsprint
     - testifylint
+    - testpackage
     - dupword
     - zerologlint
 
@@ -98,14 +98,9 @@ linters:
       # concrete return; compile-plan tests are white-box.
       - linters: [ireturn]
         path: '(workflow|graph)\.go$'
-      # Nil is a valid, explicitly tested workflow value for nil-capable output types.
-      - linters: [nilnil]
-        path: 'cord_test\.go$'
       # Executable examples intentionally print their result and use small illustrative constants.
       - linters: [forbidigo, mnd, wrapcheck]
         path: "examples/"
-      - linters: [testpackage]
-        path: "execute_test.go$"
       - linters: [all]
         path: ".*\\.pb\\.go$"
       - linters: [all]
