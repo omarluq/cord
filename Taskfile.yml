@@ -1,0 +1,51 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build all packages
+    cmds:
+      - go build ./...
+
+  test:
+    desc: Run tests with the race detector
+    cmds:
+      - go test -race -shuffle=on ./...
+
+  test-short:
+    desc: Run short tests with the race detector
+    cmds:
+      - go test -race -short -shuffle=on ./...
+
+  test-coverage:
+    desc: Run tests and write a coverage profile
+    cmds:
+      - go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format and fix Go source
+    cmds:
+      - golangci-lint fmt
+      - golangci-lint run --fix
+
+  fmt-check:
+    desc: Check formatting without modifying files
+    cmds:
+      - golangci-lint fmt --diff
+
+  ci:
+    desc: Run all checks
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: build
