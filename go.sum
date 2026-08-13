@@ -283,6 +283,7 @@ github.com/golangci/gofmt v0.0.0-20250106114630-d62b90e6713d h1:viFft9sS/dxoYY0a
 github.com/golangci/gofmt v0.0.0-20250106114630-d62b90e6713d/go.mod h1:ivJ9QDg0XucIkmwhzCDsqcnxxlDStoTl89jDMIoNxKY=
 github.com/golangci/golangci-lint/v2 v2.0.0-20260812000355-5cc065bd977f h1:xIHDagWzc6CL1zPosdPSjHob01htDiRWcvv4Ixz+a2U=
 github.com/golangci/golangci-lint/v2 v2.0.0-20260812000355-5cc065bd977f/go.mod h1:0mYDpHPl4AEpWFNpgl/GoPA+Smg0SgusOKKWibrlWIQ=
+github.com/golangci/golangci-lint/v2 v2.12.2 h1:7+d1uY0bq1MU2UV3R5pW5Q7QWdcoq4naMRXM+gsJKrs=
 github.com/golangci/golangci-lint/v2 v2.12.2/go.mod h1:opqHHuIcTG2R+4akzWMd4o1BnD9/1LcjICWOujr91U8=
 github.com/golangci/golines v0.15.0 h1:Qnph25g8Y1c5fdo1X7GaRDGgnMHgnxh4Gk4VfPTtRx0=
 github.com/golangci/golines v0.15.0/go.mod h1:AZjXd23tbHMpowhtnGlj9KCNsysj72aeZVVHnVcZx10=
