@@ -20,30 +20,13 @@ const (
 	runsTable  = "cord_runs"
 )
 
-func TestNewStore_ValidatesConfiguration(t *testing.T) {
+func TestNewStore_RejectsNilDatabase(t *testing.T) {
 	t.Parallel()
 
-	database := openDatabase(t, true)
-	sqlite := sqliteDialect(t)
+	store, err := storage.NewStore(nil)
 
-	tests := []struct {
-		database *sql.DB
-		name     string
-		dialect  storage.Dialect
-	}{
-		{name: "nil database", database: nil, dialect: sqlite},
-		{name: "unsupported dialect", database: database, dialect: storage.Dialect(0)},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			store, err := storage.NewStore(testCase.database, testCase.dialect)
-			assert.Nil(t, store)
-			require.Error(t, err)
-		})
-	}
+	assert.Nil(t, store)
+	require.Error(t, err)
 }
 
 func TestStore_CreateRun(t *testing.T) {
@@ -230,6 +213,53 @@ func TestStore_CreateRunRejectsInvalidPlan(t *testing.T) {
 	}
 }
 
+func TestStore_CreateRunRejectsCycles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mutate func(*storage.RunPlan)
+		name   string
+	}{
+		{
+			name: "two nodes",
+			mutate: func(plan *storage.RunPlan) {
+				plan.Edges = append(plan.Edges, storage.Edge{
+					RunID:       plan.Run.ID,
+					Parent:      plan.Nodes[1].ID,
+					Child:       plan.Nodes[0].ID,
+					ParentOrder: 0,
+				})
+				plan.Nodes[0].RemainingDeps = 1
+			},
+		},
+		{
+			name: "self cycle",
+			mutate: func(plan *storage.RunPlan) {
+				plan.Edges = append(plan.Edges, storage.Edge{
+					RunID:       plan.Run.ID,
+					Parent:      plan.Nodes[0].ID,
+					Child:       plan.Nodes[0].ID,
+					ParentOrder: 0,
+				})
+				plan.Nodes[0].RemainingDeps = 1
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			database, store := newStore(t, true)
+			plan := validPlan(time.Now().UTC(), "cycle-run")
+			testCase.mutate(&plan)
+
+			require.ErrorContains(t, store.CreateRun(t.Context(), &plan), "cycle")
+			assert.Equal(t, 0, rowCount(t, database, runsTable))
+		})
+	}
+}
+
 func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
 	t.Parallel()
 
@@ -290,7 +320,7 @@ func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
 				1,
 			),
 		},
-		Edges: []storage.Edge{{RunID: runID, Parent: "compile", Child: terminalNode}},
+		Edges: []storage.Edge{{RunID: runID, Parent: "compile", Child: terminalNode, ParentOrder: 0}},
 	}
 }
 
@@ -324,9 +354,8 @@ func newStore(t *testing.T, foreignKeys bool) (*sql.DB, *storage.Store) {
 	t.Helper()
 
 	database := openDatabase(t, foreignKeys)
-	dialect := sqliteDialect(t)
-	require.NoError(t, storage.Migrate(t.Context(), database, dialect))
-	store, err := storage.NewStore(database, dialect)
+	require.NoError(t, storage.Migrate(t.Context(), database))
+	store, err := storage.NewStore(database)
 	require.NoError(t, err)
 
 	return database, store
@@ -347,15 +376,6 @@ func openDatabase(t *testing.T, foreignKeys bool) *sql.DB {
 	})
 
 	return database
-}
-
-func sqliteDialect(t *testing.T) storage.Dialect {
-	t.Helper()
-
-	dialect, err := storage.ParseDialect("sqlite")
-	require.NoError(t, err)
-
-	return dialect
 }
 
 func assertRowCounts(t *testing.T, database *sql.DB, expected map[string]int) {

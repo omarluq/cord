@@ -1,4 +1,4 @@
-// Package storage implements Cord's private durable SQL state machine.
+// Package storage implements Cord's private SQL state machine.
 package storage
 
 import (
@@ -17,44 +17,15 @@ const (
 	requiredVersion    = int64(1)
 )
 
-// Dialect identifies an internal SQL implementation.
-type Dialect uint8
-
-const (
-	dialectSQLite Dialect = iota + 1
-	dialectPostgres
-	dialectMySQL
-)
-
 var (
-	// ErrUnsupportedDialect indicates that a dialect has no durable implementation.
-	ErrUnsupportedDialect = errors.New("unsupported database dialect")
-	// ErrSchemaOutdated indicates that the durable schema is absent or too old.
+	// ErrSchemaOutdated indicates that the schema is absent or too old.
 	ErrSchemaOutdated = errors.New("schema is absent or outdated")
-	// ErrSchemaNewer indicates that the durable schema is newer than this runtime.
+	// ErrSchemaNewer indicates that the schema is newer than this runtime.
 	ErrSchemaNewer = errors.New("schema is newer than runtime")
 )
 
-// ParseDialect validates a public dialect name.
-func ParseDialect(name string) (Dialect, error) {
-	switch name {
-	case "sqlite":
-		return dialectSQLite, nil
-	case "postgres":
-		return dialectPostgres, nil
-	case "mysql":
-		return dialectMySQL, nil
-	default:
-		return 0, ErrUnsupportedDialect
-	}
-}
-
-// Verify checks schema compatibility without executing DDL.
-func Verify(ctx context.Context, database *sql.DB, dialect Dialect) error {
-	if dialect != dialectSQLite {
-		return fmt.Errorf("%w: durable support is not implemented", ErrUnsupportedDialect)
-	}
-
+// Verify checks SQLite schema compatibility without executing DDL.
+func Verify(ctx context.Context, database *sql.DB) error {
 	current, exists, err := sqliteSchemaVersion(ctx, database)
 	if err != nil {
 		return fmt.Errorf("inspect sqlite schema: %w", err)
@@ -71,31 +42,27 @@ func Verify(ctx context.Context, database *sql.DB, dialect Dialect) error {
 	return nil
 }
 
-// Migrate applies all pending migrations for a dialect.
-func Migrate(ctx context.Context, database *sql.DB, dialect Dialect) error {
-	if dialect != dialectSQLite {
-		return fmt.Errorf("%w: durable support is not implemented", ErrUnsupportedDialect)
-	}
-
-	if err := migrateWithRetry(ctx, database, dialect); err != nil {
+// Migrate applies all pending SQLite migrations.
+func Migrate(ctx context.Context, database *sql.DB) error {
+	if err := migrateWithRetry(ctx, database); err != nil {
 		return err
 	}
 
-	if err := Verify(ctx, database, dialect); err != nil {
+	if err := Verify(ctx, database); err != nil {
 		return fmt.Errorf("verify migrated schema: %w", err)
 	}
 
 	return nil
 }
 
-func migrateWithRetry(ctx context.Context, database *sql.DB, dialect Dialect) error {
+func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 	const (
 		attempts = 20
 		delay    = 10 * time.Millisecond
 	)
 
 	for attempt := range attempts {
-		provider, err := newProvider(database, dialect)
+		provider, err := newProvider(database)
 		if err != nil {
 			return fmt.Errorf("create migration provider: %w", err)
 		}
@@ -116,18 +83,13 @@ func migrateWithRetry(ctx context.Context, database *sql.DB, dialect Dialect) er
 	return nil
 }
 
-func newProvider(database *sql.DB, dialect Dialect) (*goose.Provider, error) {
-	gooseDialect, migrations, err := providerConfig(dialect)
-	if err != nil {
-		return nil, err
-	}
-
+func newProvider(database *sql.DB) (*goose.Provider, error) {
 	provider, err := goose.NewProvider(
-		gooseDialect,
+		goose.DialectSQLite3,
 		database,
 		nil,
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithGoMigrations(migrations...),
+		goose.WithGoMigrations(sqliteMigrations()...),
 		goose.WithTableName(schemaVersionTable),
 	)
 	if err != nil {
@@ -135,17 +97,6 @@ func newProvider(database *sql.DB, dialect Dialect) (*goose.Provider, error) {
 	}
 
 	return provider, nil
-}
-
-func providerConfig(dialect Dialect) (goose.Dialect, []*goose.Migration, error) {
-	switch dialect {
-	case dialectSQLite:
-		return goose.DialectSQLite3, sqliteMigrations(), nil
-	case dialectPostgres, dialectMySQL:
-		return goose.DialectCustom, nil, ErrUnsupportedDialect
-	default:
-		return goose.DialectCustom, nil, ErrUnsupportedDialect
-	}
 }
 
 func sqliteSchemaVersion(ctx context.Context, database *sql.DB) (current int64, exists bool, err error) {

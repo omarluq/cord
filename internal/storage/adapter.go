@@ -10,5 +10,7 @@ const (
 		attempt, available_at, lease_owner, lease_generation, lease_expires_at,
 		output_payload, error_payload, started_at, completed_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	insertEdgeStatement = `INSERT INTO cord_edges (run_id, parent_node_id, child_node_id) VALUES (?, ?, ?)`
+	insertEdgeStatement = `INSERT INTO cord_edges (
+		run_id, parent_node_id, child_node_id, parent_order
+	) VALUES (?, ?, ?, ?)`
 )

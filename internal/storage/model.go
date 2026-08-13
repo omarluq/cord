@@ -2,10 +2,10 @@ package storage
 
 import "time"
 
-// RunID identifies a durable run.
+// RunID identifies a persisted run.
 type RunID string
 
-// NodeID identifies a node within a durable run.
+// NodeID identifies a node within a persisted run.
 type NodeID string
 
 // EncodedPayload is an opaque serialized value. A nil payload represents a nullable value.
@@ -47,7 +47,7 @@ const (
 	NodeCanceled NodeStatus = "canceled"
 )
 
-// Run is the storage representation of a durable run.
+// Run is the storage representation of a run.
 type Run struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -69,7 +69,7 @@ type Lease struct {
 	Generation int64
 }
 
-// Node is the storage representation of a durable node.
+// Node is the storage representation of a node.
 type Node struct {
 	AvailableAt   time.Time
 	CompletedAt   *time.Time
@@ -86,11 +86,12 @@ type Node struct {
 	Attempt       int
 }
 
-// Edge is a durable dependency relationship between two nodes in one run.
+// Edge is a persisted dependency relationship between two nodes in one run.
 type Edge struct {
-	RunID  RunID
-	Parent NodeID
-	Child  NodeID
+	RunID       RunID
+	Parent      NodeID
+	Child       NodeID
+	ParentOrder int
 }
 
 // Transition describes a requested compare-and-swap state change.
