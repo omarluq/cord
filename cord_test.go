@@ -366,6 +366,60 @@ func TestWorkflow_RunCancellationDuringExecution(t *testing.T) {
 	}
 }
 
+func TestWorkflow_RunUsesImmutableGraphSnapshotDuringDefinition(t *testing.T) {
+	t.Parallel()
+
+	stepStarted := make(chan struct{})
+	releaseStep := make(chan struct{})
+
+	var (
+		startedOnce   sync.Once
+		appendedCalls atomic.Int32
+	)
+
+	root := cord.New().From("snapshot", func(_ context.Context, value int) (int, error) {
+		return value, nil
+	})
+	snapshot := root.Then(func(_ context.Context, value int) (int, error) {
+		startedOnce.Do(func() { close(stepStarted) })
+		<-releaseStep
+
+		return value + 1, nil
+	})
+
+	type runResult struct {
+		err   error
+		value int
+	}
+
+	done := make(chan runResult, 1)
+
+	go func() {
+		value, err := snapshot.Run(t.Context(), 4)
+		done <- runResult{value: value, err: err}
+	}()
+
+	<-stepStarted
+
+	appended := snapshot.Then(func(_ context.Context, value int) (int, error) {
+		appendedCalls.Add(1)
+
+		return value * 2, nil
+	})
+
+	close(releaseStep)
+
+	result := <-done
+	require.NoError(t, result.err)
+	assert.Equal(t, 5, result.value)
+	assert.Zero(t, appendedCalls.Load(), "extending a workflow changed an in-flight snapshot")
+
+	appendedResult, err := appended.Run(t.Context(), 4)
+	require.NoError(t, err)
+	assert.Equal(t, 10, appendedResult)
+	assert.EqualValues(t, 1, appendedCalls.Load())
+}
+
 func TestWorkflow_ConcurrentConstructionAndReuse(t *testing.T) {
 	t.Parallel()
 
