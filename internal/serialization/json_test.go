@@ -107,6 +107,31 @@ func jsonCodecConstructionError[T any]() error {
 	return err
 }
 
+func TestNewJSONCodec_RejectsUnsupportedTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		construct func() error
+		name      string
+	}{
+		{name: "channel", construct: jsonCodecConstructionError[chan int]},
+		{name: "function", construct: jsonCodecConstructionError[func()]},
+		{name: "complex number", construct: jsonCodecConstructionError[complex128]},
+		{name: "unsupported map key", construct: jsonCodecConstructionError[map[float64]string]},
+		{name: "nested unsupported type", construct: jsonCodecConstructionError[struct{ Value chan int }]},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := test.construct()
+			require.Error(t, err)
+			require.ErrorAs(t, err, new(*json.UnsupportedTypeError))
+		})
+	}
+}
+
 func TestJSONCodec_RejectsDynamicInterfaceValues(t *testing.T) {
 	t.Parallel()
 

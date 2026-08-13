@@ -1,15 +1,16 @@
-// Package serialization provides durable payload codecs and compatibility fingerprints.
+// Package serialization provides persisted payload codecs and compatibility fingerprints.
 package serialization
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 )
 
-// JSONCodecVersion identifies the durable format produced by JSONCodec.
+// JSONCodecVersion identifies the persisted format produced by JSONCodec.
 const JSONCodecVersion = "json/v1"
 
 var (
@@ -74,31 +75,63 @@ func (codec JSONCodec[T]) Decode(payload []byte) (T, error) {
 }
 
 func validateJSONType(valueType reflect.Type) error {
-	if valueType == nil || containsInterface(valueType, make(map[reflect.Type]bool)) {
+	if valueType == nil {
 		return fmt.Errorf("construct default JSON codec for %s: %w", valueType, errInterfaceType)
 	}
 
-	return nil
+	return validateJSONTypeSeen(valueType, make(map[reflect.Type]bool))
 }
 
-func containsInterface(valueType reflect.Type, visited map[reflect.Type]bool) bool {
+func validateJSONTypeSeen(valueType reflect.Type, visited map[reflect.Type]bool) error {
 	if valueType.Kind() == reflect.Interface {
-		return true
+		return fmt.Errorf("construct default JSON codec for %s: %w", valueType, errInterfaceType)
+	}
+
+	if unsupportedJSONKind(valueType.Kind()) {
+		return fmt.Errorf(
+			"construct default JSON codec for %s: %w",
+			valueType,
+			&json.UnsupportedTypeError{Type: valueType},
+		)
+	}
+
+	if valueType.Kind() == reflect.Map && valueType.Key().Kind() != reflect.Interface &&
+		!supportedJSONMapKey(valueType.Key()) {
+		return fmt.Errorf(
+			"construct default JSON codec for %s: map key %s: %w",
+			valueType,
+			valueType.Key(),
+			&json.UnsupportedTypeError{Type: valueType},
+		)
 	}
 
 	if visited[valueType] {
-		return false
+		return nil
 	}
 
 	visited[valueType] = true
 
 	for _, childType := range jsonChildTypes(valueType) {
-		if containsInterface(childType, visited) {
-			return true
+		if err := validateJSONTypeSeen(childType, visited); err != nil {
+			return err
 		}
 	}
 
-	return false
+	return nil
+}
+
+func unsupportedJSONKind(kind reflect.Kind) bool {
+	return kind == reflect.Chan || kind == reflect.Complex64 || kind == reflect.Complex128 ||
+		kind == reflect.Func || kind == reflect.UnsafePointer
+}
+
+func supportedJSONMapKey(valueType reflect.Type) bool {
+	kind := valueType.Kind()
+
+	return kind == reflect.String ||
+		(kind >= reflect.Int && kind <= reflect.Int64) ||
+		(kind >= reflect.Uint && kind <= reflect.Uintptr) ||
+		valueType.Implements(reflect.TypeFor[encoding.TextMarshaler]())
 }
 
 func jsonChildTypes(valueType reflect.Type) []reflect.Type {

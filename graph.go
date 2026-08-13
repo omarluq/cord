@@ -13,9 +13,10 @@ type nodeID uint64
 type invocation func(context.Context, []any) (any, error)
 
 type node struct {
-	invoke  invocation
-	parents []nodeID
-	id      nodeID
+	invoke     invocation
+	definition *nodeDefinition
+	parents    []nodeID
+	id         nodeID
 }
 
 type graph struct {
@@ -34,16 +35,32 @@ func newGraph(name string) *graph {
 	}
 }
 
-func (g *graph) appendNode(parents []nodeID, invoke invocation) nodeID {
+func (g *graph) appendNode(parents []nodeID, invoke invocation, definition nodeDefinition) nodeID {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	parentNodes := make([]node, 0, len(parents))
+	for _, parent := range parents {
+		parentNodes = append(parentNodes, g.nodes[parent])
+	}
+
+	occurrence := 0
+
+	for _, existing := range g.nodes {
+		if existing.definition.functionKey == definition.functionKey && reflect.DeepEqual(existing.parents, parents) {
+			occurrence++
+		}
+	}
+
+	definition = assignLogicalID(definition, parentNodes, occurrence)
 
 	g.nextID++
 	nodeIdentifier := g.nextID
 	g.nodes[nodeIdentifier] = node{
-		id:      nodeIdentifier,
-		parents: append([]nodeID{}, parents...),
-		invoke:  invoke,
+		id:         nodeIdentifier,
+		parents:    append([]nodeID{}, parents...),
+		invoke:     invoke,
+		definition: &definition,
 	}
 
 	return nodeIdentifier
@@ -85,9 +102,10 @@ func (g *graph) compile(tail nodeID) ([]node, error) {
 		selected[nodeIdentifier] = true
 
 		plan = append(plan, node{
-			id:      current.id,
-			parents: append([]nodeID{}, current.parents...),
-			invoke:  current.invoke,
+			id:         current.id,
+			parents:    append([]nodeID{}, current.parents...),
+			invoke:     current.invoke,
+			definition: current.definition,
 		})
 
 		return nil

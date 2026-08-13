@@ -15,7 +15,7 @@ const (
 	signatureFramingEntries = 4
 )
 
-var errGenericInstantiation = errors.New("generic instantiated types are not supported for durable serialization")
+var errGenericInstantiation = errors.New("generic instantiated types are not supported for persisted serialization")
 
 // TypeFingerprint hashes a Go type identity together with its codec version.
 // Generic instantiations are rejected because reflection does not expose their
