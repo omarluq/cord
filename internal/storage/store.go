@@ -5,33 +5,29 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
-// RunPlan is the complete normalized storage plan for one durable run.
+const busyRetryDelay = 10 * time.Millisecond
+
+// RunPlan is the complete normalized storage plan for one run.
 type RunPlan struct {
 	Run   Run
 	Nodes []Node
 	Edges []Edge
 }
 
-// Store persists durable state in a caller-owned SQL database.
+// Store persists workflow state in a caller-owned SQL database.
 type Store struct {
 	database *sql.DB
 }
 
-// NewStore creates a store for a caller-owned SQL database.
-func NewStore(database *sql.DB, dialect Dialect) (*Store, error) {
+// NewStore creates a SQLite store for a caller-owned SQL database. Callers
+// should configure a busy timeout and use WAL journal mode where appropriate.
+func NewStore(database *sql.DB) (*Store, error) {
 	if database == nil {
 		return nil, errors.New("create storage store: database is nil")
-	}
-
-	switch dialect {
-	case dialectSQLite:
-	case dialectPostgres, dialectMySQL:
-		return nil, fmt.Errorf("create storage adapter: %w", ErrUnsupportedDialect)
-	default:
-		return nil, fmt.Errorf("create storage adapter: %w: %d", ErrUnsupportedDialect, dialect)
 	}
 
 	return &Store{database: database}, nil
@@ -43,6 +39,26 @@ func (s *Store) CreateRun(ctx context.Context, plan *RunPlan) error {
 		return err
 	}
 
+	const attempts = 20
+
+	var err error
+	for attempt := range attempts {
+		err = s.createRunOnce(ctx, plan)
+		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") || attempt == attempts-1 {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("retry run plan: %w", ctx.Err())
+		case <-time.After(busyRetryDelay):
+		}
+	}
+
+	return err
+}
+
+func (s *Store) createRunOnce(ctx context.Context, plan *RunPlan) error {
 	transaction, err := s.database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin run-plan transaction: %w", err)
@@ -135,6 +151,8 @@ func validateRunPlan(plan *RunPlan) error {
 }
 
 func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
+	children := make(map[NodeID][]NodeID, len(plan.Nodes))
+
 	for _, edge := range plan.Edges {
 		if edge.RunID != plan.Run.ID {
 			return fmt.Errorf("validate run plan: edge %q -> %q has run ID %q", edge.Parent, edge.Child, edge.RunID)
@@ -149,6 +167,11 @@ func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 		}
 
 		dependencies[edge.Child]++
+		children[edge.Parent] = append(children[edge.Parent], edge.Child)
+	}
+
+	if cyclic(dependencies, children) {
+		return errors.New("validate run plan: edges contain a cycle")
 	}
 
 	for index := range plan.Nodes {
@@ -170,6 +193,35 @@ func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 	return nil
 }
 
+func cyclic(dependencies map[NodeID]int, children map[NodeID][]NodeID) bool {
+	remaining := make(map[NodeID]int, len(dependencies))
+	ready := make([]NodeID, 0, len(dependencies))
+
+	for nodeID, dependencyCount := range dependencies {
+		remaining[nodeID] = dependencyCount
+		if dependencyCount == 0 {
+			ready = append(ready, nodeID)
+		}
+	}
+
+	visited := 0
+
+	for len(ready) > 0 {
+		current := ready[len(ready)-1]
+		ready = ready[:len(ready)-1]
+		visited++
+
+		for _, child := range children[current] {
+			remaining[child]--
+			if remaining[child] == 0 {
+				ready = append(ready, child)
+			}
+		}
+	}
+
+	return visited != len(dependencies)
+}
+
 func insertRun(ctx context.Context, transaction *sql.Tx, run *Run) error {
 	_, err := transaction.ExecContext(
 		ctx,
@@ -182,9 +234,9 @@ func insertRun(ctx context.Context, transaction *sql.Tx, run *Run) error {
 		nullPayload(run.Output),
 		run.TerminalNodeID,
 		nullPayload(run.Error),
-		run.CreatedAt,
-		run.UpdatedAt,
-		run.CompletedAt,
+		formatSQLiteTime(run.CreatedAt),
+		formatSQLiteTime(run.UpdatedAt),
+		nullTimePointer(run.CompletedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert run %q: %w", run.ID, err)
@@ -209,14 +261,14 @@ func insertNode(
 		node.Status,
 		node.RemainingDeps,
 		node.Attempt,
-		node.AvailableAt,
+		formatSQLiteTime(node.AvailableAt),
 		nullString(node.Lease.Owner),
 		node.Lease.Generation,
 		nullTime(node.Lease.ExpiresAt),
 		nullPayload(node.Output),
 		nullPayload(node.Error),
-		node.StartedAt,
-		node.CompletedAt,
+		nullTimePointer(node.StartedAt),
+		nullTimePointer(node.CompletedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert node %q for run %q: %w", node.ID, runID, err)
@@ -237,6 +289,7 @@ func insertEdge(
 		runID,
 		edge.Parent,
 		edge.Child,
+		edge.ParentOrder,
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -272,5 +325,17 @@ func nullTime(value time.Time) any {
 		return nil
 	}
 
-	return value
+	return formatSQLiteTime(value)
+}
+
+func nullTimePointer(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+
+	return formatSQLiteTime(*value)
+}
+
+func formatSQLiteTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
 }
