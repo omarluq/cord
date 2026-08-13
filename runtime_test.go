@@ -17,28 +17,34 @@ func TestNewDurable_ValidatesConfiguration(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
+		config func(*testing.T) cord.DurableConfig
 		target error
 		name   string
-		config cord.DurableConfig
 	}{
 		{
 			name:   "nil database",
-			config: cord.DurableConfig{},
+			config: func(*testing.T) cord.DurableConfig { return cord.DurableConfig{} },
 			target: cord.ErrMigrationFailed,
 		},
 		{
 			name: "missing dialect",
-			config: cord.DurableConfig{
-				DB: openSQLite(t),
+			config: func(t *testing.T) cord.DurableConfig {
+				t.Helper()
+
+				return cord.DurableConfig{DB: openSQLite(t)}
 			},
 			target: cord.ErrUnsupportedDialect,
 		},
 		{
 			name: "unknown migration mode",
-			config: cord.DurableConfig{
-				DB:            openSQLite(t),
-				Dialect:       cord.DialectSQLite,
-				MigrationMode: cord.MigrationMode(99),
+			config: func(t *testing.T) cord.DurableConfig {
+				t.Helper()
+
+				return cord.DurableConfig{
+					DB:            openSQLite(t),
+					Dialect:       cord.DialectSQLite,
+					MigrationMode: cord.MigrationMode(99),
+				}
 			},
 			target: cord.ErrMigrationFailed,
 		},
@@ -48,7 +54,7 @@ func TestNewDurable_ValidatesConfiguration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			runtime, err := cord.NewDurable(test.config)
+			runtime, err := cord.NewDurable(test.config(t))
 
 			assert.Nil(t, runtime)
 			require.ErrorIs(t, err, test.target)
@@ -176,8 +182,8 @@ func TestNewDurable_RejectsOldAndNewerSchemas(t *testing.T) {
 
 			assert.Nil(t, runtime)
 			require.ErrorIs(t, err, test.target)
-			assert.Contains(t, err.Error(), "current=")
-			assert.Contains(t, err.Error(), "required=")
+			require.ErrorContains(t, err, "current=")
+			require.ErrorContains(t, err, "required=")
 		})
 	}
 }
@@ -193,15 +199,12 @@ func TestMigrate_RejectsUnsupportedDialect(t *testing.T) {
 func openSQLite(t *testing.T) *sql.DB {
 	t.Helper()
 
-	dsn := filepath.Join(t.TempDir(), "cord.db")
+	dsn := "file:" + filepath.Join(t.TempDir(), "cord.db") + "?_pragma=foreign_keys(1)"
 	database, err := sql.Open("sqlite", dsn)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, database.Close())
 	})
-
-	_, err = database.ExecContext(t.Context(), "PRAGMA foreign_keys = ON")
-	require.NoError(t, err)
 
 	return database
 }
