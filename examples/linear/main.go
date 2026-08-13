@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/omarluq/cord"
@@ -15,11 +16,17 @@ func formatResult(_ context.Context, value int) (string, error) {
 	return fmt.Sprintf("result: %d", value), nil
 }
 
-func run(ctx context.Context, input int) (string, error) {
-	runtime, err := cord.New(exampledb.DB())
+func run(ctx context.Context, input int) (_ string, err error) {
+	database := exampledb.DB()
+
+	runtime, err := cord.New(database)
 	if err != nil {
 		return "", fmt.Errorf("create runtime: %w", err)
 	}
+
+	defer func() {
+		err = errors.Join(err, runtime.Close(), database.Close())
+	}()
 
 	flow := runtime.From(increment).Then(double).Then(formatResult)
 

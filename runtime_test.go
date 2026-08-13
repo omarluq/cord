@@ -242,8 +242,7 @@ func TestWorkflow_RunPersistsReachablePlan(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.New(database)
-	require.NoError(t, err)
+	runtime := newRuntimeForDB(t, database)
 
 	root := runtime.From(increment)
 	selected := root.Then(double)
@@ -292,8 +291,7 @@ func TestWorkflow_RunRejectsClosureBeforeInsertion(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.New(database)
-	require.NoError(t, err)
+	runtime := newRuntimeForDB(t, database)
 
 	called := false
 	workflow := runtime.From(func(_ context.Context, value int) (int, error) {
@@ -302,7 +300,7 @@ func TestWorkflow_RunRejectsClosureBeforeInsertion(t *testing.T) {
 		return value, nil
 	})
 
-	_, err = workflow.Run(t.Context(), 1)
+	_, err := workflow.Run(t.Context(), 1)
 	require.ErrorContains(t, err, "not a named package-level function")
 	assert.False(t, called)
 
