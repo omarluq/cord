@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
@@ -60,48 +60,45 @@ func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 func TestWorkflow_RuntimeBoundsConcurrencyAcrossRuns(t *testing.T) {
 	t.Parallel()
 
-	concurrency := max(1, runtime.GOMAXPROCS(0))
-	runCount := concurrency + 1
+	synctest.Test(t, func(t *testing.T) {
+		concurrency := max(1, runtime.GOMAXPROCS(0))
+		runCount := concurrency + 1
 
-	var (
-		active atomic.Int32
-		peak   atomic.Int32
-	)
+		var (
+			active atomic.Int32
+			peak   atomic.Int32
+		)
 
-	started := make(chan struct{}, runCount)
-	release := make(chan struct{})
-	flow := cord.New().From("bounded", func(ctx context.Context, value int) (int, error) {
-		current := active.Add(1)
-		defer active.Add(-1)
+		release := make(chan struct{})
+		flow := cord.New().From("bounded", func(ctx context.Context, value int) (int, error) {
+			current := active.Add(1)
+			defer active.Add(-1)
 
-		updatePeak(&peak, current)
+			updatePeak(&peak, current)
 
-		started <- struct{}{}
-
-		select {
-		case <-release:
-			return value, nil
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		}
-	})
-
-	var waitGroup sync.WaitGroup
-	for index := range runCount {
-		waitGroup.Go(func() {
-			_, err := flow.Run(t.Context(), index)
-			assert.NoError(t, err)
+			select {
+			case <-release:
+				return value, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
 		})
-	}
 
-	for range concurrency {
-		receiveSignal(t, started, "waiting for concurrent workflow run to start")
-	}
+		var waitGroup sync.WaitGroup
+		for index := range runCount {
+			waitGroup.Go(func() {
+				_, err := flow.Run(t.Context(), index)
+				assert.NoError(t, err)
+			})
+		}
 
-	assert.EqualValues(t, concurrency, active.Load())
-	close(release)
-	waitGroup.Wait()
-	assert.EqualValues(t, concurrency, peak.Load())
+		synctest.Wait()
+		assert.EqualValues(t, concurrency, active.Load())
+
+		close(release)
+		waitGroup.Wait()
+		assert.EqualValues(t, concurrency, peak.Load())
+	})
 }
 
 func TestWorkflow_PanicPreservesErrorIdentity(t *testing.T) {
@@ -149,19 +146,6 @@ func TestWorkflow_WaitsForSiblingAfterPanic(t *testing.T) {
 	case <-stopped:
 	default:
 		require.FailNow(t, "workflow returned before the sibling stopped")
-	}
-}
-
-func receiveSignal(t *testing.T, signal <-chan struct{}, message string) {
-	t.Helper()
-
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-
-	select {
-	case <-signal:
-	case <-timer.C:
-		require.FailNow(t, message)
 	}
 }
 
