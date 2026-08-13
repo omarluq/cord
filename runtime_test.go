@@ -10,6 +10,7 @@ import (
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	// Register the sqlite driver used by openSQLite.
 	_ "modernc.org/sqlite"
 )
 
@@ -188,12 +189,37 @@ func TestNewDurable_RejectsOldAndNewerSchemas(t *testing.T) {
 	}
 }
 
-func TestMigrate_RejectsUnsupportedDialect(t *testing.T) {
+func TestMigrate_ReportsConfigurationAndDatabaseErrors(t *testing.T) {
 	t.Parallel()
 
-	err := cord.Migrate(t.Context(), openSQLite(t), cord.DialectPostgres)
+	closedDatabase := openSQLite(t)
+	require.NoError(t, closedDatabase.Close())
 
-	require.ErrorIs(t, err, cord.ErrUnsupportedDialect)
+	tests := []struct {
+		database *sql.DB
+		dialect  cord.Dialect
+		target   error
+		name     string
+	}{
+		{name: "nil database", dialect: cord.DialectSQLite, target: cord.ErrMigrationFailed},
+		{
+			name: "unsupported dialect", database: openSQLite(t),
+			dialect: cord.DialectPostgres, target: cord.ErrUnsupportedDialect,
+		},
+		{
+			name: "database failure", database: closedDatabase,
+			dialect: cord.DialectSQLite, target: cord.ErrMigrationFailed,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := cord.Migrate(t.Context(), testCase.database, testCase.dialect)
+			require.ErrorIs(t, err, testCase.target)
+		})
+	}
 }
 
 func openSQLite(t *testing.T) *sql.DB {
