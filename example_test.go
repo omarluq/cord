@@ -5,16 +5,27 @@ import (
 	"fmt"
 
 	"github.com/omarluq/cord"
+	"github.com/omarluq/cord/internal/exampledb"
 )
 
-func ExampleCord_From() {
-	flow := cord.New().From("double", func(_ context.Context, value int) (int, error) {
-		return value * 2, nil
-	}).Then(func(_ context.Context, value int) (string, error) {
-		return fmt.Sprintf("result: %d", value), nil
-	})
+func exampleDouble(_ context.Context, value int) (int, error) { return value * 2, nil }
+func exampleFormat(_ context.Context, value int) (string, error) {
+	return fmt.Sprintf("result: %d", value), nil
+}
+func exampleOrder(_ context.Context, orderID int) (int, error)         { return orderID, nil }
+func exampleItems(_ context.Context, _ int) (int, error)               { return 3, nil }
+func exampleShipping(_ context.Context, _ int) (int, error)            { return 5, nil }
+func exampleTotal(_ context.Context, items, shipping int) (int, error) { return items + shipping, nil }
 
-	result, err := flow.Run(context.Background(), 21)
+func ExampleCord_From() {
+	runtime, err := cord.New(exampledb.DB())
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	result, err := runtime.From(exampleDouble).Then(exampleFormat).Run(context.Background(), 21)
 	if err != nil {
 		fmt.Println(err)
 
@@ -26,19 +37,15 @@ func ExampleCord_From() {
 }
 
 func ExampleJoin() {
-	runtime := cord.New()
-	root := runtime.From("order", func(_ context.Context, orderID int) (int, error) {
-		return orderID, nil
-	})
-	items := root.Then(func(_ context.Context, _ int) (int, error) {
-		return 3, nil
-	})
-	shipping := root.Then(func(_ context.Context, _ int) (int, error) {
-		return 5, nil
-	})
-	flow := cord.Join(items, shipping).Then(func(_ context.Context, itemCost, shippingCost int) (int, error) {
-		return itemCost + shippingCost, nil
-	})
+	runtime, err := cord.New(exampledb.DB())
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	root := runtime.From(exampleOrder)
+	flow := cord.Join(root.Then(exampleItems), root.Then(exampleShipping)).Then(exampleTotal)
 
 	total, err := flow.Run(context.Background(), 1001)
 	if err != nil {

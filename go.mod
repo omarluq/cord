@@ -3,6 +3,7 @@ module github.com/omarluq/cord
 go 1.27rc2
 
 require (
+	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/goleak v1.3.0

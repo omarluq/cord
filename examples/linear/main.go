@@ -6,17 +6,22 @@ import (
 	"fmt"
 
 	"github.com/omarluq/cord"
+	"github.com/omarluq/cord/internal/exampledb"
 )
 
+func increment(_ context.Context, value int) (int, error) { return value + 1, nil }
+func double(_ context.Context, value int) (int, error)    { return value * 2, nil }
+func formatResult(_ context.Context, value int) (string, error) {
+	return fmt.Sprintf("result: %d", value), nil
+}
+
 func run(ctx context.Context, input int) (string, error) {
-	runtime := cord.New()
-	flow := runtime.From("calculate", func(_ context.Context, value int) (int, error) {
-		return value + 1, nil
-	}).Then(func(_ context.Context, value int) (int, error) {
-		return value * 2, nil
-	}).Then(func(_ context.Context, value int) (string, error) {
-		return fmt.Sprintf("result: %d", value), nil
-	})
+	runtime, err := cord.New(exampledb.DB())
+	if err != nil {
+		return "", fmt.Errorf("create runtime: %w", err)
+	}
+
+	flow := runtime.From(increment).Then(double).Then(formatResult)
 
 	return flow.Run(ctx, input)
 }

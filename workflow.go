@@ -3,6 +3,11 @@ package cord
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
+
+	"github.com/omarluq/cord/internal/serialization"
+	"github.com/omarluq/cord/internal/storage"
 )
 
 // Workflow is an immutable typed handle to a terminal node in a workflow graph.
@@ -39,19 +44,26 @@ func (w Workflow[I, O]) Then[N any](
 		}
 	}
 
-	tail := w.graph.appendNode([]nodeID{w.tail}, adaptStep(step))
+	definition := stepDefinition(step)
+	registrationErr := w.runtime.register(definition, encodedStep(step))
+	tail := w.graph.appendNode([]nodeID{w.tail}, adaptStep(step), definition)
 
 	return Workflow[I, N]{
 		runtime: w.runtime,
 		graph:   w.graph,
 		tail:    tail,
-		err:     nil,
+		err:     registrationErr,
 	}
 }
 
-// Run executes the reachable workflow graph and waits for its terminal result.
+// Run submits the workflow and waits for its terminal result. The context
+// controls submission, waiting, and cancellation; it is not persisted as workflow data.
 func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 	var zero O
+
+	if ctx == nil {
+		return zero, errors.New("cord: workflow context is nil")
+	}
 
 	if w.err != nil {
 		return zero, w.err
@@ -66,15 +78,80 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 		return zero, err
 	}
 
-	output, err := execute(ctx, plan, w.tail, input, w.runtime.slots)
+	runPlan, err := buildPlan(w.graph.name, plan, w.tail, input)
 	if err != nil {
 		return zero, err
 	}
 
-	result, ok := inputAs[O](output)
-	if !ok {
-		return zero, errors.New("cord: invalid terminal workflow output")
+	if err = w.runtime.store.CreateRun(ctx, runPlan); err != nil {
+		return zero, fmt.Errorf("cord: persist run: %w", err)
 	}
 
-	return result, nil
+	w.runtime.signalScheduler()
+
+	resultCodec, err := serialization.NewJSONCodec[O]()
+	if err != nil {
+		return zero, fmt.Errorf("cord: construct result codec: %w", err)
+	}
+
+	return w.wait(ctx, runPlan.Run.ID, resultCodec)
+}
+
+func (w Workflow[I, O]) wait(
+	ctx context.Context,
+	runID storage.RunID,
+	codec serialization.JSONCodec[O],
+) (O, error) {
+	var zero O
+
+	ticker := time.NewTicker(defaultPollInterval)
+	defer ticker.Stop()
+
+	for {
+		result, err := w.runtime.store.GetRunResult(ctx, runID)
+		if err == nil {
+			value, done, resultErr := w.result(ctx, runID, result, codec)
+			if done {
+				return value, resultErr
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			_, cancelErr := w.runtime.store.CancelRun(context.Background(), runID)
+			if cancelErr != nil {
+				return zero, errors.Join(contextError(ctx), cancelErr)
+			}
+
+			return zero, contextError(ctx)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (w Workflow[I, O]) result(
+	ctx context.Context,
+	runID storage.RunID,
+	result storage.RunResult,
+	codec serialization.JSONCodec[O],
+) (value O, done bool, err error) {
+	var zero O
+
+	switch result.Status {
+	case storage.RunCompleted:
+		value, decodeErr := codec.Decode(result.Output)
+		if decodeErr != nil {
+			return zero, true, fmt.Errorf("cord: decode terminal workflow output: %w", decodeErr)
+		}
+
+		return value, true, nil
+	case storage.RunFailed:
+		return zero, true, w.runtime.runError(runID, result.Error)
+	case storage.RunCanceled:
+		return zero, true, contextError(ctx)
+	case storage.RunRunning, storage.RunCanceling:
+		return zero, false, nil
+	}
+
+	return zero, false, nil
 }

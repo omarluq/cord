@@ -1,91 +1,70 @@
 package cord_test
 
 import (
+	"context"
 	"database/sql"
-	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/gofrs/uuid/v5"
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	// Register the sqlite driver used by openSQLite.
-	_ "modernc.org/sqlite"
 )
 
-func TestNewDurable_ValidatesConfiguration(t *testing.T) {
+func increment(_ context.Context, value int) (int, error) {
+	return value + 1, nil
+}
+
+func double(_ context.Context, value int) (int, error) {
+	return value * 2, nil
+}
+
+func TestNewWithOptions_ValidatesSchedulerSettings(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		config func(*testing.T) cord.DurableConfig
-		target error
-		name   string
+		name    string
+		error   string
+		options cord.RuntimeOptions
 	}{
-		{
-			name:   "nil database",
-			config: func(*testing.T) cord.DurableConfig { return cord.DurableConfig{} },
-			target: cord.ErrMigrationFailed,
-		},
-		{
-			name: "missing dialect",
-			config: func(t *testing.T) cord.DurableConfig {
-				t.Helper()
-
-				return cord.DurableConfig{DB: openSQLite(t)}
-			},
-			target: cord.ErrUnsupportedDialect,
-		},
-		{
-			name: "unknown migration mode",
-			config: func(t *testing.T) cord.DurableConfig {
-				t.Helper()
-
-				return cord.DurableConfig{
-					DB:            openSQLite(t),
-					Dialect:       cord.DialectSQLite,
-					MigrationMode: cord.MigrationMode(99),
-				}
-			},
-			target: cord.ErrMigrationFailed,
-		},
+		{name: "negative concurrency", options: cord.RuntimeOptions{Concurrency: -1}, error: "concurrency"},
+		{name: "negative poll interval", options: cord.RuntimeOptions{PollInterval: -1}, error: "poll interval"},
+		{name: "negative lease TTL", options: cord.RuntimeOptions{LeaseTTL: -1}, error: "lease TTL"},
+		{name: "negative heartbeat", options: cord.RuntimeOptions{HeartbeatInterval: -1}, error: "heartbeat interval"},
+		{name: "heartbeat equals lease", options: cord.RuntimeOptions{
+			LeaseTTL: time.Second, HeartbeatInterval: time.Second,
+		}, error: "heartbeat interval"},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			runtime, err := cord.NewDurable(test.config(t))
+			runtime, err := cord.NewWithOptions(openSQLite(t), testCase.options)
 
 			assert.Nil(t, runtime)
-			require.ErrorIs(t, err, test.target)
+			require.ErrorContains(t, err, testCase.error)
 		})
 	}
 }
 
-func TestNewDurable_VerifyOnlyDoesNotCreateSchema(t *testing.T) {
+func TestNew_RejectsNilDatabase(t *testing.T) {
 	t.Parallel()
 
-	database := openSQLite(t)
-	runtime, err := cord.NewDurable(cord.DurableConfig{
-		DB:      database,
-		Dialect: cord.DialectSQLite,
-	})
+	runtime, err := cord.New(nil)
 
 	assert.Nil(t, runtime)
-	require.ErrorIs(t, err, cord.ErrSchemaOutdated)
-	assert.False(t, sqliteTableExists(t, database, "cord_schema_migrations"))
+	require.ErrorIs(t, err, cord.ErrMigrationFailed)
 }
 
-func TestNewDurable_MigratesAndLeavesDatabaseOpen(t *testing.T) {
+func TestNew_MigratesAndLeavesDatabaseOpen(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.NewDurable(cord.DurableConfig{
-		DB:            database,
-		Dialect:       cord.DialectSQLite,
-		MigrationMode: cord.MigrationOnInitialization,
-	})
+	runtime, err := cord.New(database)
 	require.NoError(t, err)
 	require.NotNil(t, runtime)
 
@@ -98,17 +77,22 @@ func TestNewDurable_MigratesAndLeavesDatabaseOpen(t *testing.T) {
 	require.NoError(t, database.PingContext(t.Context()))
 }
 
-func TestMigrate_IsRepeatable(t *testing.T) {
+func TestNew_IsRepeatable(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
 
-	require.NoError(t, cord.Migrate(t.Context(), database, cord.DialectSQLite))
-	require.NoError(t, cord.Migrate(t.Context(), database, cord.DialectSQLite))
+	first, err := cord.New(database)
+	require.NoError(t, err)
+	require.NoError(t, first.Close())
+
+	second, err := cord.New(database)
+	require.NoError(t, err)
+	require.NoError(t, second.Close())
 
 	var applied int
 
-	err := database.QueryRowContext(
+	err = database.QueryRowContext(
 		t.Context(),
 		"SELECT COUNT(*) FROM cord_schema_migrations WHERE version_id = 1 AND is_applied = 1",
 	).Scan(&applied)
@@ -116,140 +100,227 @@ func TestMigrate_IsRepeatable(t *testing.T) {
 	assert.Equal(t, 1, applied)
 }
 
-func TestMigrate_ConcurrentCalls(t *testing.T) {
+func TestNew_ConcurrentCalls(t *testing.T) {
 	t.Parallel()
 
-	database := openSQLite(t)
+	dsn := "file:" + filepath.Join(t.TempDir(), "concurrent.db") +
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 
-	const calls = 8
+	const constructors = 8
 
 	var waitGroup sync.WaitGroup
 
-	errorsChannel := make(chan error, calls)
-	for range calls {
+	results := make(chan error, constructors)
+
+	for range constructors {
 		waitGroup.Go(func() {
-			errorsChannel <- cord.Migrate(t.Context(), database, cord.DialectSQLite)
+			database, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				results <- err
+
+				return
+			}
+
+			runtime, err := cord.New(database)
+			if err == nil {
+				err = runtime.Close()
+			}
+
+			if closeErr := database.Close(); err == nil {
+				err = closeErr
+			}
+
+			results <- err
 		})
 	}
 
 	waitGroup.Wait()
-	close(errorsChannel)
+	close(results)
 
-	for err := range errorsChannel {
+	for err := range results {
 		require.NoError(t, err)
 	}
 }
 
-func TestNewDurable_RejectsOldAndNewerSchemas(t *testing.T) {
+func TestNew_MigratesOldSchema(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		target error
-		mutate func(*testing.T, *sql.DB)
-		name   string
-	}{
-		{
-			name: "old",
-			mutate: func(t *testing.T, database *sql.DB) {
-				t.Helper()
-				_, err := database.ExecContext(t.Context(), "DELETE FROM cord_schema_migrations WHERE version_id = 1")
-				require.NoError(t, err)
-			},
-			target: cord.ErrSchemaOutdated,
-		},
-		{
-			name: "newer",
-			mutate: func(t *testing.T, database *sql.DB) {
-				t.Helper()
-				_, err := database.ExecContext(
-					t.Context(),
-					"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (2, 1)",
-				)
-				require.NoError(t, err)
-			},
-			target: cord.ErrSchemaNewer,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			database := openSQLite(t)
-			require.NoError(t, cord.Migrate(t.Context(), database, cord.DialectSQLite))
-			test.mutate(t, database)
-
-			runtime, err := cord.NewDurable(cord.DurableConfig{DB: database, Dialect: cord.DialectSQLite})
-
-			assert.Nil(t, runtime)
-			require.ErrorIs(t, err, test.target)
-			require.ErrorContains(t, err, "current=")
-			require.ErrorContains(t, err, "required=")
-		})
-	}
-}
-
-func TestMigrate_ReportsConfigurationAndDatabaseErrors(t *testing.T) {
-	t.Parallel()
-
-	closedDatabase := openSQLite(t)
-	require.NoError(t, closedDatabase.Close())
-
-	tests := []struct {
-		database *sql.DB
-		dialect  cord.Dialect
-		target   error
-		name     string
-	}{
-		{name: "nil database", dialect: cord.DialectSQLite, target: cord.ErrMigrationFailed},
-		{
-			name: "unsupported dialect", database: openSQLite(t),
-			dialect: cord.DialectPostgres, target: cord.ErrUnsupportedDialect,
-		},
-		{
-			name: "database failure", database: closedDatabase,
-			dialect: cord.DialectSQLite, target: cord.ErrMigrationFailed,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := cord.Migrate(t.Context(), testCase.database, testCase.dialect)
-			require.ErrorIs(t, err, testCase.target)
-		})
-	}
-}
-
-func openSQLite(t *testing.T) *sql.DB {
-	t.Helper()
-
-	dsn := "file:" + filepath.Join(t.TempDir(), "cord.db") + "?_pragma=foreign_keys(1)"
-	database, err := sql.Open("sqlite", dsn)
+	database := openSQLite(t)
+	runtime, err := cord.New(database)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, database.Close())
+	require.NoError(t, runtime.Close())
+
+	for _, statement := range []string{
+		"DROP TABLE cord_edges",
+		"DROP TABLE cord_nodes",
+		"DROP TABLE cord_runs",
+		"DELETE FROM cord_schema_migrations",
+		"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (0, 1)",
+	} {
+		_, err = database.ExecContext(t.Context(), statement)
+		require.NoError(t, err)
+	}
+
+	runtime, err = cord.New(database)
+	require.NoError(t, err)
+	require.NoError(t, runtime.Close())
+
+	for _, table := range []string{"cord_runs", "cord_nodes", "cord_edges"} {
+		assert.True(t, sqliteTableExists(t, database, table), table)
+	}
+
+	var applied int
+
+	err = database.QueryRowContext(
+		t.Context(),
+		"SELECT COUNT(*) FROM cord_schema_migrations WHERE version_id = 1 AND is_applied = 1",
+	).Scan(&applied)
+	require.NoError(t, err)
+	assert.Equal(t, 1, applied)
+}
+
+func TestNew_FailedMigrationRollsBack(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	_, err := database.ExecContext(t.Context(), "CREATE TABLE cord_nodes (id TEXT PRIMARY KEY)")
+	require.NoError(t, err)
+
+	runtime, err := cord.New(database)
+
+	assert.Nil(t, runtime)
+	require.ErrorIs(t, err, cord.ErrMigrationFailed)
+	assert.False(t, sqliteTableExists(t, database, "cord_runs"))
+	assert.False(t, sqliteTableExists(t, database, "cord_edges"))
+	assert.True(t, sqliteTableExists(t, database, "cord_nodes"))
+
+	var applied int
+
+	err = database.QueryRowContext(
+		t.Context(),
+		"SELECT COUNT(*) FROM cord_schema_migrations WHERE version_id = 1 AND is_applied = 1",
+	).Scan(&applied)
+	require.NoError(t, err)
+	assert.Zero(t, applied)
+}
+
+func TestNew_RejectsNewerSchema(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	runtime, err := cord.New(database)
+	require.NoError(t, err)
+	require.NoError(t, runtime.Close())
+
+	_, err = database.ExecContext(
+		t.Context(),
+		"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (2, 1)",
+	)
+	require.NoError(t, err)
+
+	runtime, err = cord.New(database)
+
+	assert.Nil(t, runtime)
+	require.ErrorIs(t, err, cord.ErrSchemaNewer)
+	require.ErrorContains(t, err, "current=")
+	require.ErrorContains(t, err, "required=")
+}
+
+func TestNew_ReportsDatabaseFailure(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	require.NoError(t, database.Close())
+
+	runtime, err := cord.New(database)
+
+	assert.Nil(t, runtime)
+	require.ErrorIs(t, err, cord.ErrMigrationFailed)
+}
+
+func TestWorkflow_RunPersistsReachablePlan(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	runtime, err := cord.New(database)
+	require.NoError(t, err)
+
+	root := runtime.From(increment)
+	selected := root.Then(double)
+	_ = root.Then(increment)
+
+	result, err := selected.Run(t.Context(), 3)
+	require.NoError(t, err)
+	assert.Equal(t, 8, result)
+
+	var (
+		runID           string
+		workflowName    string
+		definitionHash  string
+		status          string
+		input           []byte
+		rootFunctionKey string
+		nodeCount       int
+		edgeCount       int
+	)
+
+	err = database.QueryRowContext(
+		t.Context(),
+		"SELECT id, workflow_name, definition_hash, status, input_payload FROM cord_runs",
+	).Scan(&runID, &workflowName, &definitionHash, &status, &input)
+	require.NoError(t, err)
+	require.NoError(t, database.QueryRowContext(
+		t.Context(),
+		"SELECT function_key FROM cord_nodes WHERE remaining_deps = 0",
+	).Scan(&rootFunctionKey))
+	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM cord_nodes").Scan(&nodeCount))
+	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM cord_edges").Scan(&edgeCount))
+
+	identifier, parseErr := uuid.FromString(runID)
+	require.NoError(t, parseErr)
+	assert.Equal(t, uuid.V7, identifier.Version())
+	assert.Equal(t, "github.com/omarluq/cord_test.increment", workflowName)
+	assert.Equal(t, rootFunctionKey, workflowName)
+	assert.Len(t, definitionHash, 64)
+	assert.Equal(t, "completed", status)
+	assert.JSONEq(t, "3", string(input))
+	assert.Equal(t, 2, nodeCount)
+	assert.Equal(t, 1, edgeCount)
+}
+
+func TestWorkflow_RunRejectsClosureBeforeInsertion(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	runtime, err := cord.New(database)
+	require.NoError(t, err)
+
+	called := false
+	workflow := runtime.From(func(_ context.Context, value int) (int, error) {
+		called = true
+
+		return value, nil
 	})
 
-	return database
+	_, err = workflow.Run(t.Context(), 1)
+	require.ErrorContains(t, err, "not a named package-level function")
+	assert.False(t, called)
+
+	var count int
+	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM cord_runs").Scan(&count))
+	assert.Zero(t, count)
 }
 
 func sqliteTableExists(t *testing.T, database *sql.DB, table string) bool {
 	t.Helper()
 
-	var one int
+	var name string
 
 	err := database.QueryRowContext(
 		t.Context(),
-		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
 		table,
-	).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false
-	}
+	).Scan(&name)
 
-	require.NoError(t, err)
-
-	return true
+	return err == nil && name == table
 }

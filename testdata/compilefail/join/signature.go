@@ -7,8 +7,8 @@ import (
 )
 
 func incompatibleJoinSignature() {
-	runtime := cord.New()
-	left := runtime.From("join", func(_ context.Context, value int) (string, error) {
+	runtime, _ := cord.New(nil)
+	left := runtime.From(func(_ context.Context, value int) (string, error) {
 		return string(rune(value)), nil
 	})
 	right := left.Then(func(_ context.Context, value string) (int, error) {

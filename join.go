@@ -62,12 +62,18 @@ func (j JoinResult[I, A, B]) Then[O any](
 		}
 	}
 
-	tail := j.graph.appendNode([]nodeID{j.left, j.right}, adaptJoin(step))
+	definition := joinDefinition(step)
+	registrationErr := j.runtime.register(definition, encodedJoin(step))
+	tail := j.graph.appendNode(
+		[]nodeID{j.left, j.right},
+		adaptJoin(step),
+		definition,
+	)
 
 	return Workflow[I, O]{
 		runtime: j.runtime,
 		graph:   j.graph,
 		tail:    tail,
-		err:     nil,
+		err:     registrationErr,
 	}
 }

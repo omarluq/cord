@@ -5,47 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"runtime"
+	"time"
+
+	"github.com/gofrs/uuid/v5"
 
 	"github.com/omarluq/cord/internal/storage"
 )
 
-// Dialect identifies a durable storage SQL dialect.
-type Dialect string
-
-const (
-	// DialectSQLite identifies SQLite storage.
-	DialectSQLite Dialect = "sqlite"
-	// DialectPostgres identifies PostgreSQL storage.
-	DialectPostgres Dialect = "postgres"
-	// DialectMySQL identifies MySQL storage.
-	DialectMySQL Dialect = "mysql"
-)
-
-// MigrationMode controls durable schema initialization.
-type MigrationMode uint8
-
-const (
-	// MigrationVerifyOnly verifies the schema without changing it.
-	MigrationVerifyOnly MigrationMode = iota
-	// MigrationOnInitialization migrates the schema during durable runtime construction.
-	MigrationOnInitialization
-)
-
-// DurableConfig configures a durable runtime.
-type DurableConfig struct {
-	DB            *sql.DB
-	Dialect       Dialect
-	MigrationMode MigrationMode
-}
-
-// Durable is a database-backed workflow runtime.
-type Durable struct {
-	*Cord
-}
-
 var (
-	// ErrUnsupportedDialect indicates that the configured database dialect is unavailable.
-	ErrUnsupportedDialect = errors.New("cord: unsupported database dialect")
 	// ErrSchemaOutdated indicates that the Cord schema is absent or older than required.
 	ErrSchemaOutdated = errors.New("cord: schema is absent or outdated")
 	// ErrSchemaNewer indicates that the Cord schema is newer than this Cord version.
@@ -54,62 +22,102 @@ var (
 	ErrMigrationFailed = errors.New("cord: migration failed")
 )
 
-// NewDurable creates a durable runtime using a caller-owned database.
-func NewDurable(config DurableConfig) (*Durable, error) {
-	if config.DB == nil {
+// RuntimeOptions configures advanced scheduler behavior. Zero-valued fields use
+// Cord's defaults. HeartbeatInterval must be shorter than LeaseTTL.
+type RuntimeOptions struct {
+	Concurrency       int
+	PollInterval      time.Duration
+	LeaseTTL          time.Duration
+	HeartbeatInterval time.Duration
+}
+
+// New creates a workflow runtime using a caller-owned SQLite database.
+// It applies pending Cord schema migrations before returning.
+func New(database *sql.DB) (*Cord, error) {
+	return NewWithOptions(database, RuntimeOptions{})
+}
+
+// NewWithOptions creates a workflow runtime with advanced scheduler settings.
+func NewWithOptions(database *sql.DB, options RuntimeOptions) (*Cord, error) {
+	if database == nil {
 		return nil, fmt.Errorf("%w: database is nil", ErrMigrationFailed)
 	}
 
-	dialect, err := storage.ParseDialect(string(config.Dialect))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %q", ErrUnsupportedDialect, config.Dialect)
-	}
-
-	ctx := context.Background()
-
-	switch config.MigrationMode {
-	case MigrationVerifyOnly:
-		err = storage.Verify(ctx, config.DB, dialect)
-	case MigrationOnInitialization:
-		err = storage.Migrate(ctx, config.DB, dialect)
-	default:
-		return nil, fmt.Errorf("%w: unknown migration mode %d", ErrMigrationFailed, config.MigrationMode)
-	}
-
+	err := storage.Migrate(context.Background(), database)
 	if err != nil {
 		return nil, publicMigrationError(err)
 	}
 
-	return &Durable{Cord: New()}, nil
-}
-
-// Close releases resources owned by the durable runtime. It never closes the caller-owned database.
-func (d *Durable) Close() error {
-	return nil
-}
-
-// Migrate applies all pending Cord migrations to a caller-owned database.
-func Migrate(ctx context.Context, database *sql.DB, dialect Dialect) error {
-	if database == nil {
-		return fmt.Errorf("%w: database is nil", ErrMigrationFailed)
-	}
-
-	parsed, err := storage.ParseDialect(string(dialect))
+	store, err := storage.NewStore(database)
 	if err != nil {
-		return fmt.Errorf("%w: %q", ErrUnsupportedDialect, dialect)
+		return nil, publicMigrationError(err)
 	}
 
-	if err := storage.Migrate(ctx, database, parsed); err != nil {
-		return publicMigrationError(err)
+	ownerID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("cord: generate runtime owner: %w", err)
 	}
 
-	return nil
+	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(options)
+	if err != nil {
+		return nil, err
+	}
+
+	return newCordWithSettings(concurrency, store, ownerID.String(), schedulerSettings{
+		pollInterval:      pollInterval,
+		leaseTTL:          leaseTTL,
+		heartbeatInterval: heartbeatInterval,
+	}), nil
+}
+
+func runtimeSettings(options RuntimeOptions) (
+	concurrency int,
+	pollInterval time.Duration,
+	leaseTTL time.Duration,
+	heartbeatInterval time.Duration,
+	err error,
+) {
+	concurrency = options.Concurrency
+	if concurrency == 0 {
+		concurrency = max(1, runtime.GOMAXPROCS(0))
+	}
+
+	pollInterval = options.PollInterval
+	if pollInterval == 0 {
+		pollInterval = defaultPollInterval
+	}
+
+	leaseTTL = options.LeaseTTL
+	if leaseTTL == 0 {
+		leaseTTL = defaultLeaseTTL
+	}
+
+	heartbeatInterval = options.HeartbeatInterval
+	if heartbeatInterval == 0 {
+		heartbeatInterval = defaultHeartbeatInterval
+	}
+
+	if concurrency < 1 {
+		return 0, 0, 0, 0, errors.New("cord: concurrency must be positive")
+	}
+
+	if pollInterval <= 0 {
+		return 0, 0, 0, 0, errors.New("cord: poll interval must be positive")
+	}
+
+	if leaseTTL <= 0 {
+		return 0, 0, 0, 0, errors.New("cord: lease TTL must be positive")
+	}
+
+	if heartbeatInterval <= 0 || heartbeatInterval >= leaseTTL {
+		return 0, 0, 0, 0, errors.New("cord: heartbeat interval must be positive and shorter than lease TTL")
+	}
+
+	return concurrency, pollInterval, leaseTTL, heartbeatInterval, nil
 }
 
 func publicMigrationError(err error) error {
 	switch {
-	case errors.Is(err, storage.ErrUnsupportedDialect):
-		return fmt.Errorf("%w: %w", ErrUnsupportedDialect, err)
 	case errors.Is(err, storage.ErrSchemaOutdated):
 		return fmt.Errorf("%w: %w", ErrSchemaOutdated, err)
 	case errors.Is(err, storage.ErrSchemaNewer):
