@@ -2,6 +2,8 @@ package cord_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/omarluq/cord"
@@ -17,16 +19,22 @@ func exampleItems(_ context.Context, _ int) (int, error)               { return 
 func exampleShipping(_ context.Context, _ int) (int, error)            { return 5, nil }
 func exampleTotal(_ context.Context, items, shipping int) (int, error) { return items + shipping, nil }
 
+func closeExample(runtime *cord.Cord, database *sql.DB) error {
+	return errors.Join(runtime.Close(), database.Close())
+}
+
 func ExampleCord_From() {
-	runtime, err := cord.New(exampledb.DB())
+	database := exampledb.DB()
+
+	runtime, err := cord.New(database)
 	if err != nil {
 		fmt.Println(err)
 
 		return
 	}
 
-	result, err := runtime.From(exampleDouble).Then(exampleFormat).Run(context.Background(), 21)
-	if err != nil {
+	result, runErr := runtime.From(exampleDouble).Then(exampleFormat).Run(context.Background(), 21)
+	if err := errors.Join(runErr, closeExample(runtime, database)); err != nil {
 		fmt.Println(err)
 
 		return
@@ -37,7 +45,9 @@ func ExampleCord_From() {
 }
 
 func ExampleJoin() {
-	runtime, err := cord.New(exampledb.DB())
+	database := exampledb.DB()
+
+	runtime, err := cord.New(database)
 	if err != nil {
 		fmt.Println(err)
 
@@ -47,8 +57,8 @@ func ExampleJoin() {
 	root := runtime.From(exampleOrder)
 	flow := cord.Join(root.Then(exampleItems), root.Then(exampleShipping)).Then(exampleTotal)
 
-	total, err := flow.Run(context.Background(), 1001)
-	if err != nil {
+	total, runErr := flow.Run(context.Background(), 1001)
+	if err := errors.Join(runErr, closeExample(runtime, database)); err != nil {
 		fmt.Println(err)
 
 		return

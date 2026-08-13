@@ -11,9 +11,14 @@ import (
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 	// Register the SQLite driver used by openSQLite.
 	_ "modernc.org/sqlite"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func openSQLite(t *testing.T) *sql.DB {
 	t.Helper()
@@ -39,10 +44,18 @@ func newRuntime(t *testing.T) (*sql.DB, *cord.Cord) {
 	t.Helper()
 
 	database := openSQLite(t)
+
+	return database, newRuntimeForDB(t, database)
+}
+
+func newRuntimeForDB(t *testing.T, database *sql.DB) *cord.Cord {
+	t.Helper()
+
 	runtime, err := cord.New(database)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, runtime.Close()) })
 
-	return database, runtime
+	return runtime
 }
 
 func addOne(_ context.Context, value int) (int, error)      { return value + 1, nil }
