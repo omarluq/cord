@@ -10,6 +10,7 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	// Register the sqlite driver used by openDatabase.
 	_ "modernc.org/sqlite"
 )
 
@@ -18,6 +19,32 @@ const (
 	nodesTable = "cord_nodes"
 	runsTable  = "cord_runs"
 )
+
+func TestNewStore_ValidatesConfiguration(t *testing.T) {
+	t.Parallel()
+
+	database := openDatabase(t, true)
+	sqlite := sqliteDialect(t)
+
+	tests := []struct {
+		database *sql.DB
+		name     string
+		dialect  storage.Dialect
+	}{
+		{name: "nil database", database: nil, dialect: sqlite},
+		{name: "unsupported dialect", database: database, dialect: storage.Dialect(0)},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, err := storage.NewStore(testCase.database, testCase.dialect)
+			assert.Nil(t, store)
+			require.Error(t, err)
+		})
+	}
+}
 
 func TestStore_CreateRun(t *testing.T) {
 	t.Parallel()
@@ -56,6 +83,34 @@ func TestStore_CreateRun(t *testing.T) {
 	assert.Equal(t, []byte(plan.Run.Input), input)
 	assert.Nil(t, output)
 	assert.Nil(t, errorPayload)
+}
+
+func TestStore_CreateRunParameterizesAllValues(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStore(t, true)
+	injection := `'); DROP TABLE cord_runs; --`
+	plan := validPlan(time.Now().UTC(), storage.RunID(injection))
+	plan.Run.WorkflowName = injection
+	plan.Nodes[0].ID = storage.NodeID(injection)
+	plan.Edges[0].Parent = storage.NodeID(injection)
+
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+
+	var workflowName string
+
+	err := database.QueryRowContext(
+		t.Context(),
+		"SELECT workflow_name FROM cord_runs WHERE id = ?",
+		injection,
+	).Scan(&workflowName)
+	require.NoError(t, err)
+	assert.Equal(t, injection, workflowName)
+	assertRowCounts(t, database, map[string]int{
+		edgesTable: 1,
+		nodesTable: 2,
+		runsTable:  1,
+	})
 }
 
 func TestStore_CreateRunRejectsDisabledSQLiteForeignKeys(t *testing.T) {
@@ -133,6 +188,12 @@ func TestStore_CreateRunRejectsInvalidPlan(t *testing.T) {
 			name: "missing edge endpoint",
 			mutate: func(plan *storage.RunPlan) {
 				plan.Edges[0].Parent = "missing"
+			},
+		},
+		{
+			name: "missing edge child",
+			mutate: func(plan *storage.RunPlan) {
+				plan.Edges[0].Child = "absent"
 			},
 		},
 		{

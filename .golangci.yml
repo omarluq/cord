@@ -94,10 +94,10 @@ linters:
 
   exclusions:
     rules:
-      # Go 1.27 generic methods and the locked fluent API require this generic
-      # concrete return; compile-plan tests are white-box.
+      # Go 1.27 generic methods, the locked fluent API, and typed JSON decoding
+      # return concrete generic values; compile-plan tests are white-box.
       - linters: [ireturn]
-        path: '(workflow|graph)\.go$'
+        path: '(workflow|graph)\.go$|internal/serialization/json\.go$'
       # Executable examples intentionally print their result and use small illustrative constants.
       - linters: [forbidigo, mnd, wrapcheck]
         path: "examples/"

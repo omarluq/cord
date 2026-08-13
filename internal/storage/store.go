@@ -18,7 +18,6 @@ type RunPlan struct {
 // Store persists durable state in a caller-owned SQL database.
 type Store struct {
 	database *sql.DB
-	adapter  adapter
 }
 
 // NewStore creates a store for a caller-owned SQL database.
@@ -27,18 +26,15 @@ func NewStore(database *sql.DB, dialect Dialect) (*Store, error) {
 		return nil, errors.New("create storage store: database is nil")
 	}
 
-	var dialectAdapter adapter
-
 	switch dialect {
 	case dialectSQLite:
-		dialectAdapter = sqliteAdapter{}
 	case dialectPostgres, dialectMySQL:
 		return nil, fmt.Errorf("create storage adapter: %w", ErrUnsupportedDialect)
 	default:
 		return nil, fmt.Errorf("create storage adapter: %w: %d", ErrUnsupportedDialect, dialect)
 	}
 
-	return &Store{database: database, adapter: dialectAdapter}, nil
+	return &Store{database: database}, nil
 }
 
 // CreateRun atomically persists a complete run plan.
@@ -89,18 +85,18 @@ func requireSQLiteForeignKeys(ctx context.Context, transaction *sql.Tx) error {
 }
 
 func (s *Store) createRun(ctx context.Context, transaction *sql.Tx, plan *RunPlan) error {
-	if err := insertRun(ctx, transaction, s.adapter, &plan.Run); err != nil {
+	if err := insertRun(ctx, transaction, &plan.Run); err != nil {
 		return err
 	}
 
 	for index := range plan.Nodes {
-		if err := insertNode(ctx, transaction, s.adapter, plan.Run.ID, &plan.Nodes[index]); err != nil {
+		if err := insertNode(ctx, transaction, plan.Run.ID, &plan.Nodes[index]); err != nil {
 			return err
 		}
 	}
 
 	for _, edge := range plan.Edges {
-		if err := insertEdge(ctx, transaction, s.adapter, plan.Run.ID, edge); err != nil {
+		if err := insertEdge(ctx, transaction, plan.Run.ID, edge); err != nil {
 			return err
 		}
 	}
@@ -174,10 +170,10 @@ func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 	return nil
 }
 
-func insertRun(ctx context.Context, transaction *sql.Tx, dialectAdapter adapter, run *Run) error {
+func insertRun(ctx context.Context, transaction *sql.Tx, run *Run) error {
 	_, err := transaction.ExecContext(
 		ctx,
-		dialectAdapter.insertRunStatement(),
+		insertRunStatement,
 		run.ID,
 		run.WorkflowName,
 		run.DefinitionHash,
@@ -200,13 +196,12 @@ func insertRun(ctx context.Context, transaction *sql.Tx, dialectAdapter adapter,
 func insertNode(
 	ctx context.Context,
 	transaction *sql.Tx,
-	dialectAdapter adapter,
 	runID RunID,
 	node *Node,
 ) error {
 	_, err := transaction.ExecContext(
 		ctx,
-		dialectAdapter.insertNodeStatement(),
+		insertNodeStatement,
 		runID,
 		node.ID,
 		node.FunctionKey,
@@ -233,13 +228,12 @@ func insertNode(
 func insertEdge(
 	ctx context.Context,
 	transaction *sql.Tx,
-	dialectAdapter adapter,
 	runID RunID,
 	edge Edge,
 ) error {
 	_, err := transaction.ExecContext(
 		ctx,
-		dialectAdapter.insertEdgeStatement(),
+		insertEdgeStatement,
 		runID,
 		edge.Parent,
 		edge.Child,
