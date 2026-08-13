@@ -11,6 +11,7 @@ import (
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	// Register the SQLite driver used by openSQLite.
 	_ "modernc.org/sqlite"
 )
 
