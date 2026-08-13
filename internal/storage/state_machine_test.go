@@ -10,6 +10,7 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	// Register the SQLite driver used by newStore.
 	_ "modernc.org/sqlite"
 )
 

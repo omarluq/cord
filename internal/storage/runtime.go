@@ -3,10 +3,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -23,17 +23,16 @@ func (s *Store) ClaimReadyNodeForFunctions(
 		return nil, false, nil
 	}
 
-	clauses := make([]string, 0, len(registered))
-	arguments := []any{NodeReady, RunRunning}
-
-	for key, signature := range registered {
-		clauses = append(clauses, "(n.function_key = ? AND n.signature_hash = ?)")
-		arguments = append(arguments, key, signature)
+	registeredJSON, err := json.Marshal(registered)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode registered functions: %w", err)
 	}
 
-	query := `SELECT n.run_id, n.node_id FROM cord_nodes AS n JOIN cord_runs AS r ON r.id = n.run_id
-		WHERE n.status = ? AND r.status = ? AND julianday(n.available_at) <= julianday('now') AND (` +
-		strings.Join(clauses, " OR ") + `)
+	query := `SELECT n.run_id, n.node_id FROM cord_nodes AS n
+		JOIN cord_runs AS r ON r.id = n.run_id
+		JOIN json_each(?) AS registered
+			ON registered.key = n.function_key AND registered.value = n.signature_hash
+		WHERE n.status = ? AND r.status = ? AND julianday(n.available_at) <= julianday('now')
 		ORDER BY julianday(n.available_at), n.run_id, n.node_id LIMIT 1`
 
 	var (
@@ -41,7 +40,13 @@ func (s *Store) ClaimReadyNodeForFunctions(
 		nodeID NodeID
 	)
 
-	err := s.database.QueryRowContext(ctx, query, arguments...).Scan(&runID, &nodeID)
+	err = s.database.QueryRowContext(
+		ctx,
+		query,
+		registeredJSON,
+		NodeReady,
+		RunRunning,
+	).Scan(&runID, &nodeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

@@ -58,7 +58,7 @@ func runFirstLeaseInvocation(ctx context.Context, directory string) (string, err
 			return "", err
 		}
 
-		if err := waitForMarker(context.Background(), directory, "release-first"); err != nil {
+		if err := waitForMarker(context.WithoutCancel(ctx), directory, "release-first"); err != nil {
 			return "", err
 		}
 
@@ -157,7 +157,7 @@ func TestScheduler_LeaseLossCancelsOldExecutionAndPreservesNewCompletion(t *test
 	firstOwner := readLeaseOwner(t, database)
 
 	second.From(probedLeaseStep)
-	expireLease(t, database)
+	invalidateLease(t, database, firstOwner)
 
 	waitMarker(t, directory, "first-canceled")
 	waitMarker(t, directory, "second-started")
@@ -234,13 +234,18 @@ func waitMarker(t *testing.T, directory, name string) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
-func expireLease(t *testing.T, database *sql.DB) {
+func invalidateLease(t *testing.T, database *sql.DB, owner string) {
 	t.Helper()
 
-	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second')
-		WHERE status = 'running'`)
+	result, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
+		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second'),
+			lease_generation = lease_generation + 1
+		WHERE status = 'running' AND lease_owner = ?`, owner)
 	require.NoError(t, err)
+
+	affected, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, affected)
 }
 
 func readLeaseExpiry(t *testing.T, database *sql.DB) time.Time {
