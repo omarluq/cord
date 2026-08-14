@@ -45,6 +45,7 @@ func (s *Store) HeartbeatNode(
 	err := s.database.QueryRowContext(ctx, `UPDATE cord_nodes
 		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
 		WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
+		AND julianday(lease_expires_at) > julianday('now')
 		AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)
 		RETURNING CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)`, modifier,
 		runID, nodeID, NodeRunning, lease.Owner, lease.Generation, runID, RunRunning).Scan(&millis)
