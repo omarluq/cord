@@ -95,6 +95,40 @@ func main() {
 The name passed to `From` is the durable workflow identity. Keep it stable when
 renaming or refactoring the root function.
 
+## Register workflows at startup
+
+Define every workflow a process may execute immediately after creating its Cord
+runtime, before marking the process ready or serving requests. Calling `From` and
+`Then` registers the step implementations; it does not submit a run.
+
+```go
+func defineOrderWorkflow(runtime *cord.Cord) cord.Workflow[OrderID, Receipt] {
+    return runtime.
+        From("fulfill-order", loadOrder).
+        Then(validateOrder).
+        Then(chargeOrder)
+}
+
+func runService(ctx context.Context, db *sql.DB) error {
+    runtime, err := cord.New(db)
+    if err != nil {
+        return err
+    }
+    defer runtime.Close()
+
+    orders := defineOrderWorkflow(runtime) // register before readiness
+
+    server := newServer(orders)
+    return server.Serve(ctx)
+}
+```
+
+After a restart, persisted nodes are claimed only when their exact function keys
+and signatures have been registered in the new process. A workflow defined lazily
+inside a request handler can therefore leave existing work dormant until that
+handler runs again. Keep workflow definitions in startup code and pass the
+resulting immutable handles to handlers and services.
+
 ## Compose workflows
 
 ### Linear pipelines
