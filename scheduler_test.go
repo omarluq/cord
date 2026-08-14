@@ -31,7 +31,7 @@ func TestScheduler_ExhaustsRetryPolicyAndCountsClaims(t *testing.T) {
 		MaxDelay:    time.Millisecond,
 	}))
 
-	_, err := runtime.From(alwaysFails).Run(t.Context(), 4)
+	_, err := runtime.From("test-workflow", alwaysFails).Run(t.Context(), 4)
 	require.ErrorContains(t, err, "still failing")
 	assertNodeAttempt(t, database, 3)
 }
@@ -41,7 +41,7 @@ func TestScheduler_PermanentErrorSkipsRetries(t *testing.T) {
 
 	database, runtime := newRuntime(t)
 
-	_, err := runtime.From(failsPermanently).Run(t.Context(), 4)
+	_, err := runtime.From("test-workflow", failsPermanently).Run(t.Context(), 4)
 	require.ErrorIs(t, err, errStepFailed)
 	assertNodeAttempt(t, database, 1)
 }
@@ -62,7 +62,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	result := make(chan error, 1)
 
 	go func() {
-		_, runErr := first.From(alwaysFails).Run(t.Context(), 1)
+		_, runErr := first.From("test-workflow", alwaysFails).Run(t.Context(), 1)
 		result <- runErr
 	}()
 
@@ -86,7 +86,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 		BaseDelay:   time.Millisecond,
 		MaxDelay:    time.Millisecond,
 	}))
-	second.From(alwaysFails)
+	second.From("test-workflow", alwaysFails)
 
 	require.Eventually(t, func() bool {
 		var status string
@@ -111,7 +111,7 @@ func TestScheduler_CancellationDuringRetryWait(t *testing.T) {
 	result := make(chan error, 1)
 
 	go func() {
-		_, err := runtime.From(alwaysFails).Run(ctx, 1)
+		_, err := runtime.From("test-workflow", alwaysFails).Run(ctx, 1)
 		result <- err
 	}()
 

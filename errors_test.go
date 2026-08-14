@@ -17,7 +17,7 @@ func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 	t.Parallel()
 
 	database, runtime := newRuntime(t)
-	root := runtime.From(passThrough)
+	root := runtime.From("test-workflow", passThrough)
 	flow := cord.Join(root.Then(addOne), root.Then(timesTwo)).Then(sum)
 	result, err := flow.Run(t.Context(), 3)
 	require.NoError(t, err)
@@ -52,7 +52,7 @@ func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 func TestWorkflow_PanicPreservesErrorIdentity(t *testing.T) {
 	t.Parallel()
 
-	flow := mustRuntime(t).From(panicWithError)
+	flow := mustRuntime(t).From("test-workflow", panicWithError)
 	_, err := flow.Run(t.Context(), 0)
 	require.ErrorIs(t, err, errPanicCause)
 	require.ErrorContains(t, err, "workflow step panicked")
@@ -61,7 +61,7 @@ func TestWorkflow_PanicPreservesErrorIdentity(t *testing.T) {
 func TestWorkflow_RejectsClosureBeforeExecution(t *testing.T) {
 	t.Parallel()
 
-	flow := mustRuntime(t).From(func(_ context.Context, value int) (int, error) {
+	flow := mustRuntime(t).From("test-workflow", func(_ context.Context, value int) (int, error) {
 		return value, nil
 	})
 	_, err := flow.Run(t.Context(), 1)

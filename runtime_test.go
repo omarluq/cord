@@ -274,7 +274,7 @@ func TestWorkflow_RunPersistsReachablePlan(t *testing.T) {
 	database := openSQLite(t)
 	runtime := newRuntimeForDB(t, database)
 
-	root := runtime.From(increment)
+	root := runtime.From("test-workflow", increment)
 	selected := root.Then(double)
 	_ = root.Then(increment)
 
@@ -308,8 +308,8 @@ func TestWorkflow_RunPersistsReachablePlan(t *testing.T) {
 	identifier, parseErr := uuid.FromString(runID)
 	require.NoError(t, parseErr)
 	assert.Equal(t, uuid.V7, identifier.Version())
-	assert.Equal(t, "github.com/omarluq/cord_test.increment", workflowName)
-	assert.Equal(t, rootFunctionKey, workflowName)
+	assert.Equal(t, "test-workflow", workflowName)
+	assert.NotEqual(t, rootFunctionKey, workflowName)
 	assert.Len(t, definitionHash, 64)
 	assert.Equal(t, "completed", status)
 	assert.JSONEq(t, "3", string(input))
@@ -324,7 +324,7 @@ func TestWorkflow_RunRejectsClosureBeforeInsertion(t *testing.T) {
 	runtime := newRuntimeForDB(t, database)
 
 	called := false
-	workflow := runtime.From(func(_ context.Context, value int) (int, error) {
+	workflow := runtime.From("test-workflow", func(_ context.Context, value int) (int, error) {
 		called = true
 
 		return value, nil

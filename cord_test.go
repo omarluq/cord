@@ -87,7 +87,7 @@ func TestNew_CreatesRuntime(t *testing.T) {
 
 func TestWorkflow_RunLinearChain(t *testing.T) {
 	t.Parallel()
-	flow := mustRuntime(t).From(addOne).Then(isThree)
+	flow := mustRuntime(t).From("test-workflow", addOne).Then(isThree)
 	result, err := flow.Run(t.Context(), 2)
 	require.NoError(t, err)
 	assert.True(t, result)
@@ -95,7 +95,7 @@ func TestWorkflow_RunLinearChain(t *testing.T) {
 
 func TestWorkflow_RunJoinedBranches(t *testing.T) {
 	t.Parallel()
-	root := mustRuntime(t).From(timesTwo)
+	root := mustRuntime(t).From("test-workflow", timesTwo)
 	flow := cord.Join(root.Then(leftText), root.Then(addOne)).Then(formatJoined)
 	result, err := flow.Run(t.Context(), 2)
 	require.NoError(t, err)
@@ -104,7 +104,7 @@ func TestWorkflow_RunJoinedBranches(t *testing.T) {
 
 func TestWorkflow_RunPropagatesNodeError(t *testing.T) {
 	t.Parallel()
-	result, err := mustRuntime(t).From(failStep).Then(addOne).Run(t.Context(), 1)
+	result, err := mustRuntime(t).From("test-workflow", failStep).Then(addOne).Run(t.Context(), 1)
 	assert.Zero(t, result)
 	require.ErrorIs(t, err, errStepFailed)
 }
@@ -112,10 +112,26 @@ func TestWorkflow_RunPropagatesNodeError(t *testing.T) {
 func TestJoin_UnrelatedWorkflowsFailAtRun(t *testing.T) {
 	t.Parallel()
 	runtime := mustRuntime(t)
-	joined := cord.Join(runtime.From(passThrough), runtime.From(passThrough)).Then(sum)
+	left := runtime.From("left-workflow", passThrough)
+	right := runtime.From("right-workflow", passThrough)
+	joined := cord.Join(left, right).Then(sum)
 	result, err := joined.Run(t.Context(), 1)
 	assert.Zero(t, result)
 	require.EqualError(t, err, "cord: cannot join unrelated workflows")
+}
+
+func TestWorkflow_EmptyNameFailsAtRun(t *testing.T) {
+	t.Parallel()
+
+	database, runtime := newRuntime(t)
+
+	result, err := runtime.From("", passThrough).Run(t.Context(), 1)
+	assert.Zero(t, result)
+	require.EqualError(t, err, "cord: workflow name is empty")
+
+	var runs int
+	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM cord_runs").Scan(&runs))
+	assert.Zero(t, runs)
 }
 
 func TestWorkflow_NilStepsFailAtRun(t *testing.T) {
@@ -124,11 +140,11 @@ func TestWorkflow_NilStepsFailAtRun(t *testing.T) {
 
 	var rootStep func(context.Context, int) (int, error)
 
-	result, err := runtime.From(rootStep).Run(t.Context(), 1)
+	result, err := runtime.From("test-workflow", rootStep).Run(t.Context(), 1)
 	assert.Zero(t, result)
 	require.EqualError(t, err, "cord: root step is nil")
 
-	root := runtime.From(passThrough)
+	root := runtime.From("test-workflow", passThrough)
 
 	var nextStep func(context.Context, int) (string, error)
 
@@ -143,7 +159,7 @@ func TestWorkflow_RunRejectsNilContextBeforePersistence(t *testing.T) {
 
 	var ctx context.Context
 
-	result, err := runtime.From(passThrough).Run(ctx, 1)
+	result, err := runtime.From("test-workflow", passThrough).Run(ctx, 1)
 	assert.Zero(t, result)
 	require.EqualError(t, err, "cord: workflow context is nil")
 
@@ -157,7 +173,7 @@ func TestWorkflow_RunWithCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	result, err := mustRuntime(t).From(passThrough).Run(ctx, 1)
+	result, err := mustRuntime(t).From("test-workflow", passThrough).Run(ctx, 1)
 	assert.Zero(t, result)
 	require.ErrorIs(t, err, context.Canceled)
 }

@@ -33,7 +33,7 @@ func ExampleCord_From() {
 		return
 	}
 
-	result, runErr := runtime.From(exampleDouble).Then(exampleFormat).Run(context.Background(), 21)
+	result, runErr := runtime.From("double-and-format", exampleDouble).Then(exampleFormat).Run(context.Background(), 21)
 	if err := errors.Join(runErr, closeExample(runtime, database)); err != nil {
 		fmt.Println(err)
 
@@ -54,7 +54,7 @@ func ExampleJoin() {
 		return
 	}
 
-	root := runtime.From(exampleOrder)
+	root := runtime.From("order-total", exampleOrder)
 	flow := cord.Join(root.Then(exampleItems), root.Then(exampleShipping)).Then(exampleTotal)
 
 	total, runErr := flow.Run(context.Background(), 1001)

@@ -27,7 +27,7 @@ func run(ctx context.Context, input int) (_ int, err error) {
 		err = errors.Join(err, runtime.Close(), database.Close())
 	}()
 
-	root := runtime.From(loadReport)
+	root := runtime.From("report-summary", loadReport)
 	flow := cord.Join(root.Then(double), root.Then(addThree)).Then(sum)
 
 	return flow.Run(ctx, input)

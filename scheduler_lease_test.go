@@ -123,8 +123,8 @@ func TestScheduler_HeartbeatKeepsLongRunningInvocationLeased(t *testing.T) {
 	options := testRuntimeOptions()
 	first := newRuntimeWithOptions(t, database, options)
 	second := newRuntimeWithOptions(t, database, options)
-	flow := first.From(probedLeaseStep)
-	second.From(probedLeaseStep)
+	flow := first.From("test-workflow", probedLeaseStep)
+	second.From("test-workflow", probedLeaseStep)
 
 	directory := t.TempDir()
 	cleanupLeaseMarkers(t, directory)
@@ -155,7 +155,7 @@ func TestScheduler_LeaseLossCancelsOldExecutionAndPreservesNewCompletion(t *test
 	options := testRuntimeOptions()
 	first := newRuntimeWithOptions(t, database, options)
 	second := newRuntimeWithOptions(t, database, options)
-	flow := first.From(probedLeaseStep)
+	flow := first.From("test-workflow", probedLeaseStep)
 	directory := t.TempDir()
 	cleanupLeaseMarkers(t, directory)
 
@@ -164,7 +164,7 @@ func TestScheduler_LeaseLossCancelsOldExecutionAndPreservesNewCompletion(t *test
 	waitMarker(t, directory, "first-started")
 	firstOwner := readLeaseOwner(t, database)
 
-	second.From(probedLeaseStep)
+	second.From("test-workflow", probedLeaseStep)
 	invalidateLease(t, database, firstOwner)
 
 	waitMarker(t, directory, "first-canceled")
