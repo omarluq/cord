@@ -11,7 +11,7 @@ func TestWorkflow_RunExcludesUnreachableBranches(t *testing.T) {
 	t.Parallel()
 
 	database, runtime := newRuntime(t)
-	root := runtime.From(passThrough)
+	root := runtime.From("test-workflow", passThrough)
 	selected := root.Then(addOne)
 	_ = root.Then(timesTwo)
 

@@ -28,7 +28,7 @@ func run(ctx context.Context, input int) (_ string, err error) {
 		err = errors.Join(err, runtime.Close(), database.Close())
 	}()
 
-	flow := runtime.From(increment).Then(double).Then(formatResult)
+	flow := runtime.From("format-result", increment).Then(double).Then(formatResult)
 
 	return flow.Run(ctx, input)
 }

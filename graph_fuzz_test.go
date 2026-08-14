@@ -9,7 +9,7 @@ func FuzzWorkflow_Linear(f *testing.F) {
 	f.Add(11)
 
 	f.Fuzz(func(t *testing.T, input int) {
-		flow := mustRuntime(t).From(addOne).Then(timesTwo)
+		flow := mustRuntime(t).From("test-workflow", addOne).Then(timesTwo)
 
 		result, err := flow.Run(t.Context(), input)
 		if err != nil {

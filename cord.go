@@ -100,16 +100,21 @@ func newCordWithSettings(
 	return cordRuntime
 }
 
-// From creates a workflow whose root node invokes step. The root step's stable
-// package-level function key is also the persisted workflow name.
-func (c *Cord) From[I, O any](step func(context.Context, I) (O, error)) Workflow[I, O] {
+// From creates a named workflow whose root node invokes step. Name is the
+// workflow's durable identity and must remain stable across implementations.
+func (c *Cord) From[I, O any](name string, step func(context.Context, I) (O, error)) Workflow[I, O] {
+	graph := newGraph(name)
+
+	if name == "" {
+		return Workflow[I, O]{runtime: c, graph: graph, err: errors.New("cord: workflow name is empty")}
+	}
+
 	if step == nil {
-		return Workflow[I, O]{runtime: c, graph: newGraph(""), err: errors.New("cord: root step is nil")}
+		return Workflow[I, O]{runtime: c, graph: graph, err: errors.New("cord: root step is nil")}
 	}
 
 	definition := stepDefinition(step)
 	registrationErr := c.register(definition, encodedStep(step))
-	graph := newGraph(definition.functionKey)
 	tail := graph.appendNode([]nodeID{}, adaptStep(step), definition)
 
 	return Workflow[I, O]{runtime: c, graph: graph, tail: tail, err: registrationErr}
