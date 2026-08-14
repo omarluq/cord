@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Cord banner">
+  <img height="300" src="assets/banner.png" alt="Cord banner">
 </p>
 
 <h1 align="center">cord</h1>
