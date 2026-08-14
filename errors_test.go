@@ -23,35 +23,30 @@ func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 10, result)
 
-	rows, err := database.QueryContext(t.Context(), `SELECT started_at, completed_at
-		FROM cord_nodes ORDER BY remaining_deps, node_id`)
+	rows, err := database.QueryContext(t.Context(), `SELECT parent.completed_at, child.started_at
+		FROM cord_edges AS edge
+		JOIN cord_nodes AS parent
+			ON parent.run_id = edge.run_id AND parent.node_id = edge.parent_node_id
+		JOIN cord_nodes AS child
+			ON child.run_id = edge.run_id AND child.node_id = edge.child_node_id
+		ORDER BY edge.child_node_id, edge.parent_order`)
 
 	require.NoError(t, err)
 	defer func() { require.NoError(t, rows.Close()) }()
 
-	var (
-		parentCompletions []string
-		joinedStart       string
-	)
+	var parentCompletions []string
 
 	for rows.Next() {
-		var startedAt, completedAt string
-		require.NoError(t, rows.Scan(&startedAt, &completedAt))
-
-		if len(parentCompletions) < 3 {
-			parentCompletions = append(parentCompletions, completedAt)
-		} else {
-			joinedStart = startedAt
-		}
+		var parentCompleted, joinedStart string
+		require.NoError(t, rows.Scan(&parentCompleted, &joinedStart))
+		require.NotEmpty(t, parentCompleted)
+		require.NotEmpty(t, joinedStart)
+		require.LessOrEqual(t, parentCompleted, joinedStart)
+		parentCompletions = append(parentCompletions, parentCompleted)
 	}
 
 	require.NoError(t, rows.Err())
-	require.Len(t, parentCompletions, 3)
-	require.NotEmpty(t, joinedStart)
-
-	for _, completedAt := range parentCompletions {
-		require.LessOrEqual(t, completedAt, joinedStart)
-	}
+	require.Len(t, parentCompletions, 4)
 }
 
 func TestWorkflow_PanicPreservesErrorIdentity(t *testing.T) {

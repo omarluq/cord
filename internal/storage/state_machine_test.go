@@ -14,6 +14,32 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestStore_ClaimReadyNodeValidatesLease(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStore(t, true)
+
+	tests := []struct {
+		name  string
+		owner string
+		ttl   time.Duration
+	}{
+		{name: "empty owner", owner: "", ttl: time.Minute},
+		{name: "zero TTL", owner: "worker", ttl: 0},
+		{name: "negative TTL", owner: "worker", ttl: -time.Second},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			claim, claimed, err := store.ClaimReadyNode(t.Context(), testCase.owner, testCase.ttl)
+			require.Error(t, err)
+			assert.False(t, claimed)
+			assert.Nil(t, claim)
+		})
+	}
+}
+
 func TestStore_ClaimReadyNodeUsesDatabaseEligibilityAndCAS(t *testing.T) {
 	t.Parallel()
 
