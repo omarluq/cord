@@ -41,7 +41,17 @@ func (g *graph) appendNode(parents []nodeID, invoke invocation, definition nodeD
 
 	parentNodes := make([]node, 0, len(parents))
 	for _, parent := range parents {
-		parentNodes = append(parentNodes, g.nodes[parent])
+		parentNode, ok := g.nodes[parent]
+		if !ok {
+			definition.err = errors.Join(definition.err, fmt.Errorf(
+				"cord: workflow graph references unknown parent node %d",
+				parent,
+			))
+
+			continue
+		}
+
+		parentNodes = append(parentNodes, parentNode)
 	}
 
 	occurrence := 0
@@ -115,7 +125,38 @@ func (g *graph) compile(tail nodeID) ([]node, error) {
 		return nil, err
 	}
 
+	assignCompiledLogicalIDs(plan)
+
 	return plan, nil
+}
+
+func assignCompiledLogicalIDs(plan []node) {
+	compiled := make(map[nodeID]node, len(plan))
+	for index := range plan {
+		current := &plan[index]
+
+		parents := make([]node, 0, len(current.parents))
+		for _, parent := range current.parents {
+			parents = append(parents, compiled[parent])
+		}
+
+		definition := assignLogicalID(*current.definition, parents, compiledOccurrence(plan, index))
+		current.definition = &definition
+		compiled[current.id] = *current
+	}
+}
+
+func compiledOccurrence(plan []node, index int) int {
+	occurrence := 0
+
+	for previous := range index {
+		if plan[previous].definition.functionKey == plan[index].definition.functionKey &&
+			reflect.DeepEqual(plan[previous].parents, plan[index].parents) {
+			occurrence++
+		}
+	}
+
+	return occurrence
 }
 
 type typedValue[T any] struct {

@@ -58,7 +58,13 @@ func runFirstLeaseInvocation(ctx context.Context, directory string) (string, err
 			return "", err
 		}
 
+		// The lease-loss context is already canceled; keep the stale invocation
+		// in flight until the test explicitly releases it.
 		if err := waitForMarker(context.WithoutCancel(ctx), directory, "release-first"); err != nil {
+			return "", err
+		}
+
+		if err := writeMarker(directory, "first-finished"); err != nil {
 			return "", err
 		}
 
@@ -131,7 +137,9 @@ func TestScheduler_HeartbeatKeepsLongRunningInvocationLeased(t *testing.T) {
 		return readLeaseExpiry(t, database).After(initialExpiry)
 	}, 5*time.Second, 10*time.Millisecond)
 
-	time.Sleep(options.LeaseTTL + 500*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return readLeaseExpiry(t, database).After(time.Now().Add(options.LeaseTTL / 2))
+	}, 5*time.Second, options.HeartbeatInterval)
 	assertNodeLeaseState(t, database, "running", 1)
 	require.NoError(t, writeMarker(directory, "release-first"))
 
@@ -169,6 +177,7 @@ func TestScheduler_LeaseLossCancelsOldExecutionAndPreservesNewCompletion(t *test
 	require.NoError(t, completed.err)
 	assert.Equal(t, "winner", completed.value)
 	require.NoError(t, writeMarker(directory, "release-first"))
+	waitMarker(t, directory, "first-finished")
 
 	var output string
 	require.NoError(t, database.QueryRowContext(t.Context(),
@@ -253,7 +262,8 @@ func readLeaseExpiry(t *testing.T, database *sql.DB) time.Time {
 
 	var millis int64
 	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT
-		CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER) FROM cord_nodes`).Scan(&millis))
+		CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)
+		FROM cord_nodes WHERE status = 'running' ORDER BY node_id LIMIT 1`).Scan(&millis))
 
 	return time.UnixMilli(millis).UTC()
 }
@@ -261,11 +271,12 @@ func readLeaseExpiry(t *testing.T, database *sql.DB) time.Time {
 func readLeaseOwner(t *testing.T, database *sql.DB) string {
 	t.Helper()
 
-	var owner string
+	var owner sql.NullString
 	require.NoError(t, database.QueryRowContext(t.Context(),
-		"SELECT lease_owner FROM cord_nodes").Scan(&owner))
+		"SELECT lease_owner FROM cord_nodes WHERE status = 'running' ORDER BY node_id LIMIT 1").Scan(&owner))
+	require.True(t, owner.Valid)
 
-	return owner
+	return owner.String
 }
 
 func assertNodeLeaseState(t *testing.T, database *sql.DB, status string, attempt int) {
@@ -276,7 +287,7 @@ func assertNodeLeaseState(t *testing.T, database *sql.DB, status string, attempt
 		actualAttempt int
 	)
 	require.NoError(t, database.QueryRowContext(t.Context(),
-		"SELECT status, attempt FROM cord_nodes").Scan(&actualStatus, &actualAttempt))
+		"SELECT status, attempt FROM cord_nodes ORDER BY node_id LIMIT 1").Scan(&actualStatus, &actualAttempt))
 	assert.Equal(t, status, actualStatus)
 	assert.Equal(t, attempt, actualAttempt)
 }

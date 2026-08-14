@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
-	// Register the SQLite driver used by openSQLite.
+
+	// Register the pure-Go SQLite driver used by the tests.
 	_ "modernc.org/sqlite"
 )
 
@@ -24,7 +25,7 @@ func openSQLite(t *testing.T) *sql.DB {
 	t.Helper()
 
 	dsn := "file:" + filepath.Join(t.TempDir(), "cord.db") +
-		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	database, err := sql.Open("sqlite", dsn)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
@@ -71,6 +72,13 @@ func formatJoined(_ context.Context, left string, right int) (string, error) {
 var errStepFailed = errors.New("step failed")
 
 func failStep(_ context.Context, value int) (int, error) { return value, errStepFailed }
+
+func TestCord_SetRetryPolicyNilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var runtime *cord.Cord
+	require.NoError(t, runtime.SetRetryPolicy(cord.RetryPolicy{}))
+}
 
 func TestNew_CreatesRuntime(t *testing.T) {
 	t.Parallel()

@@ -15,6 +15,7 @@ const (
 	defaultLeaseTTL          = 30 * time.Second
 	defaultHeartbeatInterval = 10 * time.Second
 	defaultPollInterval      = 200 * time.Millisecond
+	terminalCommitTimeout    = 5 * time.Second
 	joinedInputCount         = 2
 )
 
@@ -37,19 +38,19 @@ type persistedFailure struct {
 type runFailureError struct{ failure *persistedFailure }
 
 func (err runFailureError) Error() string { return err.failure.Message }
-func (err runFailureError) Is(target error) bool {
-	return target != nil && target.Error() == err.failure.Message
-}
 
 func encodedStep[I, O any](step func(context.Context, I) (O, error)) encodedInvocation {
+	inputCodec, inputErr := serialization.NewJSONCodec[I]()
+	outputCodec, outputErr := serialization.NewJSONCodec[O]()
+	codecErr := errors.Join(inputErr, outputErr)
+
 	return func(ctx context.Context, inputs []storage.EncodedPayload) (storage.EncodedPayload, error) {
-		if len(inputs) != 1 {
-			return nil, errors.New("cord: invalid persistent workflow node input")
+		if codecErr != nil {
+			return nil, codecErr
 		}
 
-		inputCodec, err := serialization.NewJSONCodec[I]()
-		if err != nil {
-			return nil, err
+		if len(inputs) != 1 {
+			return nil, errors.New("cord: invalid persistent workflow node input")
 		}
 
 		input, err := inputCodec.Decode(inputs[0])
@@ -58,11 +59,6 @@ func encodedStep[I, O any](step func(context.Context, I) (O, error)) encodedInvo
 		}
 
 		output, err := step(ctx, input)
-		if err != nil {
-			return nil, err
-		}
-
-		outputCodec, err := serialization.NewJSONCodec[O]()
 		if err != nil {
 			return nil, err
 		}
@@ -77,16 +73,18 @@ func encodedStep[I, O any](step func(context.Context, I) (O, error)) encodedInvo
 }
 
 func encodedJoin[A, B, O any](step func(context.Context, A, B) (O, error)) encodedInvocation {
+	leftCodec, leftErr := serialization.NewJSONCodec[A]()
+	rightCodec, rightErr := serialization.NewJSONCodec[B]()
+	outputCodec, outputErr := serialization.NewJSONCodec[O]()
+	codecErr := errors.Join(leftErr, rightErr, outputErr)
+
 	return func(ctx context.Context, inputs []storage.EncodedPayload) (storage.EncodedPayload, error) {
-		if len(inputs) != joinedInputCount {
-			return nil, errors.New("cord: invalid persistent joined workflow node input")
+		if codecErr != nil {
+			return nil, codecErr
 		}
 
-		leftCodec, leftErr := serialization.NewJSONCodec[A]()
-
-		rightCodec, rightErr := serialization.NewJSONCodec[B]()
-		if err := errors.Join(leftErr, rightErr); err != nil {
-			return nil, err
+		if len(inputs) != joinedInputCount {
+			return nil, errors.New("cord: invalid persistent joined workflow node input")
 		}
 
 		left, leftErr := leftCodec.Decode(inputs[0])
@@ -97,11 +95,6 @@ func encodedJoin[A, B, O any](step func(context.Context, A, B) (O, error)) encod
 		}
 
 		output, err := step(ctx, left, right)
-		if err != nil {
-			return nil, err
-		}
-
-		outputCodec, err := serialization.NewJSONCodec[O]()
 		if err != nil {
 			return nil, err
 		}
@@ -158,6 +151,8 @@ func (c *Cord) scheduler() {
 		}
 
 		if err := c.maintain(); err != nil {
+			c.reportSchedulerError(fmt.Errorf("cord: scheduler maintenance: %w", err))
+
 			continue
 		}
 
@@ -189,6 +184,10 @@ func (c *Cord) trySchedule() bool {
 	if err != nil || !ok {
 		<-c.slots
 
+		if err != nil && c.ctx.Err() == nil {
+			c.reportSchedulerError(fmt.Errorf("cord: scheduler claim: %w", err))
+		}
+
 		return false
 	}
 
@@ -219,11 +218,15 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	c.mu.RUnlock()
 
 	if !ok || registered.signature != claim.SignatureHash {
+		c.releaseClaim(claim, errors.New("cord: claimed node registration is unavailable"))
+
 		return
 	}
 
 	inputs, err := c.store.LoadNodeInputs(c.ctx, claim.RunID, claim.NodeID)
 	if err != nil {
+		c.releaseClaim(claim, fmt.Errorf("cord: load claimed node inputs: %w", err))
+
 		return
 	}
 
@@ -242,10 +245,13 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 		return
 	}
 
+	commitCtx, commitCancel := context.WithTimeout(context.Background(), terminalCommitTimeout)
+	defer commitCancel()
+
 	if invokeErr == nil {
-		_, err = c.store.CompleteNode(context.Background(), claim.RunID, claim.NodeID, claim.Lease, output)
+		_, err = c.store.CompleteNode(commitCtx, claim.RunID, claim.NodeID, claim.Lease, output)
 	} else {
-		err = c.handleFailure(claim, invokeErr)
+		err = c.handleFailure(commitCtx, claim, invokeErr)
 	}
 
 	if err != nil {
@@ -253,7 +259,7 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	}
 }
 
-func (c *Cord) handleFailure(claim *storage.Claim, invokeErr error) error {
+func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeErr error) error {
 	failure := encodeFailure(claim, invokeErr)
 
 	c.mu.Lock()
@@ -262,7 +268,7 @@ func (c *Cord) handleFailure(claim *storage.Claim, invokeErr error) error {
 	c.mu.Unlock()
 
 	if isPermanent(invokeErr) || claim.Attempt >= policy.MaxAttempts {
-		_, err := c.store.FailNode(context.Background(), claim.RunID, claim.NodeID, claim.Lease, failure)
+		_, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)
 		if err != nil {
 			return fmt.Errorf("cord: fail node: %w", err)
 		}
@@ -272,7 +278,7 @@ func (c *Cord) handleFailure(claim *storage.Claim, invokeErr error) error {
 
 	delay := retryDelay(policy, claim.Attempt)
 
-	_, err := c.store.RetryNode(context.Background(), claim.RunID, claim.NodeID, claim.Lease, failure, delay)
+	_, err := c.store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure, delay)
 	if err != nil {
 		return fmt.Errorf("cord: schedule retry: %w", err)
 	}
@@ -340,10 +346,24 @@ func (c *Cord) heartbeat(ctx context.Context, claim *storage.Claim, cancel conte
 	}
 }
 
+func (c *Cord) releaseClaim(claim *storage.Claim, cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), terminalCommitTimeout)
+	defer cancel()
+
+	_, err := c.store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, nil, 0)
+	if err != nil {
+		cause = errors.Join(cause, fmt.Errorf("cord: release unusable claim: %w", err))
+	}
+
+	c.reportSchedulerError(cause)
+	c.signalScheduler()
+}
+
 func (c *Cord) runError(runID storage.RunID, payload storage.EncodedPayload) error {
-	c.mu.RLock()
+	c.mu.Lock()
 	err := c.failures[string(runID)]
-	c.mu.RUnlock()
+	delete(c.failures, string(runID))
+	c.mu.Unlock()
 
 	if err != nil {
 		return err

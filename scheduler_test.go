@@ -52,6 +52,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	database := openSQLite(t)
 	first, err := cord.New(database)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
 	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
 		MaxAttempts: 3,
 		BaseDelay:   time.Hour,
@@ -73,6 +74,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 		return queryErr == nil && status == "retry_wait"
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, first.Close())
+	require.ErrorContains(t, <-result, "runtime closed")
 	_, err = database.ExecContext(t.Context(), "UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
 	require.NoError(t, err)
 
@@ -86,7 +88,13 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	}))
 	second.From(alwaysFails)
 
-	require.ErrorContains(t, <-result, "still failing")
+	require.Eventually(t, func() bool {
+		var status string
+
+		queryErr := database.QueryRowContext(t.Context(), "SELECT status FROM cord_runs").Scan(&status)
+
+		return queryErr == nil && status == "failed"
+	}, 5*time.Second, 10*time.Millisecond)
 	assertNodeAttempt(t, database, 2)
 }
 
@@ -129,6 +137,7 @@ func assertNodeAttempt(t *testing.T, database *sql.DB, expected int) {
 	t.Helper()
 
 	var attempt int
-	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT attempt FROM cord_nodes").Scan(&attempt))
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		"SELECT attempt FROM cord_nodes ORDER BY node_id LIMIT 1").Scan(&attempt))
 	assert.Equal(t, expected, attempt)
 }

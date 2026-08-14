@@ -85,7 +85,8 @@ func TestStore_ExpiredRecoveryIncrementsFenceAndAttempt(t *testing.T) {
 	first := claimNode(t, store)
 
 	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET lease_expires_at = datetime('now', '-1 second') WHERE run_id = ? AND node_id = ?`,
+		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second')
+		WHERE run_id = ? AND node_id = ?`,
 		first.RunID, first.NodeID)
 	require.NoError(t, err)
 	recovered, err := store.RecoverExpiredLeases(t.Context())

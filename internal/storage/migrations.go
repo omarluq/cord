@@ -6,8 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/pressly/goose/v3"
 )
@@ -56,28 +54,21 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 }
 
 func migrateWithRetry(ctx context.Context, database *sql.DB) error {
-	const (
-		attempts = 20
-		delay    = 10 * time.Millisecond
-	)
+	provider, err := newProvider(database)
+	if err != nil {
+		return fmt.Errorf("create migration provider: %w", err)
+	}
 
-	for attempt := range attempts {
-		provider, err := newProvider(database)
-		if err != nil {
-			return fmt.Errorf("create migration provider: %w", err)
+	err = retrySQLiteContention(ctx, "wait to retry migration", func() error {
+		_, upErr := provider.Up(ctx)
+		if upErr != nil {
+			return fmt.Errorf("run migration provider: %w", upErr)
 		}
 
-		if _, err = provider.Up(ctx); err == nil {
-			return nil
-		} else if !strings.Contains(err.Error(), "SQLITE_BUSY") || attempt == attempts-1 {
-			return fmt.Errorf("apply migrations: %w", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait to retry migration: %w", ctx.Err())
-		case <-time.After(delay):
-		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
 	}
 
 	return nil
