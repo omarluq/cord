@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,6 +23,14 @@ func alwaysFails(_ context.Context, value int) (int, error) {
 
 func failsPermanently(_ context.Context, value int) (int, error) {
 	return value, fmt.Errorf("marked failure: %w", cord.Permanent(errStepFailed))
+}
+
+func succeedsWhenReleased(_ context.Context, directory string) (string, error) {
+	if _, err := os.Stat(filepath.Join(directory, "release")); err != nil {
+		return "", errors.New("not released")
+	}
+
+	return "recovered", nil
 }
 
 func TestScheduler_ExhaustsRetryPolicyAndCountsClaims(t *testing.T) {
@@ -114,6 +124,81 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 		return queryErr == nil && status == "failed"
 	}, 5*time.Second, 10*time.Millisecond)
 	assertNodeAttempt(t, database, 3)
+}
+
+func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	first, err := cord.NewWithOptions(database, cord.RuntimeOptions{PollInterval: 10 * time.Millisecond})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
+	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   time.Hour,
+		MaxDelay:    time.Hour,
+	}))
+
+	directory := t.TempDir()
+	result := make(chan error, 1)
+
+	go func() {
+		_, runErr := first.From("restart-registration", succeedsWhenReleased).Run(t.Context(), directory)
+		result <- runErr
+	}()
+
+	require.Eventually(t, func() bool {
+		var status string
+
+		queryErr := database.QueryRowContext(t.Context(), "SELECT status FROM cord_nodes").Scan(&status)
+
+		return queryErr == nil && status == retryWaitStatus
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, first.Close())
+	require.ErrorContains(t, <-result, "runtime closed")
+
+	_, err = database.ExecContext(t.Context(),
+		"UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
+	require.NoError(t, err)
+
+	second, err := cord.NewWithOptions(database, cord.RuntimeOptions{PollInterval: 10 * time.Millisecond})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, second.Close()) })
+
+	require.Eventually(t, func() bool {
+		var status string
+
+		queryErr := database.QueryRowContext(t.Context(), "SELECT status FROM cord_nodes").Scan(&status)
+
+		return queryErr == nil && status == "ready"
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Never(t, func() bool {
+		var (
+			status  string
+			attempt int
+		)
+
+		queryErr := database.QueryRowContext(t.Context(),
+			"SELECT status, attempt FROM cord_nodes").Scan(&status, &attempt)
+
+		return queryErr != nil || status != "ready" || attempt != 1
+	}, 200*time.Millisecond, 10*time.Millisecond)
+
+	require.NoError(t, writeMarker(directory, "release"))
+	second.From("restart-registration", succeedsWhenReleased)
+
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		var (
+			status string
+			output string
+		)
+
+		err := database.QueryRowContext(t.Context(),
+			"SELECT status, output_payload FROM cord_runs").Scan(&status, &output)
+		require.NoError(collect, err)
+		assert.Equal(collect, "completed", status)
+		assert.JSONEq(collect, `"recovered"`, output)
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestScheduler_CallerCancellationDuringRetryWaitLeavesRunDurable(t *testing.T) {
