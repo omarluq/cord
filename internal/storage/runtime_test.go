@@ -113,6 +113,7 @@ func TestStore_RetryPromotionAndRunResult(t *testing.T) {
 	assert.Nil(t, result.Error)
 
 	_, err = store.GetRunResult(t.Context(), "absent")
+	require.ErrorIs(t, err, storage.ErrRunNotFound)
 	require.ErrorContains(t, err, "read run result")
 }
 
