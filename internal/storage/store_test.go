@@ -308,6 +308,8 @@ func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
 	assert.Equal(t, 1, rowCount(t, database, runsTable))
 }
 
+const compileNode storage.NodeID = "compile"
+
 func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
 	const terminalNode = "publish"
 
@@ -328,7 +330,7 @@ func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
 		Nodes: []storage.Node{
 			newNode(
 				runID,
-				"compile",
+				compileNode,
 				"example.com/workflow.Compile",
 				"compile-signature",
 				storage.NodeReady,
@@ -345,7 +347,7 @@ func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
 				1,
 			),
 		},
-		Edges: []storage.Edge{{RunID: runID, Parent: "compile", Child: terminalNode, ParentOrder: 0}},
+		Edges: []storage.Edge{{RunID: runID, Parent: compileNode, Child: terminalNode, ParentOrder: 0}},
 	}
 }
 

@@ -41,7 +41,19 @@ func TestStore_LoadNodeInputsUsesRootThenOrderedParentOutputs(t *testing.T) {
 	t.Parallel()
 
 	_, store := newStore(t, true)
-	plan := validPlan(time.Now().UTC(), "node-inputs")
+	now := time.Now().UTC()
+	plan := validPlan(now, "node-inputs")
+	plan.Nodes = []storage.Node{
+		plan.Nodes[0],
+		newNode(plan.Run.ID, "lint", "example.com/workflow.Lint", "lint-signature", storage.NodeReady, now, 0),
+		newNode(
+			plan.Run.ID, "publish", "example.com/workflow.Publish", "publish-signature", storage.NodePending, now, 2,
+		),
+	}
+	plan.Edges = []storage.Edge{
+		{RunID: plan.Run.ID, Parent: compileNode, Child: "publish", ParentOrder: 1},
+		{RunID: plan.Run.ID, Parent: "lint", Child: "publish", ParentOrder: 0},
+	}
 	require.NoError(t, store.CreateRun(t.Context(), &plan))
 
 	inputs, err := store.LoadNodeInputs(t.Context(), plan.Run.ID, plan.Nodes[0].ID)
@@ -49,12 +61,20 @@ func TestStore_LoadNodeInputsUsesRootThenOrderedParentOutputs(t *testing.T) {
 	require.Len(t, inputs, 1)
 	assert.JSONEq(t, string(plan.Run.Input), string(inputs[0]))
 
-	first := claimNode(t, store)
-	require.True(t, completeNode(t, store, first, []byte(`"compile-output"`)))
-	inputs, err = store.LoadNodeInputs(t.Context(), plan.Run.ID, plan.Nodes[1].ID)
+	outputs := map[storage.NodeID][]byte{
+		compileNode: []byte(`"compile-output"`),
+		"lint":      []byte(`"lint-output"`),
+	}
+	for range outputs {
+		claim := claimNode(t, store)
+		require.True(t, completeNode(t, store, claim, outputs[claim.NodeID]))
+	}
+
+	inputs, err = store.LoadNodeInputs(t.Context(), plan.Run.ID, "publish")
 	require.NoError(t, err)
-	require.Len(t, inputs, 1)
-	assert.JSONEq(t, `"compile-output"`, string(inputs[0]))
+	require.Len(t, inputs, 2)
+	assert.JSONEq(t, `"lint-output"`, string(inputs[0]))
+	assert.JSONEq(t, `"compile-output"`, string(inputs[1]))
 }
 
 func TestStore_RetryPromotionAndRunResult(t *testing.T) {
