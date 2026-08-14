@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -196,19 +195,14 @@ func (s *Store) ClaimReadyNodeForFunctions(
 	ctx context.Context,
 	owner string,
 	leaseTTL time.Duration,
-	registered map[string]string,
+	registeredJSON []byte,
 ) (*Claim, bool, error) {
-	if len(registered) == 0 {
+	if len(registeredJSON) == 0 {
 		return nil, false, nil
 	}
 
 	if err := validateClaimLease(owner, leaseTTL); err != nil {
 		return nil, false, err
-	}
-
-	registeredJSON, err := json.Marshal(registered)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode registered functions: %w", err)
 	}
 
 	return s.claimReadyCandidate(ctx, owner, leaseTTL, func() (RunID, NodeID, bool, error) {

@@ -125,6 +125,7 @@ func (c *Cord) register(definition nodeDefinition, invoke encodedInvocation) err
 	}
 
 	c.registry[definition.functionKey] = registeredInvocation{invoke: invoke, signature: definition.signature}
+	c.registryJSON = nil
 
 	return nil
 }
@@ -180,7 +181,15 @@ func (c *Cord) trySchedule() bool {
 		return false
 	}
 
-	claim, ok, err := c.store.ClaimReadyNodeForFunctions(c.ctx, c.owner, c.leaseTTL, c.registrations())
+	registeredFunctions, err := c.registeredFunctions()
+	if err != nil {
+		<-c.slots
+		c.reportSchedulerError(err)
+
+		return false
+	}
+
+	claim, ok, err := c.store.ClaimReadyNodeForFunctions(c.ctx, c.owner, c.leaseTTL, registeredFunctions)
 	if err != nil || !ok {
 		<-c.slots
 
@@ -197,16 +206,27 @@ func (c *Cord) trySchedule() bool {
 	return true
 }
 
-func (c *Cord) registrations() map[string]string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (c *Cord) registeredFunctions() ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	items := make(map[string]string, len(c.registry))
-	for key, entry := range c.registry {
-		items[key] = entry.signature
+	if len(c.registry) == 0 || c.registryJSON != nil {
+		return c.registryJSON, nil
 	}
 
-	return items
+	registrations := make(map[string]string, len(c.registry))
+	for key, entry := range c.registry {
+		registrations[key] = entry.signature
+	}
+
+	registryJSON, err := json.Marshal(registrations)
+	if err != nil {
+		return nil, fmt.Errorf("cord: encode function registry: %w", err)
+	}
+
+	c.registryJSON = registryJSON
+
+	return c.registryJSON, nil
 }
 
 func (c *Cord) executeClaim(claim *storage.Claim) {
