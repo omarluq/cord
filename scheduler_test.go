@@ -116,7 +116,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	assertNodeAttempt(t, database, 3)
 }
 
-func TestScheduler_CancellationDuringRetryWait(t *testing.T) {
+func TestScheduler_CallerCancellationDuringRetryWaitLeavesRunDurable(t *testing.T) {
 	t.Parallel()
 
 	database, runtime := newRuntime(t)
@@ -146,8 +146,8 @@ func TestScheduler_CancellationDuringRetryWait(t *testing.T) {
 	var runStatus, nodeStatus string
 	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT status FROM cord_runs").Scan(&runStatus))
 	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT status FROM cord_nodes").Scan(&nodeStatus))
-	assert.Equal(t, "canceled", runStatus)
-	assert.Equal(t, "canceled", nodeStatus)
+	assert.Equal(t, "running", runStatus)
+	assert.Equal(t, retryWaitStatus, nodeStatus)
 	assertNodeAttempt(t, database, 1)
 }
 
