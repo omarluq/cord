@@ -109,12 +109,16 @@ func defineOrderWorkflow(runtime *cord.Cord) cord.Workflow[OrderID, Receipt] {
         Then(chargeOrder)
 }
 
-func runService(ctx context.Context, db *sql.DB) error {
+func runService(ctx context.Context, db *sql.DB) (err error) {
     runtime, err := cord.New(db)
     if err != nil {
         return err
     }
-    defer runtime.Close()
+    defer func() {
+        if closeErr := runtime.Close(); err == nil {
+            err = closeErr
+        }
+    }()
 
     orders := defineOrderWorkflow(runtime) // register before readiness
 

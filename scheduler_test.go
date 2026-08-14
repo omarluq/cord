@@ -126,6 +126,8 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	assertNodeAttempt(t, database, 3)
 }
 
+// TestScheduler_EagerRegistrationRecoversPersistedWork verifies that persisted work
+// resumes after its workflow is registered in a new runtime.
 func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 	t.Parallel()
 
