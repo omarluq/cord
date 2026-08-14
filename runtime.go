@@ -13,6 +13,11 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
+const (
+	migrationTimeout   = 30 * time.Second
+	heartbeatsPerLease = 3
+)
+
 var (
 	// ErrSchemaOutdated indicates that the Cord schema is absent or older than required.
 	ErrSchemaOutdated = errors.New("cord: schema is absent or outdated")
@@ -25,6 +30,8 @@ var (
 // RuntimeOptions configures advanced scheduler behavior. Zero-valued fields use
 // Cord's defaults. HeartbeatInterval must be shorter than LeaseTTL.
 type RuntimeOptions struct {
+	// OnSchedulerError reports scheduler storage errors. The callback must return promptly.
+	OnSchedulerError  func(error)
 	Concurrency       int
 	PollInterval      time.Duration
 	LeaseTTL          time.Duration
@@ -34,17 +41,36 @@ type RuntimeOptions struct {
 // New creates a workflow runtime using a caller-owned SQLite database.
 // It applies pending Cord schema migrations before returning.
 func New(database *sql.DB) (*Cord, error) {
-	return NewWithOptions(database, RuntimeOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
+	defer cancel()
+
+	return NewWithOptionsContext(ctx, database, RuntimeOptions{})
 }
 
 // NewWithOptions creates a workflow runtime with advanced scheduler settings.
 func NewWithOptions(database *sql.DB, options RuntimeOptions) (*Cord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
+	defer cancel()
+
+	return NewWithOptionsContext(ctx, database, options)
+}
+
+// NewWithOptionsContext creates a workflow runtime and allows schema migration to be canceled.
+func NewWithOptionsContext(ctx context.Context, database *sql.DB, options RuntimeOptions) (*Cord, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: context is nil", ErrMigrationFailed)
+	}
+
 	if database == nil {
 		return nil, fmt.Errorf("%w: database is nil", ErrMigrationFailed)
 	}
 
-	err := storage.Migrate(context.Background(), database)
+	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(options)
 	if err != nil {
+		return nil, err
+	}
+
+	if err = storage.Migrate(ctx, database); err != nil {
 		return nil, publicMigrationError(err)
 	}
 
@@ -58,15 +84,11 @@ func NewWithOptions(database *sql.DB, options RuntimeOptions) (*Cord, error) {
 		return nil, fmt.Errorf("cord: generate runtime owner: %w", err)
 	}
 
-	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(options)
-	if err != nil {
-		return nil, err
-	}
-
 	return newCordWithSettings(concurrency, store, ownerID.String(), schedulerSettings{
 		pollInterval:      pollInterval,
 		leaseTTL:          leaseTTL,
 		heartbeatInterval: heartbeatInterval,
+		onSchedulerError:  options.OnSchedulerError,
 	}), nil
 }
 
@@ -94,7 +116,7 @@ func runtimeSettings(options RuntimeOptions) (
 
 	heartbeatInterval = options.HeartbeatInterval
 	if heartbeatInterval == 0 {
-		heartbeatInterval = defaultHeartbeatInterval
+		heartbeatInterval = min(defaultHeartbeatInterval, leaseTTL/heartbeatsPerLease)
 	}
 
 	if concurrency < 1 {

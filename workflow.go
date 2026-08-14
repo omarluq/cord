@@ -52,7 +52,7 @@ func (w Workflow[I, O]) Then[N any](
 		runtime: w.runtime,
 		graph:   w.graph,
 		tail:    tail,
-		err:     registrationErr,
+		err:     errors.Join(w.err, registrationErr),
 	}
 }
 
@@ -83,16 +83,16 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 		return zero, err
 	}
 
+	resultCodec, err := serialization.NewJSONCodec[O]()
+	if err != nil {
+		return zero, fmt.Errorf("cord: construct result codec: %w", err)
+	}
+
 	if err = w.runtime.store.CreateRun(ctx, runPlan); err != nil {
 		return zero, fmt.Errorf("cord: persist run: %w", err)
 	}
 
 	w.runtime.signalScheduler()
-
-	resultCodec, err := serialization.NewJSONCodec[O]()
-	if err != nil {
-		return zero, fmt.Errorf("cord: construct result codec: %w", err)
-	}
 
 	return w.wait(ctx, runPlan.Run.ID, resultCodec)
 }
@@ -104,21 +104,31 @@ func (w Workflow[I, O]) wait(
 ) (O, error) {
 	var zero O
 
-	ticker := time.NewTicker(defaultPollInterval)
+	ticker := time.NewTicker(w.runtime.pollInterval)
 	defer ticker.Stop()
 
 	for {
 		result, err := w.runtime.store.GetRunResult(ctx, runID)
+		if err != nil && ctx.Err() == nil {
+			return zero, fmt.Errorf("cord: read run result: %w", err)
+		}
+
 		if err == nil {
-			value, done, resultErr := w.result(ctx, runID, result, codec)
+			value, done, resultErr := w.result(runID, result, codec)
 			if done {
 				return value, resultErr
 			}
 		}
 
 		select {
+		case <-w.runtime.ctx.Done():
+			return zero, errors.New("cord: runtime closed")
 		case <-ctx.Done():
-			_, cancelErr := w.runtime.store.CancelRun(context.Background(), runID)
+			cancelCtx, cancel := context.WithTimeout(context.Background(), w.runtime.leaseTTL)
+			_, cancelErr := w.runtime.store.CancelRun(cancelCtx, runID)
+
+			cancel()
+
 			if cancelErr != nil {
 				return zero, errors.Join(contextError(ctx), cancelErr)
 			}
@@ -130,7 +140,6 @@ func (w Workflow[I, O]) wait(
 }
 
 func (w Workflow[I, O]) result(
-	ctx context.Context,
 	runID storage.RunID,
 	result storage.RunResult,
 	codec serialization.JSONCodec[O],
@@ -148,10 +157,10 @@ func (w Workflow[I, O]) result(
 	case storage.RunFailed:
 		return zero, true, w.runtime.runError(runID, result.Error)
 	case storage.RunCanceled:
-		return zero, true, contextError(ctx)
+		return zero, true, errRunCanceled
 	case storage.RunRunning, storage.RunCanceling:
 		return zero, false, nil
 	}
 
-	return zero, false, nil
+	return zero, true, fmt.Errorf("cord: unknown workflow run status %q", result.Status)
 }

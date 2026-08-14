@@ -26,9 +26,8 @@ func TestNewWithOptions_ValidatesSchedulerSettings(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		error   string
-		options cord.RuntimeOptions
+		name, error string
+		options     cord.RuntimeOptions
 	}{
 		{name: "negative concurrency", options: cord.RuntimeOptions{Concurrency: -1}, error: "concurrency"},
 		{name: "negative poll interval", options: cord.RuntimeOptions{PollInterval: -1}, error: "poll interval"},
@@ -49,6 +48,37 @@ func TestNewWithOptions_ValidatesSchedulerSettings(t *testing.T) {
 			require.ErrorContains(t, err, testCase.error)
 		})
 	}
+}
+
+func TestNewWithOptions_ValidatesBeforeMigration(t *testing.T) {
+	t.Parallel()
+
+	database := openSQLite(t)
+	runtime, err := cord.NewWithOptions(database, cord.RuntimeOptions{Concurrency: -1})
+
+	assert.Nil(t, runtime)
+	require.ErrorContains(t, err, "concurrency")
+	assert.False(t, sqliteTableExists(t, database, "cord_schema_migrations"))
+}
+
+func TestNewWithOptions_ShortLeaseUsesDerivedHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := cord.NewWithOptions(openSQLite(t), cord.RuntimeOptions{LeaseTTL: 30 * time.Millisecond})
+	require.NoError(t, err)
+	require.NoError(t, runtime.Close())
+}
+
+func TestNewWithOptionsContext_CanceledMigration(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	runtime, err := cord.NewWithOptionsContext(ctx, openSQLite(t), cord.RuntimeOptions{})
+
+	assert.Nil(t, runtime)
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestNew_RejectsNilDatabase(t *testing.T) {

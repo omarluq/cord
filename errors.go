@@ -2,8 +2,11 @@ package cord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+var errRunCanceled = errors.New("cord: workflow run was canceled")
 
 type panicError struct {
 	value any
@@ -27,5 +30,5 @@ func contextError(ctx context.Context) error {
 		return fmt.Errorf("cord: workflow context: %w", err)
 	}
 
-	return nil
+	return errRunCanceled
 }

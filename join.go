@@ -74,6 +74,6 @@ func (j JoinResult[I, A, B]) Then[O any](
 		runtime: j.runtime,
 		graph:   j.graph,
 		tail:    tail,
-		err:     registrationErr,
+		err:     errors.Join(j.err, registrationErr),
 	}
 }

@@ -171,26 +171,20 @@ func (s *Store) HeartbeatNode(
 ) (bool, time.Time, error) {
 	modifier := "+" + strconv.FormatFloat(ttl.Seconds(), 'f', 6, 64) + " seconds"
 
-	result, err := s.database.ExecContext(ctx, `UPDATE cord_nodes
-		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
-		WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
-		AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`, modifier,
-		runID, nodeID, NodeRunning, lease.Owner, lease.Generation, runID, RunRunning)
-	if err != nil {
-		return false, time.Time{}, fmt.Errorf("heartbeat node lease: %w", err)
-	}
-
-	accepted, err := affectedOne(result)
-	if err != nil || !accepted {
-		return accepted, time.Time{}, err
-	}
-
 	var millis int64
 
-	query := `SELECT CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)
-		FROM cord_nodes WHERE run_id = ? AND node_id = ?`
-	if scanErr := s.database.QueryRowContext(ctx, query, runID, nodeID).Scan(&millis); scanErr != nil {
-		return false, time.Time{}, fmt.Errorf("read heartbeat expiration: %w", scanErr)
+	err := s.database.QueryRowContext(ctx, `UPDATE cord_nodes
+		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+		WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
+		AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)
+		RETURNING CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)`, modifier,
+		runID, nodeID, NodeRunning, lease.Owner, lease.Generation, runID, RunRunning).Scan(&millis)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, time.Time{}, nil
+	}
+
+	if err != nil {
+		return false, time.Time{}, fmt.Errorf("heartbeat node lease: %w", err)
 	}
 
 	return true, time.UnixMilli(millis).UTC(), nil

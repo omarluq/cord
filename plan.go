@@ -84,6 +84,10 @@ func functionKey(step any) (string, error) {
 	name := function.Name()
 
 	shortName := name[strings.LastIndex(name, "/")+1:]
+	if strings.Contains(shortName, "[") {
+		return "", fmt.Errorf("cord: generic workflow step %q is not supported", name)
+	}
+
 	generatedClosure := strings.Contains(shortName, ".func")
 
 	methodWrapper := strings.HasSuffix(shortName, "-fm")

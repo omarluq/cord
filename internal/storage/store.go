@@ -5,11 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
-
-const busyRetryDelay = 10 * time.Millisecond
 
 // RunPlan is the complete normalized storage plan for one run.
 type RunPlan struct {
@@ -39,23 +36,9 @@ func (s *Store) CreateRun(ctx context.Context, plan *RunPlan) error {
 		return err
 	}
 
-	const attempts = 20
-
-	var err error
-	for attempt := range attempts {
-		err = s.createRunOnce(ctx, plan)
-		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") || attempt == attempts-1 {
-			return err
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("retry run plan: %w", ctx.Err())
-		case <-time.After(busyRetryDelay):
-		}
-	}
-
-	return err
+	return retrySQLiteContention(ctx, "retry run plan", func() error {
+		return s.createRunOnce(ctx, plan)
+	})
 }
 
 func (s *Store) createRunOnce(ctx context.Context, plan *RunPlan) error {
