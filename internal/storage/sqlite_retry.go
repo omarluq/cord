@@ -14,6 +14,15 @@ import (
 const sqliteRetryAttempts = 20
 
 func retrySQLiteContention(ctx context.Context, operation string, operationFunc func() error) error {
+	return retrySQLite(ctx, operation, isSQLiteContention, operationFunc)
+}
+
+func retrySQLite(
+	ctx context.Context,
+	operation string,
+	retryable func(error) bool,
+	operationFunc func() error,
+) error {
 	const (
 		baseDelay = 10 * time.Millisecond
 		maxDelay  = 100 * time.Millisecond
@@ -21,7 +30,7 @@ func retrySQLiteContention(ctx context.Context, operation string, operationFunc 
 
 	for attempt := 1; attempt <= sqliteRetryAttempts; attempt++ {
 		err := operationFunc()
-		if err == nil || !isSQLiteContention(err) || attempt == sqliteRetryAttempts {
+		if err == nil || !retryable(err) || attempt == sqliteRetryAttempts {
 			return err
 		}
 

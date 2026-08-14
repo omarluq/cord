@@ -42,15 +42,19 @@ func Verify(ctx context.Context, database *sql.DB) error {
 
 // Migrate applies all pending SQLite migrations.
 func Migrate(ctx context.Context, database *sql.DB) error {
-	if err := migrateWithRetry(ctx, database); err != nil {
-		return err
-	}
+	return retrySQLite(ctx, "wait for concurrent migration", func(err error) bool {
+		return errors.Is(err, ErrSchemaOutdated)
+	}, func() error {
+		if err := migrateWithRetry(ctx, database); err != nil {
+			return err
+		}
 
-	if err := Verify(ctx, database); err != nil {
-		return fmt.Errorf("verify migrated schema: %w", err)
-	}
+		if err := Verify(ctx, database); err != nil {
+			return fmt.Errorf("verify migrated schema: %w", err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func migrateWithRetry(ctx context.Context, database *sql.DB) error {
