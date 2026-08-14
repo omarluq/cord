@@ -1,10 +1,16 @@
-# cord
+<p align="center">
+  <img src="assets/banner.png" alt="Cord banner">
+</p>
 
-[![CI](https://github.com/omarluq/cord/actions/workflows/ci.yml/badge.svg)](https://github.com/omarluq/cord/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/omarluq/cord/branch/main/graph/badge.svg)](https://codecov.io/gh/omarluq/cord)
-[![Go Reference](https://pkg.go.dev/badge/github.com/omarluq/cord.svg)](https://pkg.go.dev/github.com/omarluq/cord)
-[![Version](https://img.shields.io/github/v/release/omarluq/cord?label=version&logo=semver)](https://github.com/omarluq/cord/releases)
-[![License](https://img.shields.io/github/license/omarluq/cord)](./LICENSE.txt)
+<h1 align="center">cord</h1>
+
+<p align="center">
+  <a href="https://github.com/omarluq/cord/actions/workflows/ci.yml"><img src="https://github.com/omarluq/cord/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/omarluq/cord"><img src="https://codecov.io/gh/omarluq/cord/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="https://pkg.go.dev/github.com/omarluq/cord"><img src="https://pkg.go.dev/badge/github.com/omarluq/cord.svg" alt="Go Reference"></a>
+  <a href="https://github.com/omarluq/cord/releases"><img src="https://img.shields.io/github/v/release/omarluq/cord?label=version&logo=semver" alt="Version"></a>
+  <a href="./LICENSE.txt"><img src="https://img.shields.io/github/license/omarluq/cord" alt="License"></a>
+</p>
 
 Cord is a durable workflow library for Go. Compose ordinary typed functions into
 linear or branching workflows; Cord persists each run in SQLite and resumes
@@ -202,6 +208,19 @@ Multiple Cord runtimes may coordinate through the same SQLite database. Durable
 state—not the process that submitted or executed a run—is authoritative.
 Workflow inputs, intermediate values, outputs, and failures cross the storage
 boundary as JSON.
+
+## Side effects and idempotency
+
+Cord executes nodes at least once. A node can finish an external side effect and
+then lose its lease before Cord persists completion, so a later attempt may run
+the node again. Workflows are therefore not automatically idempotent:
+side-effecting steps must use business identifiers, destination-supported
+idempotency keys, unique constraints, or another application-level deduplication
+mechanism.
+
+Workflow-submission deduplication is a separate concern from retry identity and
+external side-effect idempotency. Cord does not currently provide either a
+caller-selected run ID or exactly-once external effects.
 
 ## Runtime lifecycle
 
