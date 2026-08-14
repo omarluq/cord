@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-
-	"github.com/pressly/goose/v3"
 )
 
 const (
@@ -14,14 +12,19 @@ const (
 	sqliteSchemaV2 = 2
 )
 
-func sqliteMigrations() []*goose.Migration {
-	return []*goose.Migration{
-		goose.NewGoMigration(sqliteSchemaV1, &goose.GoFunc{RunTx: migrateSQLiteV1}, nil),
-		goose.NewGoMigration(sqliteSchemaV2, &goose.GoFunc{RunTx: migrateSQLiteV2}, nil),
+type sqliteMigration struct {
+	run     func(context.Context, *sql.Conn) error
+	version int64
+}
+
+func sqliteMigrations() []sqliteMigration {
+	return []sqliteMigration{
+		{version: sqliteSchemaV1, run: migrateSQLiteV1},
+		{version: sqliteSchemaV2, run: migrateSQLiteV2},
 	}
 }
 
-func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
+func migrateSQLiteV2(ctx context.Context, connection *sql.Conn) error {
 	statements := []string{
 		`ALTER TABLE cord_runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3`,
 		`ALTER TABLE cord_runs ADD COLUMN retry_base_delay_ns INTEGER NOT NULL DEFAULT 500000000`,
@@ -30,7 +33,7 @@ func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
 	}
 
 	for _, statement := range statements {
-		if _, err := transaction.ExecContext(ctx, statement); err != nil &&
+		if _, err := connection.ExecContext(ctx, statement); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("add persisted retry policy column: %w", err)
 		}
@@ -39,7 +42,7 @@ func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
 	return nil
 }
 
-func migrateSQLiteV1(ctx context.Context, transaction *sql.Tx) error {
+func migrateSQLiteV1(ctx context.Context, connection *sql.Conn) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS cord_runs (
 			id TEXT PRIMARY KEY,
@@ -93,7 +96,7 @@ func migrateSQLiteV1(ctx context.Context, transaction *sql.Tx) error {
 	}
 
 	for _, statement := range statements {
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+		if _, err := connection.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("execute initial sqlite schema statement: %w", err)
 		}
 	}
