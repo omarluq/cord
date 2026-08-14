@@ -20,6 +20,7 @@ type Cord struct {
 	wake              chan struct{}
 	slots             chan struct{}
 	owner             string
+	registryJSON      []byte
 	workers           sync.WaitGroup
 	mu                sync.RWMutex
 	closeOnce         sync.Once
@@ -95,7 +96,8 @@ func newCordWithSettings(
 		leaseTTL: settings.leaseTTL, pollInterval: settings.pollInterval,
 		onSchedulerError: settings.onSchedulerError,
 		mu:               sync.RWMutex{}, workers: sync.WaitGroup{}, registry: make(map[string]registeredInvocation),
-		retry: defaultRetryPolicy(), slots: make(chan struct{}, max(1, concurrency)), store: store,
+		registryJSON: nil, retry: defaultRetryPolicy(),
+		slots: make(chan struct{}, max(1, concurrency)), store: store,
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
 	}
 

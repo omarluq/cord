@@ -34,9 +34,7 @@ func TestStore_ClaimReadyNodeForFunctionsValidatesLease(t *testing.T) {
 				storage.RunID("registered-claim-validation-"+testCase.name),
 			)
 			require.NoError(t, store.CreateRun(t.Context(), &plan))
-			registered := map[string]string{
-				plan.Nodes[0].FunctionKey: plan.Nodes[0].SignatureHash,
-			}
+			registered := []byte(`{"` + plan.Nodes[0].FunctionKey + `":"` + plan.Nodes[0].SignatureHash + `"}`)
 
 			claim, claimed, err := store.ClaimReadyNodeForFunctions(
 				t.Context(),
