@@ -41,8 +41,8 @@ func (c *Cord) Close() error {
 	return nil
 }
 
-// SetRetryPolicy sets the policy used for subsequently classified node failures.
-// Existing persistent attempt counts and retry deadlines are preserved.
+// SetRetryPolicy sets the policy snapshotted into subsequently submitted runs.
+// Existing runs retain the policy persisted when they were submitted.
 func (c *Cord) SetRetryPolicy(policy RetryPolicy) error {
 	if c == nil {
 		return nil
@@ -57,6 +57,13 @@ func (c *Cord) SetRetryPolicy(policy RetryPolicy) error {
 	c.mu.Unlock()
 
 	return nil
+}
+
+func (c *Cord) retryPolicy() RetryPolicy {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.retry
 }
 
 func (c *Cord) reportSchedulerError(err error) {

@@ -12,6 +12,7 @@ const (
 	defaultMaxAttempts = 3
 	defaultBaseDelay   = 500 * time.Millisecond
 	defaultMaxDelay    = 30 * time.Second
+	retryPolicyVersion = 1
 )
 
 // RetryPolicy controls persistent node retry scheduling.

@@ -10,9 +10,9 @@ import (
 
 // RunPlan is the complete normalized storage plan for one run.
 type RunPlan struct {
-	Run   Run
 	Nodes []Node
 	Edges []Edge
+	Run   Run
 }
 
 // Store persists workflow state in a caller-owned SQL database.
@@ -112,6 +112,10 @@ func validateRunPlan(plan *RunPlan) error {
 		return errors.New("validate run plan: run ID is empty")
 	}
 
+	if err := validateRetryPolicy(&plan.Run); err != nil {
+		return err
+	}
+
 	dependencies := make(map[NodeID]int, len(plan.Nodes))
 	for index := range plan.Nodes {
 		current := &plan.Nodes[index]
@@ -131,6 +135,15 @@ func validateRunPlan(plan *RunPlan) error {
 	}
 
 	return validateEdges(plan, dependencies)
+}
+
+func validateRetryPolicy(run *Run) error {
+	if run.MaxAttempts < 1 || run.RetryBaseDelay <= 0 ||
+		run.RetryMaxDelay < run.RetryBaseDelay || run.RetryPolicyVersion < 1 {
+		return errors.New("validate run plan: retry policy is invalid")
+	}
+
+	return nil
 }
 
 func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
@@ -220,6 +233,10 @@ func insertRun(ctx context.Context, transaction *sql.Tx, run *Run) error {
 		formatSQLiteTime(run.CreatedAt),
 		formatSQLiteTime(run.UpdatedAt),
 		nullTimePointer(run.CompletedAt),
+		run.MaxAttempts,
+		run.RetryBaseDelay.Nanoseconds(),
+		run.RetryMaxDelay.Nanoseconds(),
+		run.RetryPolicyVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("insert run %q: %w", run.ID, err)

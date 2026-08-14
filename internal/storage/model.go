@@ -49,17 +49,21 @@ const (
 
 // Run is the storage representation of a run.
 type Run struct {
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CompletedAt    *time.Time
-	ID             RunID
-	WorkflowName   string
-	DefinitionHash string
-	TerminalNodeID NodeID
-	Status         RunStatus
-	Input          EncodedPayload
-	Output         EncodedPayload
-	Error          EncodedPayload
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CompletedAt        *time.Time
+	ID                 RunID
+	WorkflowName       string
+	DefinitionHash     string
+	TerminalNodeID     NodeID
+	Status             RunStatus
+	Input              EncodedPayload
+	Output             EncodedPayload
+	Error              EncodedPayload
+	MaxAttempts        int
+	RetryBaseDelay     time.Duration
+	RetryMaxDelay      time.Duration
+	RetryPolicyVersion int
 }
 
 // Lease identifies the executor and fencing generation that own a running node.

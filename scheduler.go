@@ -262,9 +262,11 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeErr error) error {
 	failure := encodeFailure(claim, invokeErr)
 
-	c.mu.RLock()
-	policy := c.retry
-	c.mu.RUnlock()
+	policy := RetryPolicy{
+		MaxAttempts: claim.MaxAttempts,
+		BaseDelay:   claim.RetryBaseDelay,
+		MaxDelay:    claim.RetryMaxDelay,
+	}
 
 	if isPermanent(invokeErr) || claim.Attempt >= policy.MaxAttempts {
 		_, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)

@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const retryWaitStatus = "retry_wait"
+
 func alwaysFails(_ context.Context, value int) (int, error) {
 	return value, errors.New("still failing")
 }
@@ -71,7 +73,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 
 		queryErr := database.QueryRowContext(t.Context(), "SELECT status FROM cord_nodes").Scan(&status)
 
-		return queryErr == nil && status == "retry_wait"
+		return queryErr == nil && status == retryWaitStatus
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, first.Close())
 	require.ErrorContains(t, <-result, "runtime closed")
@@ -89,13 +91,29 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	second.From("test-workflow", alwaysFails)
 
 	require.Eventually(t, func() bool {
+		var (
+			status  string
+			attempt int
+		)
+
+		queryErr := database.QueryRowContext(
+			t.Context(),
+			"SELECT status, attempt FROM cord_nodes",
+		).Scan(&status, &attempt)
+
+		return queryErr == nil && status == retryWaitStatus && attempt == 2
+	}, 5*time.Second, 10*time.Millisecond)
+	_, err = database.ExecContext(t.Context(), "UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
 		var status string
 
 		queryErr := database.QueryRowContext(t.Context(), "SELECT status FROM cord_runs").Scan(&status)
 
 		return queryErr == nil && status == "failed"
 	}, 5*time.Second, 10*time.Millisecond)
-	assertNodeAttempt(t, database, 2)
+	assertNodeAttempt(t, database, 3)
 }
 
 func TestScheduler_CancellationDuringRetryWait(t *testing.T) {
@@ -120,7 +138,7 @@ func TestScheduler_CancellationDuringRetryWait(t *testing.T) {
 
 		err := database.QueryRowContext(t.Context(), "SELECT status FROM cord_nodes").Scan(&status)
 
-		return err == nil && status == "retry_wait"
+		return err == nil && status == retryWaitStatus
 	}, 5*time.Second, 10*time.Millisecond)
 	cancel()
 	require.ErrorIs(t, <-result, context.Canceled)
