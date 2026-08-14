@@ -113,7 +113,13 @@ func assignLogicalID(definition nodeDefinition, parents []node, occurrence int) 
 	return definition
 }
 
-func buildPlan[I any](name string, plan []node, tail nodeID, input I) (*storage.RunPlan, error) {
+func buildPlan[I any](
+	name string,
+	plan []node,
+	tail nodeID,
+	input I,
+	retry RetryPolicy,
+) (*storage.RunPlan, error) {
 	codec, err := serialization.NewJSONCodec[I]()
 	if err != nil {
 		return nil, fmt.Errorf("cord: validate workflow input for persistence: %w", err)
@@ -145,17 +151,21 @@ func buildPlan[I any](name string, plan []node, tail nodeID, input I) (*storage.
 
 	return &storage.RunPlan{
 		Run: storage.Run{
-			CreatedAt:      now,
-			UpdatedAt:      now,
-			CompletedAt:    nil,
-			ID:             runID,
-			WorkflowName:   name,
-			DefinitionHash: definitionHash(name, inputFingerprint, terminal, nodes, edges),
-			TerminalNodeID: terminal,
-			Status:         storage.RunRunning,
-			Input:          storage.EncodedPayload(payload),
-			Output:         nil,
-			Error:          nil,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+			CompletedAt:        nil,
+			ID:                 runID,
+			WorkflowName:       name,
+			DefinitionHash:     definitionHash(name, inputFingerprint, terminal, nodes, edges, retry),
+			TerminalNodeID:     terminal,
+			Status:             storage.RunRunning,
+			Input:              storage.EncodedPayload(payload),
+			Output:             nil,
+			Error:              nil,
+			MaxAttempts:        retry.MaxAttempts,
+			RetryBaseDelay:     retry.BaseDelay,
+			RetryMaxDelay:      retry.MaxDelay,
+			RetryPolicyVersion: retryPolicyVersion,
 		},
 		Nodes: nodes,
 		Edges: edges,
@@ -222,6 +232,7 @@ func definitionHash(
 	terminal storage.NodeID,
 	nodes []storage.Node,
 	edges []storage.Edge,
+	retry RetryPolicy,
 ) string {
 	parents := make(map[storage.NodeID][]string, len(nodes))
 	for _, edge := range edges {
@@ -231,7 +242,17 @@ func definitionHash(
 	sorted := append([]storage.Node{}, nodes...)
 	sort.Slice(sorted, func(left, right int) bool { return sorted[left].ID < sorted[right].ID })
 
-	parts := []string{planVersion, "definition", name, inputFingerprint, string(terminal)}
+	parts := []string{
+		planVersion,
+		"definition",
+		name,
+		inputFingerprint,
+		string(terminal),
+		strconv.Itoa(retryPolicyVersion),
+		strconv.Itoa(retry.MaxAttempts),
+		strconv.FormatInt(retry.BaseDelay.Nanoseconds(), 10),
+		strconv.FormatInt(retry.MaxDelay.Nanoseconds(), 10),
+	}
 
 	for index := range sorted {
 		current := &sorted[index]

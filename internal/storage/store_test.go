@@ -150,6 +150,12 @@ func TestStore_CreateRunRejectsInvalidPlan(t *testing.T) {
 	}{
 		{name: "nil plan", mutate: nil},
 		{
+			name: "invalid retry policy",
+			mutate: func(plan *storage.RunPlan) {
+				plan.Run.MaxAttempts = 0
+			},
+		},
+		{
 			name: "mismatched node run",
 			mutate: func(plan *storage.RunPlan) {
 				plan.Nodes[0].RunID = "another-run"
@@ -305,6 +311,24 @@ func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
 	).Scan(&workflowName)
 	require.NoError(t, err)
 	assert.Equal(t, plan.Run.WorkflowName, workflowName)
+
+	var (
+		maxAttempts, retryPolicyVersion   int
+		retryBaseDelayNS, retryMaxDelayNS int64
+	)
+
+	err = database.QueryRowContext(t.Context(), `SELECT max_attempts, retry_base_delay_ns,
+		retry_max_delay_ns, retry_policy_version FROM cord_runs WHERE id = ?`, plan.Run.ID).Scan(
+		&maxAttempts,
+		&retryBaseDelayNS,
+		&retryMaxDelayNS,
+		&retryPolicyVersion,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, plan.Run.MaxAttempts, maxAttempts)
+	assert.Equal(t, plan.Run.RetryBaseDelay.Nanoseconds(), retryBaseDelayNS)
+	assert.Equal(t, plan.Run.RetryMaxDelay.Nanoseconds(), retryMaxDelayNS)
+	assert.Equal(t, plan.Run.RetryPolicyVersion, retryPolicyVersion)
 	assert.Equal(t, 1, rowCount(t, database, runsTable))
 }
 
@@ -315,17 +339,21 @@ func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
 
 	return storage.RunPlan{
 		Run: storage.Run{
-			CreatedAt:      now,
-			UpdatedAt:      now,
-			CompletedAt:    nil,
-			ID:             runID,
-			WorkflowName:   "build",
-			DefinitionHash: "definition-hash",
-			TerminalNodeID: terminalNode,
-			Status:         storage.RunRunning,
-			Input:          storage.EncodedPayload(`{"repository":"cord"}`),
-			Output:         nil,
-			Error:          nil,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+			CompletedAt:        nil,
+			ID:                 runID,
+			WorkflowName:       "build",
+			DefinitionHash:     "definition-hash",
+			TerminalNodeID:     terminalNode,
+			Status:             storage.RunRunning,
+			Input:              storage.EncodedPayload(`{"repository":"cord"}`),
+			Output:             nil,
+			Error:              nil,
+			MaxAttempts:        3,
+			RetryBaseDelay:     500 * time.Millisecond,
+			RetryMaxDelay:      30 * time.Second,
+			RetryPolicyVersion: 1,
 		},
 		Nodes: []storage.Node{
 			newNode(

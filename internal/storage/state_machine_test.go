@@ -68,6 +68,10 @@ func TestStore_ClaimReadyNodeUsesDatabaseEligibilityAndCAS(t *testing.T) {
 	assert.Equal(t, "worker-a", claim.Lease.Owner)
 	assert.Equal(t, int64(1), claim.Lease.Generation)
 	assert.Equal(t, 1, claim.Attempt)
+	assert.Equal(t, plan.Run.MaxAttempts, claim.MaxAttempts)
+	assert.Equal(t, plan.Run.RetryBaseDelay, claim.RetryBaseDelay)
+	assert.Equal(t, plan.Run.RetryMaxDelay, claim.RetryMaxDelay)
+	assert.Equal(t, plan.Run.RetryPolicyVersion, claim.RetryPolicyVersion)
 	assert.WithinDuration(t, time.Now().UTC().Add(time.Minute), claim.Lease.ExpiresAt, 2*time.Second)
 
 	second, won, err := store.ClaimReadyNode(t.Context(), "worker-b", time.Minute)

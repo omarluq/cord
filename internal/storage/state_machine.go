@@ -11,12 +11,16 @@ import (
 
 // Claim is a ready node claimed for execution and its fencing lease.
 type Claim struct {
-	RunID         RunID
-	NodeID        NodeID
-	FunctionKey   string
-	SignatureHash string
-	Lease         Lease
-	Attempt       int
+	RunID              RunID
+	NodeID             NodeID
+	FunctionKey        string
+	SignatureHash      string
+	Lease              Lease
+	Attempt            int
+	MaxAttempts        int
+	RetryBaseDelay     time.Duration
+	RetryMaxDelay      time.Duration
+	RetryPolicyVersion int
 }
 
 // ClaimReadyNode claims one currently eligible node. The boolean is false when
@@ -108,39 +112,67 @@ func (s *Store) claimCandidate(
 		return nil, false, nil
 	}
 
-	claim := &Claim{
-		Lease:         Lease{},
-		RunID:         runID,
-		NodeID:        nodeID,
-		FunctionKey:   "",
-		SignatureHash: "",
-		Attempt:       0,
-	}
-
-	var expiresUnixMillis int64
-
-	err = transaction.QueryRowContext(ctx, `SELECT function_key, signature_hash, attempt,
-		lease_generation,
-		CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)
-		FROM cord_nodes WHERE run_id = ? AND node_id = ?`, runID, nodeID).Scan(
-		&claim.FunctionKey,
-		&claim.SignatureHash,
-		&claim.Attempt,
-		&claim.Lease.Generation,
-		&expiresUnixMillis,
-	)
+	claim, err := readClaim(ctx, transaction, runID, nodeID, owner)
 	if err != nil {
-		return nil, false, fmt.Errorf("read claimed node %q for run %q: %w", nodeID, runID, err)
+		return nil, false, err
 	}
-
-	claim.Lease.Owner = owner
-	claim.Lease.ExpiresAt = time.UnixMilli(expiresUnixMillis).UTC()
 
 	if err = transaction.Commit(); err != nil {
 		return nil, false, fmt.Errorf("commit ready-node claim: %w", err)
 	}
 
 	return claim, true, nil
+}
+
+func readClaim(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID RunID,
+	nodeID NodeID,
+	owner string,
+) (*Claim, error) {
+	claim := &Claim{
+		Lease:              Lease{},
+		RunID:              runID,
+		NodeID:             nodeID,
+		FunctionKey:        "",
+		SignatureHash:      "",
+		Attempt:            0,
+		MaxAttempts:        0,
+		RetryBaseDelay:     0,
+		RetryMaxDelay:      0,
+		RetryPolicyVersion: 0,
+	}
+
+	var expiresUnixMillis, retryBaseDelayNS, retryMaxDelayNS int64
+
+	err := transaction.QueryRowContext(ctx, `SELECT n.function_key, n.signature_hash, n.attempt,
+		n.lease_generation,
+		CAST((julianday(n.lease_expires_at) - 2440587.5) * 86400000 AS INTEGER),
+		r.max_attempts, r.retry_base_delay_ns, r.retry_max_delay_ns, r.retry_policy_version
+		FROM cord_nodes AS n
+		JOIN cord_runs AS r ON r.id = n.run_id
+		WHERE n.run_id = ? AND n.node_id = ?`, runID, nodeID).Scan(
+		&claim.FunctionKey,
+		&claim.SignatureHash,
+		&claim.Attempt,
+		&claim.Lease.Generation,
+		&expiresUnixMillis,
+		&claim.MaxAttempts,
+		&retryBaseDelayNS,
+		&retryMaxDelayNS,
+		&claim.RetryPolicyVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read claimed node %q for run %q: %w", nodeID, runID, err)
+	}
+
+	claim.Lease.Owner = owner
+	claim.Lease.ExpiresAt = time.UnixMilli(expiresUnixMillis).UTC()
+	claim.RetryBaseDelay = time.Duration(retryBaseDelayNS)
+	claim.RetryMaxDelay = time.Duration(retryMaxDelayNS)
+
+	return claim, nil
 }
 
 // CompleteNode accepts a successful result only from the current, unexpired

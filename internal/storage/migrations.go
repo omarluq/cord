@@ -12,7 +12,7 @@ import (
 
 const (
 	schemaVersionTable = "cord_schema_migrations"
-	requiredVersion    = int64(1)
+	requiredVersion    = int64(2)
 )
 
 var (

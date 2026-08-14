@@ -4,14 +4,39 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/pressly/goose/v3"
 )
 
+const (
+	sqliteSchemaV1 = 1
+	sqliteSchemaV2 = 2
+)
+
 func sqliteMigrations() []*goose.Migration {
 	return []*goose.Migration{
-		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateSQLiteV1}, nil),
+		goose.NewGoMigration(sqliteSchemaV1, &goose.GoFunc{RunTx: migrateSQLiteV1}, nil),
+		goose.NewGoMigration(sqliteSchemaV2, &goose.GoFunc{RunTx: migrateSQLiteV2}, nil),
 	}
+}
+
+func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
+	statements := []string{
+		`ALTER TABLE cord_runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3`,
+		`ALTER TABLE cord_runs ADD COLUMN retry_base_delay_ns INTEGER NOT NULL DEFAULT 500000000`,
+		`ALTER TABLE cord_runs ADD COLUMN retry_max_delay_ns INTEGER NOT NULL DEFAULT 30000000000`,
+		`ALTER TABLE cord_runs ADD COLUMN retry_policy_version INTEGER NOT NULL DEFAULT 1`,
+	}
+
+	for _, statement := range statements {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("add persisted retry policy column: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func migrateSQLiteV1(ctx context.Context, transaction *sql.Tx) error {
