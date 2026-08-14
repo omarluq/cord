@@ -16,7 +16,6 @@ type Cord struct {
 	cancel            context.CancelFunc
 	store             *storage.Store
 	registry          map[string]registeredInvocation
-	failures          map[string]error
 	onSchedulerError  func(error)
 	wake              chan struct{}
 	slots             chan struct{}
@@ -89,8 +88,7 @@ func newCordWithSettings(
 		leaseTTL: settings.leaseTTL, pollInterval: settings.pollInterval,
 		onSchedulerError: settings.onSchedulerError,
 		mu:               sync.RWMutex{}, workers: sync.WaitGroup{}, registry: make(map[string]registeredInvocation),
-		failures: make(map[string]error),
-		retry:    defaultRetryPolicy(), slots: make(chan struct{}, max(1, concurrency)), store: store,
+		retry: defaultRetryPolicy(), slots: make(chan struct{}, max(1, concurrency)), store: store,
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
 	}
 

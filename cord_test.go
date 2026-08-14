@@ -106,7 +106,7 @@ func TestWorkflow_RunPropagatesNodeError(t *testing.T) {
 	t.Parallel()
 	result, err := mustRuntime(t).From("test-workflow", failStep).Then(addOne).Run(t.Context(), 1)
 	assert.Zero(t, result)
-	require.ErrorIs(t, err, errStepFailed)
+	require.EqualError(t, err, errStepFailed.Error())
 }
 
 func TestJoin_UnrelatedWorkflowsFailAtRun(t *testing.T) {

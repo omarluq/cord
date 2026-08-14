@@ -42,7 +42,7 @@ func TestScheduler_PermanentErrorSkipsRetries(t *testing.T) {
 	database, runtime := newRuntime(t)
 
 	_, err := runtime.From("test-workflow", failsPermanently).Run(t.Context(), 4)
-	require.ErrorIs(t, err, errStepFailed)
+	require.EqualError(t, err, "marked failure: step failed")
 	assertNodeAttempt(t, database, 1)
 }
 
