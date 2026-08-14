@@ -213,6 +213,31 @@ func TestStore_CreateRunRejectsInvalidPlan(t *testing.T) {
 	}
 }
 
+func TestStore_CreateRunRejectsEmptyRunIDAndDuplicateNodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mutate func(*storage.RunPlan)
+		name   string
+	}{
+		{name: "empty run ID", mutate: func(plan *storage.RunPlan) { plan.Run.ID = "" }},
+		{name: "duplicate node", mutate: func(plan *storage.RunPlan) {
+			plan.Nodes[1].ID = plan.Nodes[0].ID
+			plan.Run.TerminalNodeID = plan.Nodes[0].ID
+		}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, store := newStore(t, true)
+			plan := validPlan(time.Now().UTC(), "structurally-invalid")
+			testCase.mutate(&plan)
+			require.Error(t, store.CreateRun(t.Context(), &plan))
+		})
+	}
+}
+
 func TestStore_CreateRunRejectsCycles(t *testing.T) {
 	t.Parallel()
 
