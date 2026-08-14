@@ -23,24 +23,14 @@ func retrySQLite(
 	retryable func(error) bool,
 	operationFunc func() error,
 ) error {
-	return retrySQLiteWithAttempts(ctx, operation, sqliteRetryAttempts, retryable, operationFunc)
-}
-
-func retrySQLiteWithAttempts(
-	ctx context.Context,
-	operation string,
-	attempts int,
-	retryable func(error) bool,
-	operationFunc func() error,
-) error {
 	const (
 		baseDelay = 10 * time.Millisecond
 		maxDelay  = 100 * time.Millisecond
 	)
 
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for attempt := 1; attempt <= sqliteRetryAttempts; attempt++ {
 		err := operationFunc()
-		if err == nil || !retryable(err) || attempt == attempts {
+		if err == nil || !retryable(err) || attempt == sqliteRetryAttempts {
 			return err
 		}
 

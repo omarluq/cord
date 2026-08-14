@@ -4,7 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+
+	"github.com/pressly/goose/v3"
 )
 
 const (
@@ -12,37 +13,68 @@ const (
 	sqliteSchemaV2 = 2
 )
 
-type sqliteMigration struct {
-	run     func(context.Context, *sql.Conn) error
-	version int64
-}
-
-func sqliteMigrations() []sqliteMigration {
-	return []sqliteMigration{
-		{version: sqliteSchemaV1, run: migrateSQLiteV1},
-		{version: sqliteSchemaV2, run: migrateSQLiteV2},
+func sqliteMigrations() []*goose.Migration {
+	return []*goose.Migration{
+		goose.NewGoMigration(sqliteSchemaV1, &goose.GoFunc{RunTx: migrateSQLiteV1}, nil),
+		goose.NewGoMigration(sqliteSchemaV2, &goose.GoFunc{RunTx: migrateSQLiteV2}, nil),
 	}
 }
 
-func migrateSQLiteV2(ctx context.Context, connection *sql.Conn) error {
-	statements := []string{
-		`ALTER TABLE cord_runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3`,
-		`ALTER TABLE cord_runs ADD COLUMN retry_base_delay_ns INTEGER NOT NULL DEFAULT 500000000`,
-		`ALTER TABLE cord_runs ADD COLUMN retry_max_delay_ns INTEGER NOT NULL DEFAULT 30000000000`,
-		`ALTER TABLE cord_runs ADD COLUMN retry_policy_version INTEGER NOT NULL DEFAULT 1`,
+func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
+	columns := []struct {
+		name      string
+		statement string
+	}{
+		{
+			name:      "max_attempts",
+			statement: "ALTER TABLE cord_runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3",
+		},
+		{
+			name:      "retry_base_delay_ns",
+			statement: "ALTER TABLE cord_runs ADD COLUMN retry_base_delay_ns INTEGER NOT NULL DEFAULT 500000000",
+		},
+		{
+			name:      "retry_max_delay_ns",
+			statement: "ALTER TABLE cord_runs ADD COLUMN retry_max_delay_ns INTEGER NOT NULL DEFAULT 30000000000",
+		},
+		{
+			name:      "retry_policy_version",
+			statement: "ALTER TABLE cord_runs ADD COLUMN retry_policy_version INTEGER NOT NULL DEFAULT 1",
+		},
 	}
 
-	for _, statement := range statements {
-		if _, err := connection.ExecContext(ctx, statement); err != nil &&
-			!strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("add persisted retry policy column: %w", err)
+	for _, column := range columns {
+		exists, err := sqliteColumnExists(ctx, transaction, "cord_runs", column.name)
+		if err != nil {
+			return err
+		}
+
+		if exists {
+			continue
+		}
+
+		if _, err = transaction.ExecContext(ctx, column.statement); err != nil {
+			return fmt.Errorf("add persisted retry policy column %q: %w", column.name, err)
 		}
 	}
 
 	return nil
 }
 
-func migrateSQLiteV1(ctx context.Context, connection *sql.Conn) error {
+func sqliteColumnExists(ctx context.Context, transaction *sql.Tx, table, column string) (bool, error) {
+	var exists bool
+
+	err := transaction.QueryRowContext(ctx,
+		"SELECT EXISTS (SELECT 1 FROM pragma_table_info(?) WHERE name = ?)", table, column,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("inspect sqlite column %q.%q: %w", table, column, err)
+	}
+
+	return exists, nil
+}
+
+func migrateSQLiteV1(ctx context.Context, transaction *sql.Tx) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS cord_runs (
 			id TEXT PRIMARY KEY,
@@ -96,7 +128,7 @@ func migrateSQLiteV1(ctx context.Context, connection *sql.Conn) error {
 	}
 
 	for _, statement := range statements {
-		if _, err := connection.ExecContext(ctx, statement); err != nil {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("execute initial sqlite schema statement: %w", err)
 		}
 	}
