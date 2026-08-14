@@ -262,10 +262,9 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeErr error) error {
 	failure := encodeFailure(claim, invokeErr)
 
-	c.mu.Lock()
-	c.failures[string(claim.RunID)] = invokeErr
+	c.mu.RLock()
 	policy := c.retry
-	c.mu.Unlock()
+	c.mu.RUnlock()
 
 	if isPermanent(invokeErr) || claim.Attempt >= policy.MaxAttempts {
 		_, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)
@@ -357,19 +356,6 @@ func (c *Cord) releaseClaim(claim *storage.Claim, cause error) {
 
 	c.reportSchedulerError(cause)
 	c.signalScheduler()
-}
-
-func (c *Cord) runError(runID storage.RunID, payload storage.EncodedPayload) error {
-	c.mu.Lock()
-	err := c.failures[string(runID)]
-	delete(c.failures, string(runID))
-	c.mu.Unlock()
-
-	if err != nil {
-		return err
-	}
-
-	return decodeRunError(payload)
 }
 
 func decodeRunError(payload storage.EncodedPayload) error {

@@ -114,7 +114,7 @@ func (w Workflow[I, O]) wait(
 		}
 
 		if err == nil {
-			value, done, resultErr := w.result(runID, result, codec)
+			value, done, resultErr := w.result(result, codec)
 			if done {
 				return value, resultErr
 			}
@@ -140,7 +140,6 @@ func (w Workflow[I, O]) wait(
 }
 
 func (w Workflow[I, O]) result(
-	runID storage.RunID,
 	result storage.RunResult,
 	codec serialization.JSONCodec[O],
 ) (value O, done bool, err error) {
@@ -155,7 +154,7 @@ func (w Workflow[I, O]) result(
 
 		return value, true, nil
 	case storage.RunFailed:
-		return zero, true, w.runtime.runError(runID, result.Error)
+		return zero, true, decodeRunError(result.Error)
 	case storage.RunCanceled:
 		return zero, true, errRunCanceled
 	case storage.RunRunning, storage.RunCanceling:

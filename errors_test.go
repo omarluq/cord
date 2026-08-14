@@ -49,13 +49,12 @@ func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 	require.Len(t, parentCompletions, 4)
 }
 
-func TestWorkflow_PanicPreservesErrorIdentity(t *testing.T) {
+func TestWorkflow_PanicPersistsErrorMessage(t *testing.T) {
 	t.Parallel()
 
 	flow := mustRuntime(t).From("test-workflow", panicWithError)
 	_, err := flow.Run(t.Context(), 0)
-	require.ErrorIs(t, err, errPanicCause)
-	require.ErrorContains(t, err, "workflow step panicked")
+	require.EqualError(t, err, "cord: workflow step panicked: panic cause")
 }
 
 func TestWorkflow_RejectsClosureBeforeExecution(t *testing.T) {
