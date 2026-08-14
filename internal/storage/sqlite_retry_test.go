@@ -9,6 +9,7 @@ import (
 
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/stretchr/testify/require"
+	// Register the SQLite driver with database/sql.
 	_ "modernc.org/sqlite"
 )
 
