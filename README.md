@@ -216,9 +216,10 @@ if err != nil {
 defer runtime.Close() // close the runtime before db
 ```
 
-Canceling the context passed to `Run` durably cancels that run. Closing a runtime
-stops its local workers without closing the database or canceling persisted
-runs.
+Canceling the context passed to `Run` stops submission or waiting, but does not
+cancel a run that was already persisted. The durable workflow continues and can
+complete in any compatible Cord process. Closing a runtime similarly stops its
+local workers without closing the database or canceling persisted runs.
 
 For scheduler tuning, use `NewWithOptions`:
 

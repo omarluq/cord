@@ -1,7 +1,6 @@
 package cord
 
 import (
-	"context"
 	"errors"
 	"fmt"
 )
@@ -23,12 +22,4 @@ func (err panicError) Unwrap() error {
 	}
 
 	return wrapped
-}
-
-func contextError(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("cord: workflow context: %w", err)
-	}
-
-	return errRunCanceled
 }

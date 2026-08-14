@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/assert"
@@ -72,6 +73,18 @@ func formatJoined(_ context.Context, left string, right int) (string, error) {
 var errStepFailed = errors.New("step failed")
 
 func failStep(_ context.Context, value int) (int, error) { return value, errStepFailed }
+
+func completeAfterRelease(ctx context.Context, directory string) (string, error) {
+	if err := writeMarker(directory, "started"); err != nil {
+		return "", err
+	}
+
+	if err := waitForMarker(ctx, directory, "release"); err != nil {
+		return "", err
+	}
+
+	return "completed", nil
+}
 
 func TestCord_SetRetryPolicyNilReceiver(t *testing.T) {
 	t.Parallel()
@@ -176,6 +189,43 @@ func TestWorkflow_RunWithCanceledContext(t *testing.T) {
 	result, err := mustRuntime(t).From("test-workflow", passThrough).Run(ctx, 1)
 	assert.Zero(t, result)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestWorkflow_RunContextCancellationStopsWaitingWithoutCancelingDurableRun(t *testing.T) {
+	t.Parallel()
+
+	database, runtime := newRuntime(t)
+	directory := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+
+	go func() {
+		_, err := runtime.From("context-cancellation", completeAfterRelease).Run(ctx, directory)
+		result <- err
+	}()
+
+	require.NoError(t, waitForMarker(t.Context(), directory, "started"))
+	cancel()
+	require.ErrorIs(t, <-result, context.Canceled)
+
+	var status string
+	require.NoError(t, database.QueryRowContext(
+		t.Context(),
+		"SELECT status FROM cord_runs WHERE workflow_name = ?",
+		"context-cancellation",
+	).Scan(&status))
+	assert.Equal(t, "running", status)
+
+	require.NoError(t, writeMarker(directory, "release"))
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		err := database.QueryRowContext(
+			t.Context(),
+			"SELECT status FROM cord_runs WHERE workflow_name = ?",
+			"context-cancellation",
+		).Scan(&status)
+		require.NoError(collect, err)
+		assert.Equal(collect, "completed", status)
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestWorkflow_ZeroValueFailsWithoutPanic(t *testing.T) {

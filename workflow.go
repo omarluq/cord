@@ -57,7 +57,7 @@ func (w Workflow[I, O]) Then[N any](
 }
 
 // Run submits the workflow and waits for its terminal result. The context
-// controls submission, waiting, and cancellation; it is not persisted as workflow data.
+// controls submission and waiting; canceling it does not cancel the durable run.
 func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 	var zero O
 
@@ -124,16 +124,7 @@ func (w Workflow[I, O]) wait(
 		case <-w.runtime.ctx.Done():
 			return zero, errors.New("cord: runtime closed")
 		case <-ctx.Done():
-			cancelCtx, cancel := context.WithTimeout(context.Background(), w.runtime.leaseTTL)
-			_, cancelErr := w.runtime.store.CancelRun(cancelCtx, runID)
-
-			cancel()
-
-			if cancelErr != nil {
-				return zero, errors.Join(contextError(ctx), cancelErr)
-			}
-
-			return zero, contextError(ctx)
+			return zero, fmt.Errorf("cord: workflow context: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}
