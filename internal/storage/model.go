@@ -66,13 +66,6 @@ type Run struct {
 	RetryPolicyVersion int
 }
 
-// Lease identifies the executor and fencing generation that own a running node.
-type Lease struct {
-	ExpiresAt  time.Time
-	Owner      string
-	Generation int64
-}
-
 // Node is the storage representation of a node.
 type Node struct {
 	AvailableAt   time.Time
@@ -96,12 +89,4 @@ type Edge struct {
 	Parent      NodeID
 	Child       NodeID
 	ParentOrder int
-}
-
-// Transition describes a requested compare-and-swap state change.
-type Transition[S ~string] struct {
-	Expected        S
-	Next            S
-	LeaseOwner      string
-	LeaseGeneration int64
 }
