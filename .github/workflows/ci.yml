@@ -49,6 +49,9 @@ jobs:
       - name: golangci-lint
         run: go tool golangci-lint run ./...
 
+      - name: Dead code
+        run: go tool deadcode -test -filter='^github.com/omarluq/cord/(internal|examples)/' ./examples/... ./internal/...
+
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@v3.52.0
 
