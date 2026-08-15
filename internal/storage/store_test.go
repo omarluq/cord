@@ -332,11 +332,12 @@ func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
 	assert.Equal(t, 1, rowCount(t, database, runsTable))
 }
 
-const compileNode storage.NodeID = "compile"
+const (
+	compileNode  storage.NodeID = "compile"
+	terminalNode storage.NodeID = "publish"
+)
 
 func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
-	const terminalNode = "publish"
-
 	return storage.RunPlan{
 		Run: storage.Run{
 			CreatedAt:          now,

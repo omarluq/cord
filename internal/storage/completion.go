@@ -87,7 +87,9 @@ func (s *Store) CompleteNode(
 
 		_, err = transaction.ExecContext(ctx, `UPDATE cord_nodes
 			SET remaining_deps = remaining_deps - 1,
-				status = CASE WHEN remaining_deps = 1 THEN ? ELSE status END
+				status = CASE WHEN remaining_deps = 1 THEN ? ELSE status END,
+				available_at = CASE WHEN remaining_deps = 1
+					THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE available_at END
 			WHERE run_id = ? AND status = ? AND remaining_deps > 0
 				AND node_id IN (SELECT child_node_id FROM cord_edges
 					WHERE run_id = ? AND parent_node_id = ?)`,

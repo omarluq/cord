@@ -45,12 +45,12 @@ func TestStore_LoadNodeInputsUsesRootThenOrderedParentOutputs(t *testing.T) {
 		plan.Nodes[0],
 		newNode(plan.Run.ID, "lint", "example.com/workflow.Lint", "lint-signature", storage.NodeReady, now, 0),
 		newNode(
-			plan.Run.ID, "publish", "example.com/workflow.Publish", "publish-signature", storage.NodePending, now, 2,
+			plan.Run.ID, terminalNode, "example.com/workflow.Publish", "publish-signature", storage.NodePending, now, 2,
 		),
 	}
 	plan.Edges = []storage.Edge{
-		{RunID: plan.Run.ID, Parent: compileNode, Child: "publish", ParentOrder: 1},
-		{RunID: plan.Run.ID, Parent: "lint", Child: "publish", ParentOrder: 0},
+		{RunID: plan.Run.ID, Parent: compileNode, Child: terminalNode, ParentOrder: 1},
+		{RunID: plan.Run.ID, Parent: "lint", Child: terminalNode, ParentOrder: 0},
 	}
 	require.NoError(t, store.CreateRun(t.Context(), &plan))
 
