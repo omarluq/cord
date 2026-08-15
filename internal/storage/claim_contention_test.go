@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -126,6 +127,12 @@ func setupContendedClaim(t *testing.T, runID storage.RunID) (*storage.Store, *sq
 
 	transaction, err := first.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		rollbackErr := transaction.Rollback()
+		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			t.Errorf("rollback contended transaction: %v", rollbackErr)
+		}
+	})
 
 	_, err = transaction.ExecContext(t.Context(), "UPDATE cord_runs SET status = status")
 	require.NoError(t, err)
@@ -191,9 +198,20 @@ func claimQuotaConcurrently(
 	progress := make([]atomic.Int64, len(stores))
 
 	var workers sync.WaitGroup
+
 	for index, store := range stores {
+		worker := quotaWorker{
+			store:      store,
+			registered: registered,
+			progress:   &progress[index],
+			claims:     claims,
+			errs:       errs,
+			index:      index,
+			quota:      quota,
+		}
+
 		workers.Go(func() {
-			claimQuota(ctx, store, index, quota, registered, &progress[index], claims, errs)
+			worker.claim(ctx)
 		})
 	}
 
@@ -209,21 +227,22 @@ func claimQuotaConcurrently(
 	return collect(claims), counts, collect(errs)
 }
 
-func claimQuota(
-	ctx context.Context,
-	store *storage.Store,
-	worker int,
-	quota int,
-	registered []byte,
-	progress *atomic.Int64,
-	claims chan<- *storage.Claim,
-	errs chan<- error,
-) {
-	owner := fmt.Sprintf("worker-%d", worker)
-	for progress.Load() < int64(quota) {
-		claim, won, err := claimReadyNode(ctx, store, owner, registered)
+type quotaWorker struct {
+	store      *storage.Store
+	progress   *atomic.Int64
+	claims     chan<- *storage.Claim
+	errs       chan<- error
+	registered []byte
+	index      int
+	quota      int
+}
+
+func (w quotaWorker) claim(ctx context.Context) {
+	owner := fmt.Sprintf("worker-%d", w.index)
+	for w.progress.Load() < int64(w.quota) {
+		claim, won, err := claimReadyNode(ctx, w.store, owner, w.registered)
 		if err != nil {
-			errs <- err
+			w.errs <- err
 
 			return
 		}
@@ -234,9 +253,9 @@ func claimQuota(
 			continue
 		}
 
-		progress.Add(1)
+		w.progress.Add(1)
 
-		claims <- claim
+		w.claims <- claim
 	}
 }
 
@@ -353,8 +372,6 @@ func openClaimStores(tb testing.TB, path string, count int) ([]*sql.DB, []*stora
 	tb.Helper()
 
 	databases := make([]*sql.DB, 0, count)
-	stores := make([]*storage.Store, 0, count)
-
 	for range count {
 		database, err := sql.Open(
 			"sqlite",
@@ -364,14 +381,18 @@ func openClaimStores(tb testing.TB, path string, count int) ([]*sql.DB, []*stora
 		tb.Cleanup(func() { require.NoError(tb, database.Close()) })
 
 		databases = append(databases, database)
+	}
 
+	require.NoError(tb, storage.Migrate(tb.Context(), databases[0]))
+
+	stores := make([]*storage.Store, 0, count)
+
+	for _, database := range databases {
 		store, err := storage.NewStore(database)
 		require.NoError(tb, err)
 
 		stores = append(stores, store)
 	}
-
-	require.NoError(tb, storage.Migrate(tb.Context(), databases[0]))
 
 	return databases, stores
 }
