@@ -27,45 +27,48 @@ var (
 	ErrMigrationFailed = errors.New("cord: migration failed")
 )
 
-// RuntimeOptions configures advanced scheduler behavior. Zero-valued fields use
+// Config configures scheduler and migration behavior. Zero-valued fields use
 // Cord's defaults. HeartbeatInterval must be shorter than LeaseTTL.
-type RuntimeOptions struct {
+type Config struct {
+	// MigrationContext controls schema migration. When nil, New uses a bounded background context.
+	MigrationContext context.Context
 	// OnSchedulerError reports scheduler storage errors. The callback must return promptly.
-	OnSchedulerError  func(error)
-	Concurrency       int
-	PollInterval      time.Duration
-	LeaseTTL          time.Duration
+	OnSchedulerError func(error)
+	// Concurrency limits the number of nodes executing across all workflows.
+	Concurrency int
+	// PollInterval controls how often idle schedulers check for work.
+	PollInterval time.Duration
+	// LeaseTTL controls how long a worker owns a claimed node without a heartbeat.
+	LeaseTTL time.Duration
+	// HeartbeatInterval controls how often workers extend active leases.
 	HeartbeatInterval time.Duration
 }
 
-// New creates a workflow runtime using a caller-owned SQLite database.
-// It applies pending Cord schema migrations before returning.
-func New(database *sql.DB) (*Cord, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
-	defer cancel()
+// New creates a workflow runtime using a caller-owned SQLite database. It
+// accepts at most one configuration and applies pending schema migrations.
+func New(database *sql.DB, configs ...Config) (*Cord, error) {
+	if len(configs) > 1 {
+		return nil, errors.New("cord: New accepts at most one config")
+	}
 
-	return NewWithOptionsContext(ctx, database, RuntimeOptions{})
-}
+	var config Config
+	if len(configs) == 1 {
+		config = configs[0]
+	}
 
-// NewWithOptions creates a workflow runtime with advanced scheduler settings.
-func NewWithOptions(database *sql.DB, options RuntimeOptions) (*Cord, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
-	defer cancel()
-
-	return NewWithOptionsContext(ctx, database, options)
-}
-
-// NewWithOptionsContext creates a workflow runtime and allows schema migration to be canceled.
-func NewWithOptionsContext(ctx context.Context, database *sql.DB, options RuntimeOptions) (*Cord, error) {
+	ctx := config.MigrationContext
 	if ctx == nil {
-		return nil, fmt.Errorf("%w: context is nil", ErrMigrationFailed)
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(context.Background(), migrationTimeout)
+		defer cancel()
 	}
 
 	if database == nil {
 		return nil, fmt.Errorf("%w: database is nil", ErrMigrationFailed)
 	}
 
-	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(options)
+	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(config)
 	if err != nil {
 		return nil, err
 	}
@@ -88,33 +91,33 @@ func NewWithOptionsContext(ctx context.Context, database *sql.DB, options Runtim
 		pollInterval:      pollInterval,
 		leaseTTL:          leaseTTL,
 		heartbeatInterval: heartbeatInterval,
-		onSchedulerError:  options.OnSchedulerError,
+		onSchedulerError:  config.OnSchedulerError,
 	}), nil
 }
 
-func runtimeSettings(options RuntimeOptions) (
+func runtimeSettings(config Config) (
 	concurrency int,
 	pollInterval time.Duration,
 	leaseTTL time.Duration,
 	heartbeatInterval time.Duration,
 	err error,
 ) {
-	concurrency = options.Concurrency
+	concurrency = config.Concurrency
 	if concurrency == 0 {
 		concurrency = max(1, runtime.GOMAXPROCS(0))
 	}
 
-	pollInterval = options.PollInterval
+	pollInterval = config.PollInterval
 	if pollInterval == 0 {
 		pollInterval = defaultPollInterval
 	}
 
-	leaseTTL = options.LeaseTTL
+	leaseTTL = config.LeaseTTL
 	if leaseTTL == 0 {
 		leaseTTL = defaultLeaseTTL
 	}
 
-	heartbeatInterval = options.HeartbeatInterval
+	heartbeatInterval = config.HeartbeatInterval
 	if heartbeatInterval == 0 {
 		heartbeatInterval = min(defaultHeartbeatInterval, leaseTTL/heartbeatsPerLease)
 	}

@@ -278,10 +278,11 @@ cancel a run that was already persisted. The durable workflow continues and can
 complete in any compatible Cord process. Closing a runtime similarly stops its
 local workers without closing the database or canceling persisted runs.
 
-For scheduler tuning, use `NewWithOptions`:
+For scheduler tuning, pass a `Config` to `New`:
 
 ```go
-runtime, err := cord.NewWithOptions(db, cord.RuntimeOptions{
+runtime, err := cord.New(db, cord.Config{
+    MigrationContext:  startupCtx,
     Concurrency:       8,
     PollInterval:      100 * time.Millisecond,
     LeaseTTL:          30 * time.Second,
@@ -290,7 +291,8 @@ runtime, err := cord.NewWithOptions(db, cord.RuntimeOptions{
 })
 ```
 
-Use `NewWithOptionsContext` when migration should observe a startup context.
+Omit `Config` to use Cord's defaults. A configured migration context allows
+startup cancellation; when omitted, migration uses a bounded background context.
 See the [package reference](https://pkg.go.dev/github.com/omarluq/cord) for the
 complete API.
 

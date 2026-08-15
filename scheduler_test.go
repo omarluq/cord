@@ -132,7 +132,7 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	first, err := cord.NewWithOptions(database, cord.RuntimeOptions{PollInterval: 10 * time.Millisecond})
+	first, err := cord.New(database, cord.Config{PollInterval: 10 * time.Millisecond})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, first.Close()) })
 	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
@@ -163,7 +163,7 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 		"UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
 	require.NoError(t, err)
 
-	second, err := cord.NewWithOptions(database, cord.RuntimeOptions{PollInterval: 10 * time.Millisecond})
+	second, err := cord.New(database, cord.Config{PollInterval: 10 * time.Millisecond})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, second.Close()) })
 
