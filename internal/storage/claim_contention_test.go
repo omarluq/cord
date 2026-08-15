@@ -73,44 +73,12 @@ func TestStore_ConcurrentClaimantsMakeProgressWithoutDuplicateClaims(t *testing.
 func TestStore_ClaimRetriesSQLiteContentionUntilLockIsReleased(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "retry-contended-claim.db")
-	first := openZeroTimeoutDatabase(t, path)
-	second := openZeroTimeoutDatabase(t, path)
-	require.NoError(t, storage.Migrate(t.Context(), first))
-
-	store, err := storage.NewStore(second)
-	require.NoError(t, err)
-
-	plan := validPlan(time.Now().UTC(), "retry-contended-claim")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
-
-	transaction, err := first.BeginTx(t.Context(), nil)
-	require.NoError(t, err)
-	_, err = transaction.ExecContext(t.Context(), "UPDATE cord_runs SET status = status")
-	require.NoError(t, err)
-
-	type claimResult struct {
-		err     error
-		claim   *storage.Claim
-		claimed bool
-	}
+	store, transaction, runID := setupContendedClaim(t, "retry-contended-claim")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
-	result := make(chan claimResult, 1)
-
-	go func() {
-		registered := []byte(`{"example.com/workflow.Compile":"compile-signature"}`)
-
-		claim, claimed, claimErr := store.ClaimReadyNodeForFunctions(
-			ctx,
-			"worker",
-			claimLeaseTTL,
-			registered,
-		)
-		result <- claimResult{claim: claim, claimed: claimed, err: claimErr}
-	}()
+	result := claimRegisteredReadyNodeAsync(ctx, store)
 
 	select {
 	case earlyResult := <-result:
@@ -124,11 +92,26 @@ func TestStore_ClaimRetriesSQLiteContentionUntilLockIsReleased(t *testing.T) {
 	require.NoError(t, resultValue.err)
 	require.True(t, resultValue.claimed)
 	require.NotNil(t, resultValue.claim)
-	assert.Equal(t, plan.Run.ID, resultValue.claim.RunID)
+	assert.Equal(t, runID, resultValue.claim.RunID)
 }
 
 func TestStore_ClaimStopsRetryingSQLiteContentionOnCancellation(t *testing.T) {
 	t.Parallel()
+
+	store, transaction, _ := setupContendedClaim(t, "contended-claim")
+	defer func() { require.NoError(t, transaction.Rollback()) }()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	claim, claimed, err := store.ClaimReadyNode(ctx, "worker", claimLeaseTTL)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.False(t, claimed)
+	assert.Nil(t, claim)
+}
+
+func setupContendedClaim(t *testing.T, runID storage.RunID) (*storage.Store, *sql.Tx, storage.RunID) {
+	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "contended-claim.db")
 	first := openZeroTimeoutDatabase(t, path)
@@ -138,24 +121,40 @@ func TestStore_ClaimStopsRetryingSQLiteContentionOnCancellation(t *testing.T) {
 	store, err := storage.NewStore(second)
 	require.NoError(t, err)
 
-	plan := validPlan(time.Now().UTC(), "contended-claim")
+	plan := validPlan(time.Now().UTC(), runID)
 	require.NoError(t, store.CreateRun(t.Context(), &plan))
 
 	transaction, err := first.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 
-	defer func() { require.NoError(t, transaction.Rollback()) }()
-
 	_, err = transaction.ExecContext(t.Context(), "UPDATE cord_runs SET status = status")
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
-	defer cancel()
+	return store, transaction, plan.Run.ID
+}
 
-	claim, claimed, err := store.ClaimReadyNode(ctx, "worker", claimLeaseTTL)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.False(t, claimed)
-	assert.Nil(t, claim)
+type claimResult struct {
+	err     error
+	claim   *storage.Claim
+	claimed bool
+}
+
+func claimRegisteredReadyNodeAsync(ctx context.Context, store *storage.Store) <-chan claimResult {
+	result := make(chan claimResult, 1)
+
+	go func() {
+		registered := []byte(`{"example.com/workflow.Compile":"compile-signature"}`)
+
+		claim, claimed, err := store.ClaimReadyNodeForFunctions(
+			ctx,
+			"worker",
+			claimLeaseTTL,
+			registered,
+		)
+		result <- claimResult{claim: claim, claimed: claimed, err: err}
+	}()
+
+	return result
 }
 
 func BenchmarkStore_ConcurrentClaims(b *testing.B) {
