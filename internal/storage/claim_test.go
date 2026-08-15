@@ -49,30 +49,50 @@ func TestStore_ClaimReadyNodeForFunctionsValidatesLease(t *testing.T) {
 	}
 }
 
-// TestStore_ClaimReadyNodeRejectsExhaustedAttempts verifies exhausted nodes cannot be claimed.
-func TestStore_ClaimReadyNodeRejectsExhaustedAttempts(t *testing.T) {
+// TestStore_ClaimReadyNodeEnforcesAttemptLimit verifies the claim boundary around max attempts.
+func TestStore_ClaimReadyNodeEnforcesAttemptLimit(t *testing.T) {
 	t.Parallel()
 
-	database, store := newStore(t, true)
-	plan := validPlan(time.Now().UTC(), "exhausted-run")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	tests := []struct {
+		name    string
+		offset  int
+		claimed bool
+	}{
+		{name: "last attempt remains eligible", offset: -1, claimed: true},
+		{name: "exhausted", offset: 0, claimed: false},
+	}
 
-	result, err := database.ExecContext(
-		t.Context(),
-		"UPDATE cord_nodes SET attempt = ? WHERE run_id = ? AND node_id = ?",
-		plan.Run.MaxAttempts,
-		plan.Run.ID,
-		plan.Nodes[0].ID,
-	)
-	require.NoError(t, err)
-	affected, err := result.RowsAffected()
-	require.NoError(t, err)
-	require.EqualValues(t, 1, affected)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-	claim, claimed, err := store.ClaimReadyNode(t.Context(), "worker", time.Minute)
-	require.NoError(t, err)
-	assert.False(t, claimed)
-	assert.Nil(t, claim)
+			database, store := newStore(t, true)
+			plan := validPlan(time.Now().UTC(), storage.RunID("attempt-limit-"+testCase.name))
+			require.NoError(t, store.CreateRun(t.Context(), &plan))
+
+			result, err := database.ExecContext(
+				t.Context(),
+				"UPDATE cord_nodes SET attempt = ? WHERE run_id = ? AND node_id = ?",
+				plan.Run.MaxAttempts+testCase.offset,
+				plan.Run.ID,
+				plan.Nodes[0].ID,
+			)
+			require.NoError(t, err)
+			affected, err := result.RowsAffected()
+			require.NoError(t, err)
+			require.EqualValues(t, 1, affected)
+
+			claim, claimed, err := store.ClaimReadyNode(t.Context(), "worker", time.Minute)
+			require.NoError(t, err)
+			assert.Equal(t, testCase.claimed, claimed)
+
+			if testCase.claimed {
+				assert.NotNil(t, claim)
+			} else {
+				assert.Nil(t, claim)
+			}
+		})
+	}
 }
 
 func TestStore_ClaimReadyNodeUsesDeterministicEligibilityOrder(t *testing.T) {
