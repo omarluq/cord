@@ -24,7 +24,7 @@ type Cord struct {
 	workers           sync.WaitGroup
 	mu                sync.RWMutex
 	closeOnce         sync.Once
-	retry             RetryPolicy
+	retry             retryPolicy
 	pollInterval      time.Duration
 	leaseTTL          time.Duration
 	heartbeatInterval time.Duration
@@ -42,31 +42,6 @@ func (c *Cord) Close() error {
 	return nil
 }
 
-// SetRetryPolicy sets the policy snapshotted into subsequently submitted runs.
-// Existing runs retain the policy persisted when they were submitted.
-func (c *Cord) SetRetryPolicy(policy RetryPolicy) error {
-	if c == nil {
-		return nil
-	}
-
-	if err := policy.validate(); err != nil {
-		return err
-	}
-
-	c.mu.Lock()
-	c.retry = policy
-	c.mu.Unlock()
-
-	return nil
-}
-
-func (c *Cord) retryPolicy() RetryPolicy {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.retry
-}
-
 func (c *Cord) reportSchedulerError(err error) {
 	if c.onSchedulerError != nil && err != nil {
 		c.onSchedulerError(err)
@@ -79,25 +54,22 @@ func newRuntimeContext() (context.Context, context.CancelFunc) {
 
 type schedulerSettings struct {
 	onSchedulerError  func(error)
+	concurrency       int
 	pollInterval      time.Duration
 	leaseTTL          time.Duration
 	heartbeatInterval time.Duration
+	retry             retryPolicy
 }
 
-func newCordWithSettings(
-	concurrency int,
-	store *storage.Store,
-	owner string,
-	settings schedulerSettings,
-) *Cord {
+func newCordWithSettings(store *storage.Store, owner string, settings schedulerSettings) *Cord {
 	ctx, cancel := newRuntimeContext()
 	cordRuntime := &Cord{
 		ctx: ctx, cancel: cancel, heartbeatInterval: settings.heartbeatInterval,
 		leaseTTL: settings.leaseTTL, pollInterval: settings.pollInterval,
 		onSchedulerError: settings.onSchedulerError,
 		mu:               sync.RWMutex{}, workers: sync.WaitGroup{}, registry: make(map[string]registeredInvocation),
-		registryJSON: nil, retry: defaultRetryPolicy(),
-		slots: make(chan struct{}, max(1, concurrency)), store: store,
+		registryJSON: nil, retry: settings.retry,
+		slots: make(chan struct{}, settings.concurrency), store: store,
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
 	}
 

@@ -15,35 +15,34 @@ const (
 	retryPolicyVersion = 1
 )
 
-// RetryPolicy controls persistent node retry scheduling.
-type RetryPolicy struct {
-	MaxAttempts int
-	BaseDelay   time.Duration
-	MaxDelay    time.Duration
+type retryPolicy struct {
+	maxAttempts int
+	baseDelay   time.Duration
+	maxDelay    time.Duration
 }
 
-func defaultRetryPolicy() RetryPolicy {
-	return RetryPolicy{MaxAttempts: defaultMaxAttempts, BaseDelay: defaultBaseDelay, MaxDelay: defaultMaxDelay}
+func defaultRetryPolicy() retryPolicy {
+	return retryPolicy{maxAttempts: defaultMaxAttempts, baseDelay: defaultBaseDelay, maxDelay: defaultMaxDelay}
 }
 
-func (policy RetryPolicy) validate() error {
-	if policy.MaxAttempts < 1 {
+func (policy retryPolicy) validate() error {
+	if policy.maxAttempts < 1 {
 		return errors.New("cord: retry policy maximum attempts must be positive")
 	}
 
-	if policy.BaseDelay <= 0 {
+	if policy.baseDelay <= 0 {
 		return errors.New("cord: retry policy base delay must be positive")
 	}
 
-	if policy.MaxDelay <= 0 || policy.MaxDelay < policy.BaseDelay {
+	if policy.maxDelay <= 0 || policy.maxDelay < policy.baseDelay {
 		return errors.New("cord: retry policy maximum delay must be at least the base delay")
 	}
 
 	return nil
 }
 
-func retryDelay(policy RetryPolicy, attempt int) time.Duration {
-	return backoff.FullJitter(policy.BaseDelay, policy.MaxDelay, attempt)
+func retryDelay(policy retryPolicy, attempt int) time.Duration {
+	return backoff.FullJitter(policy.baseDelay, policy.maxDelay, attempt)
 }
 
 type permanentError struct{ err error }

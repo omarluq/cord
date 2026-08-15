@@ -40,6 +40,12 @@ type Options struct {
 	LeaseTTL time.Duration
 	// HeartbeatInterval controls how often workers extend active leases.
 	HeartbeatInterval time.Duration
+	// MaxAttempts limits how many times each node may execute.
+	MaxAttempts int
+	// RetryBaseDelay is the initial delay used for retry backoff.
+	RetryBaseDelay time.Duration
+	// RetryMaxDelay caps retry backoff.
+	RetryMaxDelay time.Duration
 }
 
 // New creates a workflow runtime using a caller-owned SQLite database. It
@@ -65,7 +71,7 @@ func New(ctx context.Context, database *sql.DB, options ...Options) (*Cord, erro
 		return nil, fmt.Errorf("%w: database is nil", ErrMigrationFailed)
 	}
 
-	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(opts)
+	settings, err := runtimeSettings(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -84,58 +90,89 @@ func New(ctx context.Context, database *sql.DB, options ...Options) (*Cord, erro
 		return nil, fmt.Errorf("cord: generate runtime owner: %w", err)
 	}
 
-	return newCordWithSettings(concurrency, store, ownerID.String(), schedulerSettings{
-		pollInterval:      pollInterval,
-		leaseTTL:          leaseTTL,
-		heartbeatInterval: heartbeatInterval,
-		onSchedulerError:  opts.OnSchedulerError,
-	}), nil
+	return newCordWithSettings(store, ownerID.String(), settings), nil
 }
 
-func runtimeSettings(options Options) (
-	concurrency int,
-	pollInterval time.Duration,
-	leaseTTL time.Duration,
-	heartbeatInterval time.Duration,
-	err error,
-) {
-	concurrency = options.Concurrency
+func runtimeSettings(options Options) (schedulerSettings, error) {
+	concurrency := options.Concurrency
 	if concurrency == 0 {
 		concurrency = max(1, runtime.GOMAXPROCS(0))
 	}
 
-	pollInterval = options.PollInterval
+	pollInterval := options.PollInterval
 	if pollInterval == 0 {
 		pollInterval = defaultPollInterval
 	}
 
-	leaseTTL = options.LeaseTTL
+	leaseTTL := options.LeaseTTL
 	if leaseTTL == 0 {
 		leaseTTL = defaultLeaseTTL
 	}
 
-	heartbeatInterval = options.HeartbeatInterval
+	heartbeatInterval := options.HeartbeatInterval
 	if heartbeatInterval == 0 {
 		heartbeatInterval = min(defaultHeartbeatInterval, leaseTTL/heartbeatsPerLease)
 	}
 
+	retry, err := retrySettings(options)
+	if err != nil {
+		return schedulerSettings{}, err
+	}
+
+	if err := validateSchedulerSettings(concurrency, pollInterval, leaseTTL, heartbeatInterval); err != nil {
+		return schedulerSettings{}, err
+	}
+
+	return schedulerSettings{
+		concurrency:       concurrency,
+		pollInterval:      pollInterval,
+		leaseTTL:          leaseTTL,
+		heartbeatInterval: heartbeatInterval,
+		onSchedulerError:  options.OnSchedulerError,
+		retry:             retry,
+	}, nil
+}
+
+func validateSchedulerSettings(
+	concurrency int,
+	pollInterval time.Duration,
+	leaseTTL time.Duration,
+	heartbeatInterval time.Duration,
+) error {
 	if concurrency < 1 {
-		return 0, 0, 0, 0, errors.New("cord: concurrency must be positive")
+		return errors.New("cord: concurrency must be positive")
 	}
 
 	if pollInterval <= 0 {
-		return 0, 0, 0, 0, errors.New("cord: poll interval must be positive")
+		return errors.New("cord: poll interval must be positive")
 	}
 
 	if leaseTTL <= 0 {
-		return 0, 0, 0, 0, errors.New("cord: lease TTL must be positive")
+		return errors.New("cord: lease TTL must be positive")
 	}
 
 	if heartbeatInterval <= 0 || heartbeatInterval >= leaseTTL {
-		return 0, 0, 0, 0, errors.New("cord: heartbeat interval must be positive and shorter than lease TTL")
+		return errors.New("cord: heartbeat interval must be positive and shorter than lease TTL")
 	}
 
-	return concurrency, pollInterval, leaseTTL, heartbeatInterval, nil
+	return nil
+}
+
+func retrySettings(options Options) (retryPolicy, error) {
+	policy := retryPolicy{
+		maxAttempts: options.MaxAttempts,
+		baseDelay:   options.RetryBaseDelay,
+		maxDelay:    options.RetryMaxDelay,
+	}
+	if policy == (retryPolicy{}) {
+		return defaultRetryPolicy(), nil
+	}
+
+	if err := policy.validate(); err != nil {
+		return retryPolicy{}, err
+	}
+
+	return policy, nil
 }
 
 func publicMigrationError(err error) error {
