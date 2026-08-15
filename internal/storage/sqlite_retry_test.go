@@ -22,8 +22,12 @@ func TestStore_CreateRunStopsRetryingSQLiteContentionOnCancellation(t *testing.T
 	require.NoError(t, storage.Migrate(t.Context(), first))
 
 	transaction, err := first.BeginTx(t.Context(), nil)
+
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, transaction.Rollback()) })
+	defer func() {
+		require.NoError(t, transaction.Rollback())
+	}()
+
 	_, err = transaction.ExecContext(t.Context(), "UPDATE cord_runs SET status = status")
 	require.NoError(t, err)
 
