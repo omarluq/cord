@@ -194,13 +194,13 @@ func charge(ctx context.Context, payment Payment) (Receipt, error) {
 }
 ```
 
-Configure the policy used by future runs before submitting them:
+Configure the retry policy when creating the runtime:
 
 ```go
-err := runtime.SetRetryPolicy(cord.RetryPolicy{
-    MaxAttempts: 5,
-    BaseDelay:   250 * time.Millisecond,
-    MaxDelay:    20 * time.Second,
+runtime, err := cord.New(ctx, database, cord.Options{
+    MaxAttempts:    5,
+    RetryBaseDelay: 250 * time.Millisecond,
+    RetryMaxDelay:  20 * time.Second,
 })
 ```
 
@@ -281,7 +281,7 @@ local workers without closing the database or canceling persisted runs.
 For scheduler tuning, pass an `Options` value to `New`:
 
 ```go
-runtime, err := cord.New(ctxx, db, cord.Options{
+runtime, err := cord.New(ctx, db, cord.Options{
     Concurrency:       8,
     PollInterval:      100 * time.Millisecond,
     LeaseTTL:          30 * time.Second,

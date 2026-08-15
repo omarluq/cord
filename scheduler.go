@@ -282,13 +282,13 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeErr error) error {
 	failure := encodeFailure(claim, invokeErr)
 
-	policy := RetryPolicy{
-		MaxAttempts: claim.MaxAttempts,
-		BaseDelay:   claim.RetryBaseDelay,
-		MaxDelay:    claim.RetryMaxDelay,
+	policy := retryPolicy{
+		maxAttempts: claim.MaxAttempts,
+		baseDelay:   claim.RetryBaseDelay,
+		maxDelay:    claim.RetryMaxDelay,
 	}
 
-	if isPermanent(invokeErr) || claim.Attempt >= policy.MaxAttempts {
+	if isPermanent(invokeErr) || claim.Attempt >= policy.maxAttempts {
 		_, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)
 		if err != nil {
 			return fmt.Errorf("cord: fail node: %w", err)

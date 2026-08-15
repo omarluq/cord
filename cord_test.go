@@ -42,18 +42,18 @@ func mustRuntime(t *testing.T) *cord.Cord {
 	return runtime
 }
 
-func newRuntime(t *testing.T) (*sql.DB, *cord.Cord) {
+func newRuntime(t *testing.T, options ...cord.Options) (*sql.DB, *cord.Cord) {
 	t.Helper()
 
 	database := openSQLite(t)
 
-	return database, newRuntimeForDB(t, database)
+	return database, newRuntimeForDB(t, database, options...)
 }
 
-func newRuntimeForDB(t *testing.T, database *sql.DB) *cord.Cord {
+func newRuntimeForDB(t *testing.T, database *sql.DB, options ...cord.Options) *cord.Cord {
 	t.Helper()
 
-	runtime, err := cord.New(t.Context(), database)
+	runtime, err := cord.New(t.Context(), database, options...)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, runtime.Close()) })
 
@@ -84,13 +84,6 @@ func completeAfterRelease(ctx context.Context, directory string) (string, error)
 	}
 
 	return "completed", nil
-}
-
-func TestCord_SetRetryPolicyNilReceiver(t *testing.T) {
-	t.Parallel()
-
-	var runtime *cord.Cord
-	require.NoError(t, runtime.SetRetryPolicy(cord.RetryPolicy{}))
 }
 
 func TestNew_CreatesRuntime(t *testing.T) {

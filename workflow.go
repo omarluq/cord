@@ -78,7 +78,7 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 		return zero, err
 	}
 
-	runPlan, err := buildPlan(w.graph.name, plan, w.tail, input, w.runtime.retryPolicy())
+	runPlan, err := buildPlan(w.graph.name, plan, w.tail, input, w.runtime.retry)
 	if err != nil {
 		return zero, err
 	}

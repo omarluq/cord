@@ -118,7 +118,7 @@ func buildPlan[I any](
 	plan []node,
 	tail nodeID,
 	input I,
-	retry RetryPolicy,
+	retry retryPolicy,
 ) (*storage.RunPlan, error) {
 	codec, err := serialization.NewJSONCodec[I]()
 	if err != nil {
@@ -162,9 +162,9 @@ func buildPlan[I any](
 			Input:              storage.EncodedPayload(payload),
 			Output:             nil,
 			Error:              nil,
-			MaxAttempts:        retry.MaxAttempts,
-			RetryBaseDelay:     retry.BaseDelay,
-			RetryMaxDelay:      retry.MaxDelay,
+			MaxAttempts:        retry.maxAttempts,
+			RetryBaseDelay:     retry.baseDelay,
+			RetryMaxDelay:      retry.maxDelay,
 			RetryPolicyVersion: retryPolicyVersion,
 		},
 		Nodes: nodes,
@@ -232,7 +232,7 @@ func definitionHash(
 	terminal storage.NodeID,
 	nodes []storage.Node,
 	edges []storage.Edge,
-	retry RetryPolicy,
+	retry retryPolicy,
 ) string {
 	parents := make(map[storage.NodeID][]string, len(nodes))
 	for _, edge := range edges {
@@ -249,9 +249,9 @@ func definitionHash(
 		inputFingerprint,
 		string(terminal),
 		strconv.Itoa(retryPolicyVersion),
-		strconv.Itoa(retry.MaxAttempts),
-		strconv.FormatInt(retry.BaseDelay.Nanoseconds(), 10),
-		strconv.FormatInt(retry.MaxDelay.Nanoseconds(), 10),
+		strconv.Itoa(retry.maxAttempts),
+		strconv.FormatInt(retry.baseDelay.Nanoseconds(), 10),
+		strconv.FormatInt(retry.maxDelay.Nanoseconds(), 10),
 	}
 
 	for index := range sorted {

@@ -36,12 +36,9 @@ func succeedsWhenReleased(_ context.Context, directory string) (string, error) {
 func TestScheduler_ExhaustsRetryPolicyAndCountsClaims(t *testing.T) {
 	t.Parallel()
 
-	database, runtime := newRuntime(t)
-	require.NoError(t, runtime.SetRetryPolicy(cord.RetryPolicy{
-		MaxAttempts: 3,
-		BaseDelay:   time.Millisecond,
-		MaxDelay:    time.Millisecond,
-	}))
+	database, runtime := newRuntime(t, cord.Options{
+		MaxAttempts: 3, RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Millisecond,
+	})
 
 	_, err := runtime.From("test-workflow", alwaysFails).Run(t.Context(), 4)
 	require.ErrorContains(t, err, "still failing")
@@ -62,14 +59,11 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	first, err := cord.New(t.Context(), database)
+	first, err := cord.New(t.Context(), database, cord.Options{
+		MaxAttempts: 3, RetryBaseDelay: time.Hour, RetryMaxDelay: time.Hour,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, first.Close()) })
-	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
-		MaxAttempts: 3,
-		BaseDelay:   time.Hour,
-		MaxDelay:    time.Hour,
-	}))
 
 	result := make(chan error, 1)
 
@@ -90,14 +84,11 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	_, err = database.ExecContext(t.Context(), "UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
 	require.NoError(t, err)
 
-	second, err := cord.New(t.Context(), database)
+	second, err := cord.New(t.Context(), database, cord.Options{
+		MaxAttempts: 2, RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Millisecond,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, second.Close()) })
-	require.NoError(t, second.SetRetryPolicy(cord.RetryPolicy{
-		MaxAttempts: 2,
-		BaseDelay:   time.Millisecond,
-		MaxDelay:    time.Millisecond,
-	}))
 	second.From("test-workflow", alwaysFails)
 
 	require.Eventually(t, func() bool {
@@ -132,14 +123,12 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	first, err := cord.New(t.Context(), database, cord.Options{PollInterval: 10 * time.Millisecond})
+	first, err := cord.New(t.Context(), database, cord.Options{
+		PollInterval: 10 * time.Millisecond,
+		MaxAttempts:  3, RetryBaseDelay: time.Hour, RetryMaxDelay: time.Hour,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, first.Close()) })
-	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
-		MaxAttempts: 3,
-		BaseDelay:   time.Hour,
-		MaxDelay:    time.Hour,
-	}))
 
 	directory := t.TempDir()
 	result := make(chan error, 1)
@@ -206,12 +195,9 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 func TestScheduler_CallerCancellationDuringRetryWaitLeavesRunDurable(t *testing.T) {
 	t.Parallel()
 
-	database, runtime := newRuntime(t)
-	require.NoError(t, runtime.SetRetryPolicy(cord.RetryPolicy{
-		MaxAttempts: 3,
-		BaseDelay:   time.Hour,
-		MaxDelay:    time.Hour,
-	}))
+	database, runtime := newRuntime(t, cord.Options{
+		MaxAttempts: 3, RetryBaseDelay: time.Hour, RetryMaxDelay: time.Hour,
+	})
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
 

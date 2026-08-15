@@ -36,6 +36,11 @@ func TestNew_OptionsValidatesSchedulerSettings(t *testing.T) {
 		{name: "heartbeat equals lease", options: cord.Options{
 			LeaseTTL: time.Second, HeartbeatInterval: time.Second,
 		}, error: "heartbeat interval"},
+		{name: "negative max attempts", options: cord.Options{MaxAttempts: -1}, error: "maximum attempts"},
+		{name: "retry settings must be complete", options: cord.Options{MaxAttempts: 3}, error: "base delay"},
+		{name: "retry maximum precedes base", options: cord.Options{
+			MaxAttempts: 3, RetryBaseDelay: time.Second, RetryMaxDelay: time.Millisecond,
+		}, error: "maximum delay"},
 	}
 
 	for _, testCase := range tests {
