@@ -71,7 +71,7 @@ func run(ctx context.Context) (_ string, err error) {
         return "", err
     }
 
-    runtime, err := cord.New(db)
+    runtime, err := cord.New(ctx, db)
     if err != nil {
         return "", errors.Join(err, db.Close())
     }
@@ -110,7 +110,7 @@ func defineOrderWorkflow(runtime *cord.Cord) cord.Workflow[OrderID, Receipt] {
 }
 
 func runService(ctx context.Context, db *sql.DB) (err error) {
-    runtime, err := cord.New(db)
+    runtime, err := cord.New(ctx, db)
     if err != nil {
         return err
     }
@@ -266,7 +266,7 @@ caller-selected run ID or exactly-once external effects.
 scheduler goroutines; the application continues to own the database.
 
 ```go
-runtime, err := cord.New(db)
+runtime, err := cord.New(ctx, db)
 if err != nil {
     return err
 }
@@ -278,11 +278,10 @@ cancel a run that was already persisted. The durable workflow continues and can
 complete in any compatible Cord process. Closing a runtime similarly stops its
 local workers without closing the database or canceling persisted runs.
 
-For scheduler tuning, pass a `Config` to `New`:
+For scheduler tuning, pass an `Options` value to `New`:
 
 ```go
-runtime, err := cord.New(db, cord.Config{
-    MigrationContext:  startupCtx,
+runtime, err := cord.New(ctxx, db, cord.Options{
     Concurrency:       8,
     PollInterval:      100 * time.Millisecond,
     LeaseTTL:          30 * time.Second,
@@ -291,8 +290,8 @@ runtime, err := cord.New(db, cord.Config{
 })
 ```
 
-Omit `Config` to use Cord's defaults. A configured migration context allows
-startup cancellation; when omitted, migration uses a bounded background context.
+Omit `Options` to use Cord's defaults. The context passed to `New` controls
+schema migration and is bounded by Cord's migration timeout.
 See the [package reference](https://pkg.go.dev/github.com/omarluq/cord) for the
 complete API.
 

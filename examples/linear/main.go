@@ -19,7 +19,7 @@ func formatResult(_ context.Context, value int) (string, error) {
 func run(ctx context.Context, input int) (_ string, err error) {
 	database := exampledb.DB()
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(ctx, database)
 	if err != nil {
 		return "", fmt.Errorf("create runtime: %w", err)
 	}

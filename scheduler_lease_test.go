@@ -120,9 +120,9 @@ func TestScheduler_HeartbeatKeepsLongRunningInvocationLeased(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	config := testConfig()
-	first := newRuntimeWithConfig(t, database, config)
-	second := newRuntimeWithConfig(t, database, config)
+	options := testOptions()
+	first := newRuntimeWithOptions(t, database, options)
+	second := newRuntimeWithOptions(t, database, options)
 	flow := first.From("test-workflow", probedLeaseStep)
 	second.From("test-workflow", probedLeaseStep)
 
@@ -138,8 +138,8 @@ func TestScheduler_HeartbeatKeepsLongRunningInvocationLeased(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	require.Eventually(t, func() bool {
-		return readLeaseExpiry(t, database).After(time.Now().Add(config.LeaseTTL / 2))
-	}, 5*time.Second, config.HeartbeatInterval)
+		return readLeaseExpiry(t, database).After(time.Now().Add(options.LeaseTTL / 2))
+	}, 5*time.Second, options.HeartbeatInterval)
 	assertNodeLeaseState(t, database, "running", 1)
 	require.NoError(t, writeMarker(directory, "release-first"))
 
@@ -152,9 +152,9 @@ func TestScheduler_LeaseLossCancelsOldExecutionAndPreservesNewCompletion(t *test
 	t.Parallel()
 
 	database := openSQLite(t)
-	config := testConfig()
-	first := newRuntimeWithConfig(t, database, config)
-	second := newRuntimeWithConfig(t, database, config)
+	options := testOptions()
+	first := newRuntimeWithOptions(t, database, options)
+	second := newRuntimeWithOptions(t, database, options)
 	flow := first.From("test-workflow", probedLeaseStep)
 	directory := t.TempDir()
 	cleanupLeaseMarkers(t, directory)
@@ -185,8 +185,8 @@ func TestScheduler_LeaseLossCancelsOldExecutionAndPreservesNewCompletion(t *test
 	assert.JSONEq(t, `"winner"`, output)
 }
 
-func testConfig() cord.Config {
-	return cord.Config{
+func testOptions() cord.Options {
+	return cord.Options{
 		Concurrency:       1,
 		PollInterval:      20 * time.Millisecond,
 		LeaseTTL:          2 * time.Second,
@@ -194,10 +194,10 @@ func testConfig() cord.Config {
 	}
 }
 
-func newRuntimeWithConfig(t *testing.T, database *sql.DB, config cord.Config) *cord.Cord {
+func newRuntimeWithOptions(t *testing.T, database *sql.DB, options cord.Options) *cord.Cord {
 	t.Helper()
 
-	runtime, err := cord.New(database, config)
+	runtime, err := cord.New(t.Context(), database, options)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, runtime.Close()) })
 

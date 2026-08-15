@@ -27,11 +27,9 @@ var (
 	ErrMigrationFailed = errors.New("cord: migration failed")
 )
 
-// Config configures scheduler and migration behavior. Zero-valued fields use
-// Cord's defaults. HeartbeatInterval must be shorter than LeaseTTL.
-type Config struct {
-	// MigrationContext controls schema migration. When nil, New uses a bounded background context.
-	MigrationContext context.Context
+// Options configures scheduler behavior. Zero-valued fields use Cord's
+// defaults. HeartbeatInterval must be shorter than LeaseTTL.
+type Options struct {
 	// OnSchedulerError reports scheduler storage errors. The callback must return promptly.
 	OnSchedulerError func(error)
 	// Concurrency limits the number of nodes executing across all workflows.
@@ -45,30 +43,29 @@ type Config struct {
 }
 
 // New creates a workflow runtime using a caller-owned SQLite database. It
-// accepts at most one configuration and applies pending schema migrations.
-func New(database *sql.DB, configs ...Config) (*Cord, error) {
-	if len(configs) > 1 {
-		return nil, errors.New("cord: New accepts at most one config")
+// accepts at most one Options value and applies pending schema migrations.
+func New(ctx context.Context, database *sql.DB, options ...Options) (*Cord, error) {
+	if len(options) > 1 {
+		return nil, errors.New("cord: New accepts at most one options value")
 	}
 
-	var config Config
-	if len(configs) == 1 {
-		config = configs[0]
+	var opts Options
+	if len(options) == 1 {
+		opts = options[0]
 	}
 
-	ctx := config.MigrationContext
 	if ctx == nil {
-		var cancel context.CancelFunc
-
-		ctx, cancel = context.WithTimeout(context.Background(), migrationTimeout)
-		defer cancel()
+		return nil, fmt.Errorf("%w: context is nil", ErrMigrationFailed)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)
+	defer cancel()
 
 	if database == nil {
 		return nil, fmt.Errorf("%w: database is nil", ErrMigrationFailed)
 	}
 
-	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(config)
+	concurrency, pollInterval, leaseTTL, heartbeatInterval, err := runtimeSettings(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -91,33 +88,33 @@ func New(database *sql.DB, configs ...Config) (*Cord, error) {
 		pollInterval:      pollInterval,
 		leaseTTL:          leaseTTL,
 		heartbeatInterval: heartbeatInterval,
-		onSchedulerError:  config.OnSchedulerError,
+		onSchedulerError:  opts.OnSchedulerError,
 	}), nil
 }
 
-func runtimeSettings(config Config) (
+func runtimeSettings(options Options) (
 	concurrency int,
 	pollInterval time.Duration,
 	leaseTTL time.Duration,
 	heartbeatInterval time.Duration,
 	err error,
 ) {
-	concurrency = config.Concurrency
+	concurrency = options.Concurrency
 	if concurrency == 0 {
 		concurrency = max(1, runtime.GOMAXPROCS(0))
 	}
 
-	pollInterval = config.PollInterval
+	pollInterval = options.PollInterval
 	if pollInterval == 0 {
 		pollInterval = defaultPollInterval
 	}
 
-	leaseTTL = config.LeaseTTL
+	leaseTTL = options.LeaseTTL
 	if leaseTTL == 0 {
 		leaseTTL = defaultLeaseTTL
 	}
 
-	heartbeatInterval = config.HeartbeatInterval
+	heartbeatInterval = options.HeartbeatInterval
 	if heartbeatInterval == 0 {
 		heartbeatInterval = min(defaultHeartbeatInterval, leaseTTL/heartbeatsPerLease)
 	}

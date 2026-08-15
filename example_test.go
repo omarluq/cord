@@ -26,7 +26,7 @@ func closeExample(runtime *cord.Cord, database *sql.DB) error {
 func ExampleCord_From() {
 	database := exampledb.DB()
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(context.Background(), database)
 	if err != nil {
 		fmt.Println(err)
 
@@ -47,7 +47,7 @@ func ExampleCord_From() {
 func ExampleJoin() {
 	database := exampledb.DB()
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(context.Background(), database)
 	if err != nil {
 		fmt.Println(err)
 

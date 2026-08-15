@@ -18,7 +18,7 @@ func sum(_ context.Context, left, right int) (int, error)  { return left + right
 func run(ctx context.Context, input int) (_ int, err error) {
 	database := exampledb.DB()
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(ctx, database)
 	if err != nil {
 		return 0, fmt.Errorf("create runtime: %w", err)
 	}
