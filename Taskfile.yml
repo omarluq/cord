@@ -31,6 +31,11 @@ tasks:
     cmds:
       - go tool golangci-lint run ./...
 
+  deadcode:
+    desc: Report unreachable internal and example functions
+    cmds:
+      - go tool deadcode -test -filter='^github.com/omarluq/cord/(internal|examples)/' ./examples/... ./internal/...
+
   fmt:
     desc: Format and fix Go source
     cmds:
@@ -47,5 +52,6 @@ tasks:
     cmds:
       - task: fmt-check
       - task: lint
+      - task: deadcode
       - task: test
       - task: build
