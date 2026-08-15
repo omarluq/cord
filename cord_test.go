@@ -53,7 +53,7 @@ func newRuntime(t *testing.T) (*sql.DB, *cord.Cord) {
 func newRuntimeForDB(t *testing.T, database *sql.DB) *cord.Cord {
 	t.Helper()
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, runtime.Close()) })
 

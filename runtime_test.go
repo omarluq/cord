@@ -22,18 +22,18 @@ func double(_ context.Context, value int) (int, error) {
 	return value * 2, nil
 }
 
-func TestNew_ConfigValidatesSchedulerSettings(t *testing.T) {
+func TestNew_OptionsValidatesSchedulerSettings(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name, error string
-		options     cord.Config
+		options     cord.Options
 	}{
-		{name: "negative concurrency", options: cord.Config{Concurrency: -1}, error: "concurrency"},
-		{name: "negative poll interval", options: cord.Config{PollInterval: -1}, error: "poll interval"},
-		{name: "negative lease TTL", options: cord.Config{LeaseTTL: -1}, error: "lease TTL"},
-		{name: "negative heartbeat", options: cord.Config{HeartbeatInterval: -1}, error: "heartbeat interval"},
-		{name: "heartbeat equals lease", options: cord.Config{
+		{name: "negative concurrency", options: cord.Options{Concurrency: -1}, error: "concurrency"},
+		{name: "negative poll interval", options: cord.Options{PollInterval: -1}, error: "poll interval"},
+		{name: "negative lease TTL", options: cord.Options{LeaseTTL: -1}, error: "lease TTL"},
+		{name: "negative heartbeat", options: cord.Options{HeartbeatInterval: -1}, error: "heartbeat interval"},
+		{name: "heartbeat equals lease", options: cord.Options{
 			LeaseTTL: time.Second, HeartbeatInterval: time.Second,
 		}, error: "heartbeat interval"},
 	}
@@ -42,7 +42,7 @@ func TestNew_ConfigValidatesSchedulerSettings(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			runtime, err := cord.New(openSQLite(t), testCase.options)
+			runtime, err := cord.New(t.Context(), openSQLite(t), testCase.options)
 
 			assert.Nil(t, runtime)
 			require.ErrorContains(t, err, testCase.error)
@@ -50,21 +50,21 @@ func TestNew_ConfigValidatesSchedulerSettings(t *testing.T) {
 	}
 }
 
-func TestNew_ConfigValidatesBeforeMigration(t *testing.T) {
+func TestNew_OptionsValidatesBeforeMigration(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.New(database, cord.Config{Concurrency: -1})
+	runtime, err := cord.New(t.Context(), database, cord.Options{Concurrency: -1})
 
 	assert.Nil(t, runtime)
 	require.ErrorContains(t, err, "concurrency")
 	assert.False(t, sqliteTableExists(t, database, "cord_schema_migrations"))
 }
 
-func TestNew_ConfigShortLeaseUsesDerivedHeartbeat(t *testing.T) {
+func TestNew_OptionsShortLeaseUsesDerivedHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	runtime, err := cord.New(openSQLite(t), cord.Config{LeaseTTL: 30 * time.Millisecond})
+	runtime, err := cord.New(t.Context(), openSQLite(t), cord.Options{LeaseTTL: 30 * time.Millisecond})
 	require.NoError(t, err)
 	require.NoError(t, runtime.Close())
 }
@@ -75,25 +75,25 @@ func TestNew_CanceledMigrationContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	runtime, err := cord.New(openSQLite(t), cord.Config{MigrationContext: ctx})
+	runtime, err := cord.New(ctx, openSQLite(t))
 
 	assert.Nil(t, runtime)
 	require.ErrorIs(t, err, context.Canceled)
 }
 
-func TestNew_RejectsMultipleConfigs(t *testing.T) {
+func TestNew_RejectsMultipleOptions(t *testing.T) {
 	t.Parallel()
 
-	runtime, err := cord.New(openSQLite(t), cord.Config{}, cord.Config{})
+	runtime, err := cord.New(t.Context(), openSQLite(t), cord.Options{}, cord.Options{})
 
 	assert.Nil(t, runtime)
-	require.ErrorContains(t, err, "at most one config")
+	require.ErrorContains(t, err, "at most one options")
 }
 
 func TestNew_RejectsNilDatabase(t *testing.T) {
 	t.Parallel()
 
-	runtime, err := cord.New(nil)
+	runtime, err := cord.New(t.Context(), nil)
 
 	assert.Nil(t, runtime)
 	require.ErrorIs(t, err, cord.ErrMigrationFailed)
@@ -103,7 +103,7 @@ func TestNew_MigratesAndLeavesDatabaseOpen(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	require.NotNil(t, runtime)
 
@@ -121,11 +121,11 @@ func TestNew_IsRepeatable(t *testing.T) {
 
 	database := openSQLite(t)
 
-	first, err := cord.New(database)
+	first, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	require.NoError(t, first.Close())
 
-	second, err := cord.New(database)
+	second, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	require.NoError(t, second.Close())
 
@@ -160,7 +160,7 @@ func TestNew_ConcurrentCalls(t *testing.T) {
 				return
 			}
 
-			runtime, err := cord.New(database)
+			runtime, err := cord.New(t.Context(), database)
 			if err == nil {
 				err = runtime.Close()
 			}
@@ -185,7 +185,7 @@ func TestNew_MigratesOldSchema(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	require.NoError(t, runtime.Close())
 
@@ -200,7 +200,7 @@ func TestNew_MigratesOldSchema(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	runtime, err = cord.New(database)
+	runtime, err = cord.New(t.Context(), database)
 	require.NoError(t, err)
 	require.NoError(t, runtime.Close())
 
@@ -225,7 +225,7 @@ func TestNew_FailedMigrationRollsBack(t *testing.T) {
 	_, err := database.ExecContext(t.Context(), "CREATE TABLE cord_nodes (id TEXT PRIMARY KEY)")
 	require.NoError(t, err)
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(t.Context(), database)
 
 	assert.Nil(t, runtime)
 	require.ErrorIs(t, err, cord.ErrMigrationFailed)
@@ -247,7 +247,7 @@ func TestNew_RejectsNewerSchema(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	require.NoError(t, runtime.Close())
 
@@ -257,7 +257,7 @@ func TestNew_RejectsNewerSchema(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	runtime, err = cord.New(database)
+	runtime, err = cord.New(t.Context(), database)
 
 	assert.Nil(t, runtime)
 	require.ErrorIs(t, err, cord.ErrSchemaNewer)
@@ -271,7 +271,7 @@ func TestNew_ReportsDatabaseFailure(t *testing.T) {
 	database := openSQLite(t)
 	require.NoError(t, database.Close())
 
-	runtime, err := cord.New(database)
+	runtime, err := cord.New(t.Context(), database)
 
 	assert.Nil(t, runtime)
 	require.ErrorIs(t, err, cord.ErrMigrationFailed)

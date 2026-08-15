@@ -62,7 +62,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	first, err := cord.New(database)
+	first, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, first.Close()) })
 	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
@@ -90,7 +90,7 @@ func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
 	_, err = database.ExecContext(t.Context(), "UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
 	require.NoError(t, err)
 
-	second, err := cord.New(database)
+	second, err := cord.New(t.Context(), database)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, second.Close()) })
 	require.NoError(t, second.SetRetryPolicy(cord.RetryPolicy{
@@ -132,7 +132,7 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 	t.Parallel()
 
 	database := openSQLite(t)
-	first, err := cord.New(database, cord.Config{PollInterval: 10 * time.Millisecond})
+	first, err := cord.New(t.Context(), database, cord.Options{PollInterval: 10 * time.Millisecond})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, first.Close()) })
 	require.NoError(t, first.SetRetryPolicy(cord.RetryPolicy{
@@ -163,7 +163,7 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 		"UPDATE cord_nodes SET available_at = datetime('now', '-1 second')")
 	require.NoError(t, err)
 
-	second, err := cord.New(database, cord.Config{PollInterval: 10 * time.Millisecond})
+	second, err := cord.New(t.Context(), database, cord.Options{PollInterval: 10 * time.Millisecond})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, second.Close()) })
 
