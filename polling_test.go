@@ -78,7 +78,9 @@ func TestScheduler_IdlePollingRemainsBounded(t *testing.T) {
 func TestScheduler_PromotesRetryWithinPollingLatency(t *testing.T) {
 	t.Parallel()
 
-	const pollInterval = 40 * time.Millisecond
+	const pollInterval = 400 * time.Millisecond
+
+	latencyLimit := pollingLatencyLimit(pollInterval)
 
 	database, runtime := newRuntime(t, cord.Options{
 		PollInterval:   pollInterval,
@@ -112,13 +114,15 @@ func TestScheduler_PromotesRetryWithinPollingLatency(t *testing.T) {
 	result := waitWorkflowResult(t, completed)
 	require.NoError(t, result.err)
 	assert.Equal(t, "recovered", result.value)
-	assert.LessOrEqual(t, time.Since(eligibleAt), 2*time.Second)
+	assert.LessOrEqual(t, time.Since(eligibleAt), latencyLimit)
 }
 
 func TestScheduler_RecoversExpiredLeaseWithinPollingLatency(t *testing.T) {
 	t.Parallel()
 
-	const pollInterval = 40 * time.Millisecond
+	const pollInterval = 400 * time.Millisecond
+
+	latencyLimit := pollingLatencyLimit(pollInterval)
 
 	database, runtime := newRuntime(t, cord.Options{
 		Concurrency:       2,
@@ -145,11 +149,19 @@ func TestScheduler_RecoversExpiredLeaseWithinPollingLatency(t *testing.T) {
 	require.NoError(t, err)
 
 	waitMarker(t, directory, "retried")
-	assert.LessOrEqual(t, time.Since(expiredAt), 2*time.Second)
+	assert.LessOrEqual(t, time.Since(expiredAt), latencyLimit)
 
 	result := waitWorkflowResult(t, completed)
 	require.NoError(t, result.err)
 	assert.Equal(t, "recovered", result.value)
+}
+
+// pollingLatencyLimit permits three polling periods plus a small allowance for
+// scheduling delays under the race detector.
+func pollingLatencyLimit(pollInterval time.Duration) time.Duration {
+	const schedulingAllowance = 250 * time.Millisecond
+
+	return 3*pollInterval + schedulingAllowance
 }
 
 func TestCord_CloseInterruptsLongPollingWait(t *testing.T) {
