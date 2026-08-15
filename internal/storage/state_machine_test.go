@@ -192,6 +192,100 @@ func TestStore_CompleteNodeReleasesDependenciesAndCompletesTerminalRun(t *testin
 	assertRunState(t, database, terminal.RunID, storage.RunCompleted, []byte(`"released"`))
 }
 
+func TestStore_CompleteNodeQueuesReleasedChildrenBehindWaitingWork(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStore(t, true)
+	now := time.Now().UTC()
+	active := validPlan(now.Add(-2*time.Minute), "active-run")
+	waiting := validPlan(now.Add(-time.Minute), "waiting-run")
+
+	require.NoError(t, store.CreateRun(t.Context(), &active))
+	require.NoError(t, store.CreateRun(t.Context(), &waiting))
+
+	first := claimNode(t, store)
+	require.Equal(t, active.Run.ID, first.RunID)
+
+	accepted, err := store.CompleteNode(
+		t.Context(),
+		first.RunID,
+		first.NodeID,
+		first.Lease,
+		[]byte(`"compiled"`),
+	)
+	require.NoError(t, err)
+	require.True(t, accepted)
+
+	next := claimNode(t, store)
+	assert.Equal(t, waiting.Run.ID, next.RunID)
+	assert.Equal(t, compileNode, next.NodeID)
+
+	var releasedLater bool
+	require.NoError(t, database.QueryRowContext(
+		t.Context(),
+		`SELECT julianday(released.available_at) > julianday(waiting.available_at)
+		FROM cord_nodes AS released, cord_nodes AS waiting
+		WHERE released.run_id = ? AND released.node_id = ?
+			AND waiting.run_id = ? AND waiting.node_id = ?`,
+		active.Run.ID,
+		active.Run.TerminalNodeID,
+		waiting.Run.ID,
+		compileNode,
+	).Scan(&releasedLater))
+	assert.True(t, releasedLater)
+}
+
+func TestStore_CompleteNodeDoesNotStarveReadyBranch(t *testing.T) {
+	t.Parallel()
+
+	const joinNode storage.NodeID = "join"
+
+	_, store := newStore(t, true)
+	now := time.Now().UTC()
+	plan := validPlan(now.Add(-2*time.Minute), "branch-fairness")
+	plan.Nodes = append(plan.Nodes,
+		newNode(
+			plan.Run.ID,
+			"waiting-branch",
+			"example.com/workflow.Waiting",
+			"waiting-signature",
+			storage.NodeReady,
+			now.Add(-time.Minute),
+			0,
+		),
+		newNode(
+			plan.Run.ID,
+			joinNode,
+			"example.com/workflow.Join",
+			"join-signature",
+			storage.NodePending,
+			now,
+			2,
+		),
+	)
+	plan.Edges = append(plan.Edges,
+		storage.Edge{RunID: plan.Run.ID, Parent: terminalNode, Child: joinNode, ParentOrder: 0},
+		storage.Edge{RunID: plan.Run.ID, Parent: "waiting-branch", Child: joinNode, ParentOrder: 1},
+	)
+	plan.Run.TerminalNodeID = joinNode
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+
+	first := claimNode(t, store)
+	require.Equal(t, compileNode, first.NodeID)
+	accepted, err := store.CompleteNode(
+		t.Context(),
+		first.RunID,
+		first.NodeID,
+		first.Lease,
+		[]byte(`"compiled"`),
+	)
+	require.NoError(t, err)
+	require.True(t, accepted)
+
+	next := claimNode(t, store)
+	assert.Equal(t, storage.NodeID("waiting-branch"), next.NodeID)
+}
+
 func TestStore_CompleteNodeRejectsStaleAndExpiredLeases(t *testing.T) {
 	t.Parallel()
 
