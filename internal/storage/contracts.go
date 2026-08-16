@@ -9,15 +9,25 @@ import (
 
 // Backend is the behavioral persistence contract consumed by Cord.
 type Backend interface {
+	// CreateRun atomically persists a validated run plan.
 	CreateRun(context.Context, *RunPlan) error
+	// ClaimReadyNodeForFunctions claims one eligible node matching a registered function signature.
 	ClaimReadyNodeForFunctions(context.Context, string, time.Duration, []byte) (*Claim, bool, error)
+	// LoadNodeInputs loads the ordered inputs for a claimed node.
 	LoadNodeInputs(context.Context, RunID, NodeID) ([]EncodedPayload, error)
+	// CompleteNode records a successful result when the lease still owns the node.
 	CompleteNode(context.Context, RunID, NodeID, Lease, EncodedPayload) (bool, error)
+	// RetryNode records a transient failure and schedules another attempt.
 	RetryNode(context.Context, RunID, NodeID, Lease, EncodedPayload, time.Duration) (bool, error)
+	// FailNode records a terminal node failure when the lease still owns the node.
 	FailNode(context.Context, RunID, NodeID, Lease, EncodedPayload) (bool, error)
+	// PromoteRetries makes retrying nodes eligible once their delay has elapsed.
 	PromoteRetries(context.Context) (int64, error)
+	// RecoverExpiredLeases returns abandoned running nodes to the ready state.
 	RecoverExpiredLeases(context.Context) (int64, error)
+	// HeartbeatNode extends a node lease and returns its new expiry time.
 	HeartbeatNode(context.Context, RunID, NodeID, Lease, time.Duration) (bool, time.Time, error)
+	// GetRunResult returns the persisted state and payloads for a run.
 	GetRunResult(context.Context, RunID) (RunResult, error)
 }
 
