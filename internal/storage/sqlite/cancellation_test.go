@@ -1,4 +1,4 @@
-package storage_test
+package sqlite_test
 
 import (
 	"testing"

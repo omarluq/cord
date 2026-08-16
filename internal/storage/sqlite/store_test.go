@@ -1,4 +1,4 @@
-package storage_test
+package sqlite_test
 
 import (
 	"database/sql"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	// Register the sqlite driver used by openDatabase.
@@ -20,10 +21,10 @@ const (
 	runsTable  = "cord_runs"
 )
 
-func TestNewStore_RejectsNilDatabase(t *testing.T) {
+func TestNew_RejectsNilDatabase(t *testing.T) {
 	t.Parallel()
 
-	store, err := storage.NewStore(nil)
+	store, err := sqlite.New(nil)
 
 	assert.Nil(t, store)
 	require.Error(t, err)
@@ -406,12 +407,12 @@ func newNode(
 	}
 }
 
-func newStore(t *testing.T, foreignKeys bool) (*sql.DB, *storage.Store) {
+func newStore(t *testing.T, foreignKeys bool) (*sql.DB, *sqlite.Store) {
 	t.Helper()
 
 	database := openDatabase(t, foreignKeys)
-	require.NoError(t, storage.Migrate(t.Context(), database))
-	store, err := storage.NewStore(database)
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	store, err := sqlite.New(database)
 	require.NoError(t, err)
 
 	return database, store

@@ -1,26 +1,13 @@
-package storage
+package sqlite
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/omarluq/cord/internal/storage"
 	"time"
 )
-
-// Claim is a ready node claimed for execution and its fencing lease.
-type Claim struct {
-	RunID              RunID
-	NodeID             NodeID
-	FunctionKey        string
-	SignatureHash      string
-	Lease              Lease
-	Attempt            int
-	MaxAttempts        int
-	RetryBaseDelay     time.Duration
-	RetryMaxDelay      time.Duration
-	RetryPolicyVersion int
-}
 
 const (
 	claimReadyNodePrefix = `UPDATE cord_nodes
@@ -58,7 +45,7 @@ func (s *Store) ClaimReadyNode(
 	ctx context.Context,
 	owner string,
 	leaseTTL time.Duration,
-) (*Claim, bool, error) {
+) (*storage.Claim, bool, error) {
 	if err := validateClaimLease(owner, leaseTTL); err != nil {
 		return nil, false, err
 	}
@@ -73,7 +60,7 @@ func (s *Store) ClaimReadyNodeForFunctions(
 	owner string,
 	leaseTTL time.Duration,
 	registeredJSON []byte,
-) (*Claim, bool, error) {
+) (*storage.Claim, bool, error) {
 	if err := validateClaimLease(owner, leaseTTL); err != nil {
 		return nil, false, err
 	}
@@ -90,8 +77,8 @@ func (s *Store) claimReadyNode(
 	owner string,
 	leaseTTL time.Duration,
 	registeredJSON []byte,
-) (claim *Claim, claimed bool, err error) {
-	err = retrySQLiteContention(ctx, "retry ready-node claim", func() error {
+) (claim *storage.Claim, claimed bool, err error) {
+	err = retryContention(ctx, "retry ready-node claim", func() error {
 		claim, claimed, err = s.claimReadyNodeOnce(ctx, owner, leaseTTL, registeredJSON)
 
 		return err
@@ -105,13 +92,18 @@ func (s *Store) claimReadyNodeOnce(
 	owner string,
 	leaseTTL time.Duration,
 	registeredJSON []byte,
-) (*Claim, bool, error) {
+) (*storage.Claim, bool, error) {
 	statement := claimReadyNodeStatement
-	arguments := []any{NodeRunning, owner, sqliteDurationModifier(leaseTTL), NodeReady, RunRunning}
+	arguments := []any{
+		storage.NodeRunning, owner, durationModifier(leaseTTL), storage.NodeReady, storage.RunRunning,
+	}
 
 	if len(registeredJSON) > 0 {
 		statement = claimRegisteredReadyNodeStatement
-		arguments = []any{NodeRunning, owner, sqliteDurationModifier(leaseTTL), registeredJSON, NodeReady, RunRunning}
+		arguments = []any{
+			storage.NodeRunning, owner, durationModifier(leaseTTL), registeredJSON,
+			storage.NodeReady, storage.RunRunning,
+		}
 	}
 
 	claim, err := scanClaim(s.database.QueryRowContext(ctx, statement, arguments...), owner)
@@ -126,8 +118,8 @@ func (s *Store) claimReadyNodeOnce(
 	return claim, true, nil
 }
 
-func scanClaim(row *sql.Row, owner string) (*Claim, error) {
-	claim := &Claim{}
+func scanClaim(row *sql.Row, owner string) (*storage.Claim, error) {
+	claim := &storage.Claim{}
 
 	var expiresUnixMillis, retryBaseDelayNS, retryMaxDelayNS int64
 

@@ -1,4 +1,4 @@
-package storage_test
+package sqlite_test
 
 import (
 	"database/sql"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	// Register the SQLite driver used by newStore.
@@ -144,8 +145,8 @@ func TestStore_ClaimCommitSurvivesProcessBoundary(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "crash.db")
 	database := openStoreDatabase(t, path)
-	require.NoError(t, storage.Migrate(t.Context(), database))
-	store, err := storage.NewStore(database)
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	store, err := sqlite.New(database)
 	require.NoError(t, err)
 
 	plan := validPlan(time.Now().UTC(), "claim-crash")
@@ -391,7 +392,7 @@ func TestStore_CancelRunFencesRunningWorkAndPreservesCompletedNodes(t *testing.T
 	assert.False(t, accepted)
 }
 
-func claimNode(t *testing.T, store *storage.Store) *storage.Claim {
+func claimNode(t *testing.T, store *sqlite.Store) *storage.Claim {
 	t.Helper()
 
 	claim, claimed, err := store.ClaimReadyNode(t.Context(), "worker", time.Minute)

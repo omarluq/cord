@@ -1,20 +1,14 @@
-package storage
+package sqlite
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/omarluq/cord/internal/storage"
 	"strconv"
 	"time"
 )
-
-// Lease identifies the executor and fencing generation that own a running node.
-type Lease struct {
-	ExpiresAt  time.Time
-	Owner      string
-	Generation int64
-}
 
 // RecoverExpiredLeases returns abandoned running nodes to ready with a newer fence.
 func (s *Store) RecoverExpiredLeases(ctx context.Context) (int64, error) {
@@ -23,22 +17,24 @@ func (s *Store) RecoverExpiredLeases(ctx context.Context) (int64, error) {
 		AND julianday(lease_expires_at) <= julianday('now')
 		AND EXISTS (SELECT 1 FROM cord_runs WHERE id = run_id AND status = ?)`
 
-	return s.updateNodes(ctx, query, "recover expired leases", NodeReady, NodeRunning, RunRunning)
+	return s.updateNodes(
+		ctx, query, "recover expired leases", storage.NodeReady, storage.NodeRunning, storage.RunRunning,
+	)
 }
 
 // HeartbeatNode extends an exact active lease using database time.
 func (s *Store) HeartbeatNode(
 	ctx context.Context,
-	runID RunID,
-	nodeID NodeID,
-	lease Lease,
+	runID storage.RunID,
+	nodeID storage.NodeID,
+	lease storage.Lease,
 	ttl time.Duration,
 ) (bool, time.Time, error) {
 	if ttl <= 0 {
 		return false, time.Time{}, errors.New("heartbeat node lease: TTL must be positive")
 	}
 
-	modifier := sqliteDurationModifier(ttl)
+	modifier := durationModifier(ttl)
 
 	var millis int64
 
@@ -48,7 +44,7 @@ func (s *Store) HeartbeatNode(
 		AND julianday(lease_expires_at) > julianday('now')
 		AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)
 		RETURNING CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)`, modifier,
-		runID, nodeID, NodeRunning, lease.Owner, lease.Generation, runID, RunRunning).Scan(&millis)
+		runID, nodeID, storage.NodeRunning, lease.Owner, lease.Generation, runID, storage.RunRunning).Scan(&millis)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, time.Time{}, nil
 	}
@@ -60,7 +56,7 @@ func (s *Store) HeartbeatNode(
 	return true, time.UnixMilli(millis).UTC(), nil
 }
 
-func sqliteDurationModifier(duration time.Duration) string {
+func durationModifier(duration time.Duration) string {
 	seconds := strconv.FormatFloat(duration.Seconds(), 'f', 6, 64)
 	if duration >= 0 {
 		seconds = "+" + seconds

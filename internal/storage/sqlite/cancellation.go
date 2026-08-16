@@ -1,15 +1,16 @@
-package storage
+package sqlite
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/omarluq/cord/internal/storage"
 )
 
 // CancelRun durably cancels a running or canceling run and all unfinished nodes.
 // It returns false when the run is absent or already terminal.
-func (s *Store) CancelRun(ctx context.Context, runID RunID) (accepted bool, err error) {
+func (s *Store) CancelRun(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
 	transaction, err := s.database.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin run cancellation: %w", err)
@@ -23,7 +24,7 @@ func (s *Store) CancelRun(ctx context.Context, runID RunID) (accepted bool, err 
 
 	result, err := transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ? AND status IN (?, ?)`, RunCanceling, runID, RunRunning, RunCanceling)
+		WHERE id = ? AND status IN (?, ?)`, storage.RunCanceling, runID, storage.RunRunning, storage.RunCanceling)
 	if err != nil {
 		return false, fmt.Errorf("request cancellation for run %q: %w", runID, err)
 	}
@@ -45,7 +46,7 @@ func (s *Store) CancelRun(ctx context.Context, runID RunID) (accepted bool, err 
 	_, err = transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 		completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ? AND status = ?`, RunCanceled, runID, RunCanceling)
+		WHERE id = ? AND status = ?`, storage.RunCanceled, runID, storage.RunCanceling)
 	if err != nil {
 		return false, fmt.Errorf("finish cancellation for run %q: %w", runID, err)
 	}
@@ -57,12 +58,12 @@ func (s *Store) CancelRun(ctx context.Context, runID RunID) (accepted bool, err 
 	return true, nil
 }
 
-func cancelUnfinishedNodes(ctx context.Context, transaction *sql.Tx, runID RunID) error {
+func cancelUnfinishedNodes(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
 	_, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
 		SET status = ?, lease_owner = NULL, lease_expires_at = NULL,
 			completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		WHERE run_id = ? AND status IN (?, ?, ?, ?)`,
-		NodeCanceled, runID, NodePending, NodeReady, NodeRunning, NodeRetryWait)
+		storage.NodeCanceled, runID, storage.NodePending, storage.NodeReady, storage.NodeRunning, storage.NodeRetryWait)
 	if err != nil {
 		return fmt.Errorf("cancel unfinished nodes for run %q: %w", runID, err)
 	}
