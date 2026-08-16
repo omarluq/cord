@@ -41,9 +41,24 @@ func ValidateRunPlan(plan *RunPlan) error {
 }
 
 func validateRetryPolicy(run *Run) error {
-	if run.MaxAttempts < 1 || run.RetryBaseDelay <= 0 ||
-		run.RetryMaxDelay < run.RetryBaseDelay || run.RetryPolicyVersion < 1 {
-		return errors.New("validate run plan: retry policy is invalid")
+	if run.MaxAttempts < 1 {
+		return fmt.Errorf("validate run plan: retry policy maximum attempts must be positive: %d", run.MaxAttempts)
+	}
+
+	if run.RetryBaseDelay <= 0 {
+		return fmt.Errorf("validate run plan: retry policy base delay must be positive: %s", run.RetryBaseDelay)
+	}
+
+	if run.RetryMaxDelay < run.RetryBaseDelay {
+		return fmt.Errorf(
+			"validate run plan: retry policy maximum delay %s must be at least base delay %s",
+			run.RetryMaxDelay,
+			run.RetryBaseDelay,
+		)
+	}
+
+	if run.RetryPolicyVersion < 1 {
+		return fmt.Errorf("validate run plan: retry policy version must be positive: %d", run.RetryPolicyVersion)
 	}
 
 	return nil
