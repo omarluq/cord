@@ -1,29 +1,17 @@
-<p align="center">
-  <img height="300" src="assets/banner.png" alt="Cord banner">
-</p>
+# Cord
 
-<h1 align="center">cord</h1>
-
-<p align="center">
-  <a href="https://github.com/omarluq/cord/actions/workflows/ci.yml"><img src="https://github.com/omarluq/cord/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://codecov.io/gh/omarluq/cord"><img src="https://codecov.io/gh/omarluq/cord/branch/main/graph/badge.svg" alt="codecov"></a>
-  <a href="https://pkg.go.dev/github.com/omarluq/cord"><img src="https://pkg.go.dev/badge/github.com/omarluq/cord.svg" alt="Go Reference"></a>
-  <a href="https://github.com/omarluq/cord/releases"><img src="https://img.shields.io/github/v/release/omarluq/cord?label=version&logo=semver" alt="Version"></a>
-  <a href="./LICENSE.txt"><img src="https://img.shields.io/github/license/omarluq/cord" alt="License"></a>
-</p>
+[![CI](https://github.com/omarluq/cord/actions/workflows/ci.yml/badge.svg)](https://github.com/omarluq/cord/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/omarluq/cord/branch/main/graph/badge.svg)](https://codecov.io/gh/omarluq/cord)
+![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.27-%23007d9c)
+[![Go Reference](https://pkg.go.dev/badge/github.com/omarluq/cord.svg)](https://pkg.go.dev/github.com/omarluq/cord)
+[![Version](https://img.shields.io/github/v/release/omarluq/cord?label=version&logo=semver)](https://github.com/omarluq/cord/releases)
+[![License](https://img.shields.io/github/license/omarluq/cord)](./LICENSE.txt)
 
 Cord is a durable workflow library for Go. Compose ordinary typed functions into
 linear or branching workflows; Cord persists each run in SQLite and resumes
 available work after a process restart.
 
-```go
-flow := runtime.From("order-total", loadOrder)
-items := flow.Then(priceItems)
-shipping := flow.Then(priceShipping)
-orderTotal := cord.Join(items, shipping).Then(add)
-
-total, err := orderTotal.Run(ctx, orderID)
-```
+<img src="assets/banner.png" alt="Cord banner" height="400">
 
 ## Install
 
