@@ -43,13 +43,18 @@ func TestScheduler_IdlePollingRemainsBounded(t *testing.T) {
 
 	const pollInterval = 100 * time.Millisecond
 
-	schedulerErrors := make(chan time.Time, 4)
+	type schedulerError struct {
+		at  time.Time
+		err error
+	}
+
+	schedulerErrors := make(chan schedulerError, 4)
 	database := openSQLite(t)
 	runtime, err := cord.New(t.Context(), database, cord.Options{
 		PollInterval: pollInterval,
-		OnSchedulerError: func(error) {
+		OnSchedulerError: func(err error) {
 			select {
-			case schedulerErrors <- time.Now():
+			case schedulerErrors <- schedulerError{at: time.Now(), err: err}:
 			default:
 			}
 		},
@@ -59,21 +64,23 @@ func TestScheduler_IdlePollingRemainsBounded(t *testing.T) {
 
 	require.NoError(t, database.Close())
 
-	var firstPoll time.Time
+	var firstPoll schedulerError
 	select {
 	case firstPoll = <-schedulerErrors:
+		require.Error(t, firstPoll.err)
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "scheduler did not poll")
 	}
 
-	var secondPoll time.Time
+	var secondPoll schedulerError
 	select {
 	case secondPoll = <-schedulerErrors:
+		require.Error(t, secondPoll.err)
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "scheduler did not resume polling")
 	}
 
-	assert.GreaterOrEqual(t, secondPoll.Sub(firstPoll), pollInterval/2,
+	assert.GreaterOrEqual(t, secondPoll.at.Sub(firstPoll.at), pollInterval/2,
 		"idle scheduler polled continuously")
 }
 
