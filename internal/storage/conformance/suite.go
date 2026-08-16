@@ -5,7 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,15 +17,59 @@ import (
 	"github.com/omarluq/cord/internal/storage/sqlite"
 )
 
-// Open opens a backend-specific test database.
-type Open func(testing.TB, string, time.Duration) *sql.DB
+// Driver configures a database/sql driver for the conformance suite.
+type Driver struct {
+	DataSource func(string, time.Duration) string
+	Name       string
+}
+
+// RepeatedPragmaDataSource builds a data source for drivers that accept repeated _pragma parameters.
+func RepeatedPragmaDataSource(path string, timeout time.Duration) string {
+	query := url.Values{}
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", timeout.Milliseconds()))
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "journal_mode(WAL)")
+
+	return "file:" + path + "?" + query.Encode()
+}
+
+// UnderscoreDataSource builds a data source for drivers that accept underscore-prefixed options.
+func UnderscoreDataSource(path string, timeout time.Duration) string {
+	query := url.Values{}
+	query.Set("_busy_timeout", strconv.FormatInt(timeout.Milliseconds(), 10))
+	query.Set("_foreign_keys", "on")
+	query.Set("_journal_mode", "WAL")
+
+	return "file:" + path + "?" + query.Encode()
+}
 
 // Run executes Cord's behavioral storage conformance suite.
-func Run(t *testing.T, open Open) {
+func Run(t *testing.T, driver Driver) {
 	t.Helper()
+
+	open := func(tb testing.TB, path string, timeout time.Duration) *sql.DB {
+		tb.Helper()
+
+		database, err := sql.Open(driver.Name, driver.DataSource(path, timeout))
+		if err != nil {
+			tb.Fatal(err)
+		}
+
+		tb.Cleanup(func() {
+			if err := database.Close(); err != nil {
+				tb.Errorf("close database: %v", err)
+			}
+		})
+
+		return database
+	}
+
 	t.Run("workflow", func(t *testing.T) { runWorkflow(t, open) })
 	t.Run("write contention", func(t *testing.T) { runContention(t, open) })
 }
+
+// Open opens a backend-specific test database.
+type Open func(testing.TB, string, time.Duration) *sql.DB
 
 func runWorkflow(t *testing.T, open Open) {
 	t.Helper()
@@ -62,8 +109,6 @@ func runWorkflow(t *testing.T, open Open) {
 func runContention(t *testing.T, open Open) {
 	t.Helper()
 
-	const releaseDelay = 20 * time.Millisecond
-
 	path := filepath.Join(t.TempDir(), "contention.db")
 	first := open(t, path, 0)
 	second := open(t, path, 0)
@@ -92,33 +137,32 @@ func runContention(t *testing.T, open Open) {
 		t.Fatal(err)
 	}
 
-	released := releaseTransaction(t.Context(), transaction, releaseDelay)
-
-	if err := store.CreateRun(t.Context(), contentionPlan(time.Now().UTC())); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := <-released; err != nil {
-		t.Fatal(err)
-	}
+	verifyRetryWhileLocked(t, store, transaction)
 }
 
-func releaseTransaction(ctx context.Context, transaction *sql.Tx, delay time.Duration) <-chan error {
-	released := make(chan error, 1)
+func verifyRetryWhileLocked(t *testing.T, store *sqlite.Store, transaction *sql.Tx) {
+	t.Helper()
 
+	const lockObservationDelay = 20 * time.Millisecond
+
+	result := make(chan error, 1)
 	go func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-ctx.Done():
-			released <- ctx.Err()
-		case <-timer.C:
-			released <- transaction.Rollback()
-		}
+		result <- store.CreateRun(t.Context(), contentionPlan(time.Now().UTC()))
 	}()
 
-	return released
+	select {
+	case err := <-result:
+		t.Fatalf("create run returned while the write lock was held: %v", err)
+	case <-time.After(lockObservationDelay):
+	}
+
+	if err := transaction.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func timesTwo(_ context.Context, input int) (int, error) {
