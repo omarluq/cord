@@ -11,6 +11,7 @@ import (
 	"github.com/gofrs/uuid/v5"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 )
 
 const (
@@ -76,11 +77,11 @@ func New(ctx context.Context, database *sql.DB, options ...Options) (*Cord, erro
 		return nil, err
 	}
 
-	if err = storage.Migrate(ctx, database); err != nil {
+	if err = sqlite.Migrate(ctx, database); err != nil {
 		return nil, publicMigrationError(err)
 	}
 
-	store, err := storage.NewStore(database)
+	store, err := sqlite.New(database)
 	if err != nil {
 		return nil, publicMigrationError(err)
 	}

@@ -1,4 +1,4 @@
-package storage_test
+package sqlite_test
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,15 +112,15 @@ func TestStore_ClaimStopsRetryingSQLiteContentionOnCancellation(t *testing.T) {
 	assert.Nil(t, claim)
 }
 
-func setupContendedClaim(t *testing.T, runID storage.RunID) (*storage.Store, *sql.Tx, storage.RunID) {
+func setupContendedClaim(t *testing.T, runID storage.RunID) (*sqlite.Store, *sql.Tx, storage.RunID) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "contended-claim.db")
 	first := openZeroTimeoutDatabase(t, path)
 	second := openZeroTimeoutDatabase(t, path)
-	require.NoError(t, storage.Migrate(t.Context(), first))
+	require.NoError(t, sqlite.Migrate(t.Context(), first))
 
-	store, err := storage.NewStore(second)
+	store, err := sqlite.New(second)
 	require.NoError(t, err)
 
 	plan := validPlan(time.Now().UTC(), runID)
@@ -146,7 +147,7 @@ type claimResult struct {
 	claimed bool
 }
 
-func claimRegisteredReadyNodeAsync(ctx context.Context, store *storage.Store) <-chan claimResult {
+func claimRegisteredReadyNodeAsync(ctx context.Context, store *sqlite.Store) <-chan claimResult {
 	result := make(chan claimResult, 1)
 
 	go func() {
@@ -189,7 +190,7 @@ func BenchmarkStore_ConcurrentClaims(b *testing.B) {
 
 func claimQuotaConcurrently(
 	ctx context.Context,
-	stores []*storage.Store,
+	stores []*sqlite.Store,
 	quota int,
 	registered []byte,
 ) ([]*storage.Claim, []int64, []error) {
@@ -228,7 +229,7 @@ func claimQuotaConcurrently(
 }
 
 type quotaWorker struct {
-	store      *storage.Store
+	store      *sqlite.Store
 	progress   *atomic.Int64
 	claims     chan<- *storage.Claim
 	errs       chan<- error
@@ -261,7 +262,7 @@ func (w quotaWorker) claim(ctx context.Context) {
 
 func claimReadyNode(
 	ctx context.Context,
-	store *storage.Store,
+	store *sqlite.Store,
 	owner string,
 	registered []byte,
 ) (*storage.Claim, bool, error) {
@@ -282,7 +283,7 @@ func claimReadyNode(
 	return claim, claimed, nil
 }
 
-func claimAllConcurrently(ctx context.Context, stores []*storage.Store, total int) (int64, []error) {
+func claimAllConcurrently(ctx context.Context, stores []*sqlite.Store, total int) (int64, []error) {
 	var claimed atomic.Int64
 
 	var workers sync.WaitGroup
@@ -302,7 +303,7 @@ func claimAllConcurrently(ctx context.Context, stores []*storage.Store, total in
 
 func claimUntilTotal(
 	ctx context.Context,
-	store *storage.Store,
+	store *sqlite.Store,
 	worker int,
 	total int64,
 	claimed *atomic.Int64,
@@ -322,7 +323,7 @@ func claimUntilTotal(
 	}
 }
 
-func createReadyRuns(tb testing.TB, store *storage.Store, count int, prefix string) {
+func createReadyRuns(tb testing.TB, store *sqlite.Store, count int, prefix string) {
 	tb.Helper()
 
 	now := time.Now().UTC()
@@ -368,7 +369,7 @@ func collect[T any](values <-chan T) []T {
 	return collected
 }
 
-func openClaimStores(tb testing.TB, path string, count int) ([]*sql.DB, []*storage.Store) {
+func openClaimStores(tb testing.TB, path string, count int) ([]*sql.DB, []*sqlite.Store) {
 	tb.Helper()
 
 	databases := make([]*sql.DB, 0, count)
@@ -383,12 +384,12 @@ func openClaimStores(tb testing.TB, path string, count int) ([]*sql.DB, []*stora
 		databases = append(databases, database)
 	}
 
-	require.NoError(tb, storage.Migrate(tb.Context(), databases[0]))
+	require.NoError(tb, sqlite.Migrate(tb.Context(), databases[0]))
 
-	stores := make([]*storage.Store, 0, count)
+	stores := make([]*sqlite.Store, 0, count)
 
 	for _, database := range databases {
-		store, err := storage.NewStore(database)
+		store, err := sqlite.New(database)
 		require.NoError(tb, err)
 
 		stores = append(stores, store)

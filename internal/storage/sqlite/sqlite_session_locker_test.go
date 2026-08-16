@@ -1,4 +1,4 @@
-package storage_test
+package sqlite_test
 
 import (
 	"context"
@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSQLiteSessionLockerBlocksOtherConnectionsUntilUnlock(t *testing.T) {
+func TestSessionLockerBlocksOtherConnectionsUntilUnlock(t *testing.T) {
 	t.Parallel()
 
 	database := openSessionLockerDatabase(t)
@@ -27,7 +27,7 @@ func TestSQLiteSessionLockerBlocksOtherConnectionsUntilUnlock(t *testing.T) {
 
 	defer func() { require.NoError(t, otherConnection.Close()) }()
 
-	locker := storage.SQLiteSessionLocker{}
+	locker := sqlite.SessionLocker{}
 	require.NoError(t, locker.SessionLock(t.Context(), lockerConnection))
 
 	_, err = otherConnection.ExecContext(t.Context(), "CREATE TABLE blocked_while_locked (id INTEGER)")
@@ -38,24 +38,24 @@ func TestSQLiteSessionLockerBlocksOtherConnectionsUntilUnlock(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestSQLiteSessionLockerReportsConnectionErrors(t *testing.T) {
+func TestSessionLockerReportsConnectionErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
-		operation func(context.Context, storage.SQLiteSessionLocker, *sql.Conn) error
+		operation func(context.Context, sqlite.SessionLocker, *sql.Conn) error
 		message   string
 	}{
 		{
 			name: "lock",
-			operation: func(ctx context.Context, locker storage.SQLiteSessionLocker, connection *sql.Conn) error {
+			operation: func(ctx context.Context, locker sqlite.SessionLocker, connection *sql.Conn) error {
 				return locker.SessionLock(ctx, connection)
 			},
 			message: "initialize normal sqlite locking",
 		},
 		{
 			name: "unlock",
-			operation: func(ctx context.Context, locker storage.SQLiteSessionLocker, connection *sql.Conn) error {
+			operation: func(ctx context.Context, locker sqlite.SessionLocker, connection *sql.Conn) error {
 				return locker.SessionUnlock(ctx, connection)
 			},
 			message: "restore normal sqlite locking",
@@ -71,19 +71,19 @@ func TestSQLiteSessionLockerReportsConnectionErrors(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, connection.Close())
 
-			err = test.operation(t.Context(), storage.SQLiteSessionLocker{}, connection)
+			err = test.operation(t.Context(), sqlite.SessionLocker{}, connection)
 			require.ErrorIs(t, err, sql.ErrConnDone)
 			assert.Contains(t, err.Error(), test.message)
 		})
 	}
 }
 
-func TestSQLiteSessionLockerHandlesContention(t *testing.T) {
+func TestSessionLockerHandlesContention(t *testing.T) {
 	t.Parallel()
 
 	blockingConnection, waitingConnection := openContendedSessionLockerConnections(t)
 
-	err := (storage.SQLiteSessionLocker{}).SessionLock(t.Context(), waitingConnection)
+	err := (sqlite.SessionLocker{}).SessionLock(t.Context(), waitingConnection)
 	require.Error(t, err)
 
 	releaseExclusiveLock(t, blockingConnection)
@@ -93,7 +93,7 @@ func TestSQLiteSessionLockerHandlesContention(t *testing.T) {
 	assert.Equal(t, "normal", mode)
 }
 
-func TestSQLiteSessionLockerReleasesWALLock(t *testing.T) {
+func TestSessionLockerReleasesWALLock(t *testing.T) {
 	t.Parallel()
 
 	database := openSessionLockerDatabase(t)
@@ -110,7 +110,7 @@ func TestSQLiteSessionLockerReleasesWALLock(t *testing.T) {
 
 	defer func() { require.NoError(t, otherConnection.Close()) }()
 
-	locker := storage.SQLiteSessionLocker{}
+	locker := sqlite.SessionLocker{}
 	require.NoError(t, locker.SessionLock(t.Context(), lockerConnection))
 	require.NoError(t, locker.SessionUnlock(t.Context(), lockerConnection))
 
@@ -120,7 +120,7 @@ func TestSQLiteSessionLockerReleasesWALLock(t *testing.T) {
 	)
 }
 
-func TestSQLiteSessionLockerReturnsWhenLockWaitIsCanceled(t *testing.T) {
+func TestSessionLockerReturnsWhenLockWaitIsCanceled(t *testing.T) {
 	t.Parallel()
 
 	blockingConnection, waitingConnection := openContendedSessionLockerConnections(t)
@@ -130,7 +130,7 @@ func TestSQLiteSessionLockerReturnsWhenLockWaitIsCanceled(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- (storage.SQLiteSessionLocker{}).SessionLock(ctx, waitingConnection)
+		result <- (sqlite.SessionLocker{}).SessionLock(ctx, waitingConnection)
 	}()
 
 	var err error
@@ -147,7 +147,7 @@ func TestSQLiteSessionLockerReturnsWhenLockWaitIsCanceled(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-func TestWrapSQLiteRollbackError(t *testing.T) {
+func TestWrapRollbackError(t *testing.T) {
 	t.Parallel()
 
 	cause := errors.New("rollback failed")
@@ -168,7 +168,7 @@ func TestWrapSQLiteRollbackError(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := storage.WrapSQLiteRollbackError(test.cause)
+			err := sqlite.WrapRollbackError(test.cause)
 			if test.cause == nil {
 				require.NoError(t, err)
 

@@ -1,4 +1,4 @@
-package storage
+package sqlite
 
 import (
 	"context"
@@ -7,19 +7,19 @@ import (
 	"fmt"
 )
 
-type sqliteSessionLocker struct{}
+type sessionLocker struct{}
 
 // SessionLock acquires an exclusive SQLite lock for Goose migrations.
-func (sqliteSessionLocker) SessionLock(ctx context.Context, connection *sql.Conn) error {
-	return retrySQLiteContention(ctx, "wait for sqlite migration lock", func() error {
-		if err := initializeSQLiteLocking(ctx, connection); err != nil {
+func (sessionLocker) SessionLock(ctx context.Context, connection *sql.Conn) error {
+	return retryContention(ctx, "wait for sqlite migration lock", func() error {
+		if err := initializeLocking(ctx, connection); err != nil {
 			return err
 		}
 
 		if _, err := connection.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
 			return errors.Join(
 				fmt.Errorf("acquire exclusive sqlite lock: %w", err),
-				restoreSQLiteNormalLocking(context.WithoutCancel(ctx), connection),
+				restoreNormalLocking(context.WithoutCancel(ctx), connection),
 			)
 		}
 
@@ -28,8 +28,8 @@ func (sqliteSessionLocker) SessionLock(ctx context.Context, connection *sql.Conn
 
 			return errors.Join(
 				fmt.Errorf("commit sqlite migration lock transaction: %w", err),
-				wrapSQLiteRollbackError(rollbackErr),
-				restoreSQLiteNormalLocking(context.WithoutCancel(ctx), connection),
+				wrapRollbackError(rollbackErr),
+				restoreNormalLocking(context.WithoutCancel(ctx), connection),
 			)
 		}
 
@@ -38,11 +38,11 @@ func (sqliteSessionLocker) SessionLock(ctx context.Context, connection *sql.Conn
 }
 
 // SessionUnlock releases the exclusive SQLite migration lock.
-func (sqliteSessionLocker) SessionUnlock(ctx context.Context, connection *sql.Conn) error {
-	return restoreSQLiteNormalLocking(ctx, connection)
+func (sessionLocker) SessionUnlock(ctx context.Context, connection *sql.Conn) error {
+	return restoreNormalLocking(ctx, connection)
 }
 
-func initializeSQLiteLocking(ctx context.Context, connection *sql.Conn) error {
+func initializeLocking(ctx context.Context, connection *sql.Conn) error {
 	var schemaEntries int
 	if err := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema").Scan(&schemaEntries); err != nil {
 		return fmt.Errorf("initialize normal sqlite locking: %w", err)
@@ -56,7 +56,7 @@ func initializeSQLiteLocking(ctx context.Context, connection *sql.Conn) error {
 	return nil
 }
 
-func restoreSQLiteNormalLocking(ctx context.Context, connection *sql.Conn) error {
+func restoreNormalLocking(ctx context.Context, connection *sql.Conn) error {
 	var mode string
 
 	modeErr := connection.QueryRowContext(ctx, "PRAGMA locking_mode = NORMAL").Scan(&mode)
@@ -66,12 +66,12 @@ func restoreSQLiteNormalLocking(ctx context.Context, connection *sql.Conn) error
 	releaseErr := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema").Scan(&schemaEntries)
 
 	return errors.Join(
-		wrapSQLiteLockCleanupError("restore normal sqlite locking", modeErr),
-		wrapSQLiteLockCleanupError("release exclusive sqlite lock", releaseErr),
+		wrapLockCleanupError("restore normal sqlite locking", modeErr),
+		wrapLockCleanupError("release exclusive sqlite lock", releaseErr),
 	)
 }
 
-func wrapSQLiteLockCleanupError(operation string, err error) error {
+func wrapLockCleanupError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -79,7 +79,7 @@ func wrapSQLiteLockCleanupError(operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-func wrapSQLiteRollbackError(err error) error {
+func wrapRollbackError(err error) error {
 	if err == nil {
 		return nil
 	}

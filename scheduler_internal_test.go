@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite" // Register the SQLite database/sql driver for this package's tests.
 )
@@ -24,8 +24,8 @@ func TestCord_WakeDoesNotRunMaintenance(t *testing.T) {
 	database, err := sql.Open("sqlite", dsn)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
-	require.NoError(t, storage.Migrate(t.Context(), database))
-	store, err := storage.NewStore(database)
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	store, err := sqlite.New(database)
 	require.NoError(t, err)
 
 	schedulerErrors := make(chan error, 1)

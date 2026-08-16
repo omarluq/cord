@@ -1,4 +1,4 @@
-package storage_test
+package sqlite_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/require"
 	// Register the SQLite driver with database/sql.
 	_ "modernc.org/sqlite"
@@ -19,7 +19,7 @@ func TestStore_CreateRunStopsRetryingSQLiteContentionOnCancellation(t *testing.T
 	path := filepath.Join(t.TempDir(), "locked.db")
 	first := openZeroTimeoutDatabase(t, path)
 	second := openZeroTimeoutDatabase(t, path)
-	require.NoError(t, storage.Migrate(t.Context(), first))
+	require.NoError(t, sqlite.Migrate(t.Context(), first))
 
 	transaction, err := first.BeginTx(t.Context(), nil)
 
@@ -31,7 +31,7 @@ func TestStore_CreateRunStopsRetryingSQLiteContentionOnCancellation(t *testing.T
 	_, err = transaction.ExecContext(t.Context(), "UPDATE cord_runs SET status = status")
 	require.NoError(t, err)
 
-	store, err := storage.NewStore(second)
+	store, err := sqlite.New(second)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)

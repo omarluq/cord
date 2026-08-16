@@ -1,10 +1,11 @@
-package storage_test
+package sqlite_test
 
 import (
 	"testing"
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,7 +116,7 @@ func TestStore_RetryPromotionAndRunResult(t *testing.T) {
 	require.ErrorContains(t, err, "read run result")
 }
 
-func completeNode(t *testing.T, store *storage.Store, claim *storage.Claim, output []byte) bool {
+func completeNode(t *testing.T, store *sqlite.Store, claim *storage.Claim, output []byte) bool {
 	t.Helper()
 	accepted, err := store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, output)
 	require.NoError(t, err)

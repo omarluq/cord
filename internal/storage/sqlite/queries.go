@@ -1,4 +1,4 @@
-package storage
+package sqlite
 
 const (
 	insertRunStatement = `INSERT INTO cord_runs (

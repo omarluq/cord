@@ -14,7 +14,7 @@ import (
 type Cord struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
-	store             *storage.Store
+	store             storage.Backend
 	registry          map[string]registeredInvocation
 	onSchedulerError  func(error)
 	wake              chan struct{}
@@ -61,7 +61,7 @@ type schedulerSettings struct {
 	retry             retryPolicy
 }
 
-func newCordWithSettings(store *storage.Store, owner string, settings schedulerSettings) *Cord {
+func newCordWithSettings(store storage.Backend, owner string, settings schedulerSettings) *Cord {
 	ctx, cancel := newRuntimeContext()
 	cordRuntime := &Cord{
 		ctx: ctx, cancel: cancel, heartbeatInterval: settings.heartbeatInterval,

@@ -1,4 +1,4 @@
-package storage
+package sqlite
 
 import (
 	"context"
@@ -9,18 +9,18 @@ import (
 )
 
 const (
-	sqliteSchemaV1 = 1
-	sqliteSchemaV2 = 2
+	schemaV1 = 1
+	schemaV2 = 2
 )
 
-func sqliteMigrations() []*goose.Migration {
+func migrations() []*goose.Migration {
 	return []*goose.Migration{
-		goose.NewGoMigration(sqliteSchemaV1, &goose.GoFunc{RunTx: migrateSQLiteV1}, nil),
-		goose.NewGoMigration(sqliteSchemaV2, &goose.GoFunc{RunTx: migrateSQLiteV2}, nil),
+		goose.NewGoMigration(schemaV1, &goose.GoFunc{RunTx: migrateV1}, nil),
+		goose.NewGoMigration(schemaV2, &goose.GoFunc{RunTx: migrateV2}, nil),
 	}
 }
 
-func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
+func migrateV2(ctx context.Context, transaction *sql.Tx) error {
 	columns := []struct {
 		name      string
 		statement string
@@ -44,7 +44,7 @@ func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
 	}
 
 	for _, column := range columns {
-		exists, err := sqliteColumnExists(ctx, transaction, "cord_runs", column.name)
+		exists, err := columnExists(ctx, transaction, "cord_runs", column.name)
 		if err != nil {
 			return err
 		}
@@ -61,7 +61,7 @@ func migrateSQLiteV2(ctx context.Context, transaction *sql.Tx) error {
 	return nil
 }
 
-func sqliteColumnExists(ctx context.Context, transaction *sql.Tx, table, column string) (bool, error) {
+func columnExists(ctx context.Context, transaction *sql.Tx, table, column string) (bool, error) {
 	var exists bool
 
 	err := transaction.QueryRowContext(ctx,
@@ -74,7 +74,7 @@ func sqliteColumnExists(ctx context.Context, transaction *sql.Tx, table, column 
 	return exists, nil
 }
 
-func migrateSQLiteV1(ctx context.Context, transaction *sql.Tx) error {
+func migrateV1(ctx context.Context, transaction *sql.Tx) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS cord_runs (
 			id TEXT PRIMARY KEY,

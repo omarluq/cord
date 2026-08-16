@@ -1,5 +1,5 @@
-// Package storage implements Cord's private SQL state machine.
-package storage
+// Package sqlite implements Cord's SQLite persistence adapter.
+package sqlite
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/omarluq/cord/internal/storage"
 	"github.com/pressly/goose/v3"
 )
 
@@ -15,26 +16,19 @@ const (
 	requiredVersion    = int64(2)
 )
 
-var (
-	// ErrSchemaOutdated indicates that the schema is absent or too old.
-	ErrSchemaOutdated = errors.New("schema is absent or outdated")
-	// ErrSchemaNewer indicates that the schema is newer than this runtime.
-	ErrSchemaNewer = errors.New("schema is newer than runtime")
-)
-
 // Verify checks SQLite schema compatibility without executing DDL.
 func Verify(ctx context.Context, database *sql.DB) error {
-	current, exists, err := sqliteSchemaVersion(ctx, database)
+	current, exists, err := schemaVersion(ctx, database)
 	if err != nil {
 		return fmt.Errorf("inspect sqlite schema: %w", err)
 	}
 
 	if !exists || current < requiredVersion {
-		return fmt.Errorf("%w: current=%d required=%d", ErrSchemaOutdated, current, requiredVersion)
+		return fmt.Errorf("%w: current=%d required=%d", storage.ErrSchemaOutdated, current, requiredVersion)
 	}
 
 	if current > requiredVersion {
-		return fmt.Errorf("%w: current=%d required=%d", ErrSchemaNewer, current, requiredVersion)
+		return fmt.Errorf("%w: current=%d required=%d", storage.ErrSchemaNewer, current, requiredVersion)
 	}
 
 	return nil
@@ -42,8 +36,8 @@ func Verify(ctx context.Context, database *sql.DB) error {
 
 // Migrate applies all pending SQLite migrations.
 func Migrate(ctx context.Context, database *sql.DB) error {
-	return retrySQLite(ctx, "wait for concurrent migration", func(err error) bool {
-		return errors.Is(err, ErrSchemaOutdated)
+	return retry(ctx, "wait for concurrent migration", func(err error) bool {
+		return errors.Is(err, storage.ErrSchemaOutdated)
 	}, func() error {
 		if err := migrateWithRetry(ctx, database); err != nil {
 			return err
@@ -63,7 +57,7 @@ func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 		return fmt.Errorf("create migration provider: %w", err)
 	}
 
-	err = retrySQLiteContention(ctx, "wait to retry migration", func() error {
+	err = retryContention(ctx, "wait to retry migration", func() error {
 		_, upErr := provider.Up(ctx)
 		if upErr != nil {
 			return fmt.Errorf("run migration provider: %w", upErr)
@@ -84,8 +78,8 @@ func newProvider(database *sql.DB) (*goose.Provider, error) {
 		database,
 		nil,
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithGoMigrations(sqliteMigrations()...),
-		goose.WithSessionLocker(sqliteSessionLocker{}),
+		goose.WithGoMigrations(migrations()...),
+		goose.WithSessionLocker(sessionLocker{}),
 		goose.WithTableName(schemaVersionTable),
 	)
 	if err != nil {
@@ -95,7 +89,7 @@ func newProvider(database *sql.DB) (*goose.Provider, error) {
 	return provider, nil
 }
 
-func sqliteSchemaVersion(ctx context.Context, database *sql.DB) (current int64, exists bool, err error) {
+func schemaVersion(ctx context.Context, database *sql.DB) (current int64, exists bool, err error) {
 	var tableName string
 
 	err = database.QueryRowContext(

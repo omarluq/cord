@@ -1,14 +1,19 @@
-package storage
+package sqlite
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/omarluq/cord/internal/storage"
 )
 
 // LoadNodeInputs reads the root input or ordered parent outputs after claim.
-func (s *Store) LoadNodeInputs(ctx context.Context, runID RunID, nodeID NodeID) (_ []EncodedPayload, err error) {
+func (s *Store) LoadNodeInputs(
+	ctx context.Context,
+	runID storage.RunID,
+	nodeID storage.NodeID,
+) (_ []storage.EncodedPayload, err error) {
 	rows, err := s.database.QueryContext(ctx, `SELECT p.output_payload FROM cord_edges AS e
 		JOIN cord_nodes AS p ON p.run_id = e.run_id AND p.node_id = e.parent_node_id
 		WHERE e.run_id = ? AND e.child_node_id = ? ORDER BY e.parent_order`, runID, nodeID)
@@ -22,7 +27,7 @@ func (s *Store) LoadNodeInputs(ctx context.Context, runID RunID, nodeID NodeID) 
 		}
 	}()
 
-	inputs := []EncodedPayload{}
+	inputs := []storage.EncodedPayload{}
 
 	for rows.Next() {
 		var payload []byte
@@ -31,7 +36,7 @@ func (s *Store) LoadNodeInputs(ctx context.Context, runID RunID, nodeID NodeID) 
 			return nil, fmt.Errorf("scan parent output: %w", scanErr)
 		}
 
-		inputs = append(inputs, EncodedPayload(payload))
+		inputs = append(inputs, storage.EncodedPayload(payload))
 	}
 
 	if rowsErr := rows.Err(); rowsErr != nil {
@@ -49,17 +54,17 @@ func (s *Store) LoadNodeInputs(ctx context.Context, runID RunID, nodeID NodeID) 
 		return nil, fmt.Errorf("load run input: %w", scanErr)
 	}
 
-	return []EncodedPayload{EncodedPayload(payload)}, nil
+	return []storage.EncodedPayload{storage.EncodedPayload(payload)}, nil
 }
 
 // CompleteNode accepts a successful result only from the current, unexpired
 // lease. It stores the output and releases child dependencies atomically.
 func (s *Store) CompleteNode(
 	ctx context.Context,
-	runID RunID,
-	nodeID NodeID,
-	lease Lease,
-	output EncodedPayload,
+	runID storage.RunID,
+	nodeID storage.NodeID,
+	lease storage.Lease,
+	output storage.EncodedPayload,
 ) (bool, error) {
 	return s.fencedTerminalTransition(ctx, func(transaction *sql.Tx) error {
 		result, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
@@ -70,8 +75,8 @@ func (s *Store) CompleteNode(
 				AND lease_owner = ? AND lease_generation = ?
 				AND julianday(lease_expires_at) > julianday('now')
 				AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`,
-			NodeCompleted, nullPayload(output), runID, nodeID, NodeRunning,
-			lease.Owner, lease.Generation, runID, RunRunning)
+			storage.NodeCompleted, nullPayload(output), runID, nodeID, storage.NodeRunning,
+			lease.Owner, lease.Generation, runID, storage.RunRunning)
 		if err != nil {
 			return fmt.Errorf("complete node %q for run %q: %w", nodeID, runID, err)
 		}
@@ -93,7 +98,7 @@ func (s *Store) CompleteNode(
 			WHERE run_id = ? AND status = ? AND remaining_deps > 0
 				AND node_id IN (SELECT child_node_id FROM cord_edges
 					WHERE run_id = ? AND parent_node_id = ?)`,
-			NodeReady, runID, NodePending, runID, nodeID)
+			storage.NodeReady, runID, storage.NodePending, runID, nodeID)
 		if err != nil {
 			return fmt.Errorf("release children of node %q for run %q: %w", nodeID, runID, err)
 		}
@@ -103,7 +108,7 @@ func (s *Store) CompleteNode(
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 				completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 			WHERE id = ? AND status = ? AND terminal_node_id = ?`,
-			RunCompleted, nullPayload(output), runID, RunRunning, nodeID)
+			storage.RunCompleted, nullPayload(output), runID, storage.RunRunning, nodeID)
 		if err != nil {
 			return fmt.Errorf("complete run %q: %w", runID, err)
 		}
@@ -112,20 +117,10 @@ func (s *Store) CompleteNode(
 	})
 }
 
-// ErrRunNotFound indicates that a requested run does not exist.
-var ErrRunNotFound = errors.New("run not found")
-
-// RunResult is the persistent terminal state observed by a waiter.
-type RunResult struct {
-	Status RunStatus
-	Output EncodedPayload
-	Error  EncodedPayload
-}
-
 // GetRunResult reads one run's current status and persistent result payloads.
-func (s *Store) GetRunResult(ctx context.Context, runID RunID) (RunResult, error) {
+func (s *Store) GetRunResult(ctx context.Context, runID storage.RunID) (storage.RunResult, error) {
 	var (
-		result          RunResult
+		result          storage.RunResult
 		output, failure []byte
 	)
 
@@ -134,14 +129,14 @@ func (s *Store) GetRunResult(ctx context.Context, runID RunID) (RunResult, error
 		&result.Status, &output, &failure,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return result, fmt.Errorf("read run result %q: %w", runID, ErrRunNotFound)
+			return result, fmt.Errorf("read run result %q: %w", runID, storage.ErrRunNotFound)
 		}
 
 		return result, fmt.Errorf("read run result: %w", err)
 	}
 
-	result.Output = EncodedPayload(output)
-	result.Error = EncodedPayload(failure)
+	result.Output = storage.EncodedPayload(output)
+	result.Error = storage.EncodedPayload(failure)
 
 	return result, nil
 }
