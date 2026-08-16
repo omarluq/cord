@@ -140,25 +140,34 @@ func (c *Cord) signalScheduler() {
 func (c *Cord) scheduler() {
 	defer c.workers.Done()
 
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
+	pollTimer := time.NewTimer(c.pollInterval)
+	defer pollTimer.Stop()
 
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-c.wake:
-		case <-ticker.C:
+			c.drainReadyNodes()
+		case <-pollTimer.C:
+			c.poll()
+			pollTimer.Reset(c.pollInterval)
 		}
+	}
+}
 
-		if err := c.maintain(); err != nil {
-			c.reportSchedulerError(fmt.Errorf("cord: scheduler maintenance: %w", err))
+func (c *Cord) poll() {
+	if err := c.maintain(); err != nil {
+		c.reportSchedulerError(fmt.Errorf("cord: scheduler maintenance: %w", err))
 
-			continue
-		}
+		return
+	}
 
-		for c.trySchedule() {
-		}
+	c.drainReadyNodes()
+}
+
+func (c *Cord) drainReadyNodes() {
+	for c.trySchedule() {
 	}
 }
 
@@ -275,7 +284,7 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	}
 
 	if err != nil {
-		c.signalScheduler()
+		c.reportSchedulerError(err)
 	}
 }
 
@@ -377,7 +386,6 @@ func (c *Cord) releaseClaim(claim *storage.Claim, cause error) {
 	}
 
 	c.reportSchedulerError(cause)
-	c.signalScheduler()
 }
 
 func decodeRunError(payload storage.EncodedPayload) error {
