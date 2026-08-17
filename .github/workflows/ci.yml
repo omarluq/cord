@@ -42,12 +42,18 @@ jobs:
           go-version: '1.27.0-rc.2'
           check-latest: false
           cache: true
+          cache-dependency-path: |
+            go.sum
+            playground/go.sum
 
       - name: Check module tidiness
-        run: go mod tidy && git diff --exit-code
+        run: |
+          go mod tidy
+          go mod tidy -C playground
+          git diff --exit-code -- go.mod go.sum playground/go.mod playground/go.sum
 
       - name: golangci-lint
-        run: go tool golangci-lint run ./...
+        run: go tool golangci-lint run ./... ./playground/...
 
       - name: Dead code
         run: go tool deadcode -test -filter='^github.com/omarluq/cord/(internal|examples)/' ./examples/... ./internal/...
@@ -60,6 +66,26 @@ jobs:
 
       - name: Build
         run: task build
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.14'
+
+      - name: Install browser test dependencies
+        run: |
+          bun install --cwd playground --frozen-lockfile
+          bunx --cwd playground playwright install --with-deps chromium
+
+      - name: Test WebAssembly playground
+        run: task playground-test
+
+      - name: Upload playground artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cord-playground
+          path: dist/playground
+          if-no-files-found: error
 
       - name: Upload coverage
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
