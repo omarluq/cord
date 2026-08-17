@@ -4,7 +4,7 @@ go 1.27rc2
 
 require (
 	github.com/gofrs/uuid/v5 v5.5.1
-	github.com/mattn/go-sqlite3 v1.14.49
+	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/ncruces/go-sqlite3 v0.35.3
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/stretchr/testify v1.11.1
