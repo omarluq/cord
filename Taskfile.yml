@@ -24,7 +24,7 @@ tasks:
   test-coverage:
     desc: Run tests and write a coverage profile
     cmds:
-      - go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
+      - go test -race -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
 
   lint:
     desc: Run static analysis
