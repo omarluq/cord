@@ -7,19 +7,71 @@ tasks:
       - task --list
 
   build:
-    desc: Build all packages
+    desc: Build all packages in the workspace
     cmds:
-      - go build ./...
+      - go build ./... ./playground/...
+
+  playground-assets:
+    desc: Build the playground JavaScript and stylesheet assets with Bun
+    sources:
+      - playground/**/*.go
+      - playground/package.json
+      - playground/bun.lock
+      - playground/web/editor.js
+      - playground/web/tailwind.css
+    generates:
+      - playground/web/playground.js
+      - playground/web/playground.css
+    cmds:
+      - bun run --cwd "{{.ROOT_DIR}}/playground" assets
+      - bun run --cwd "{{.ROOT_DIR}}/playground" css
+
+  playground-build:
+    desc: Build the static WebAssembly playground
+    deps: [playground-assets]
+    cmds:
+      - go run ./playground/cmd/build -output dist/playground {{.CLI_ARGS}}
+      - GOOS=js GOARCH=wasm go build -o dist/playground/web/app.wasm ./playground/cmd/wasm
+
+  playground-compiler:
+    desc: Run the local Go-to-WebAssembly compilation endpoint
+    cmds:
+      - go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173
+
+  playground-serve:
+    desc: Serve the built playground locally
+    deps: [playground-build]
+    cmds:
+      - go run ./playground/cmd/serve -dir dist/playground
+
+  playground-dev:
+    desc: Rebuild and live-reload the playground with Air
+    cmds:
+      - go tool air -c .air.playground.toml
+
+  playground-test:
+    desc: Compile and exercise a user-authored Cord workflow in Chromium
+    cmds:
+      - task: playground-build
+      - rm -f .tmp/playground-ready
+      - go build -o .tmp/playground-serve ./playground/cmd/serve
+      - go build -o .tmp/playground-compiler ./playground/cmd/compiler
+      - pkill -f '^.tmp/playground-(serve|compiler)' 2>/dev/null || true
+      - .tmp/playground-serve -dir dist/playground -ready-file .tmp/playground-ready >.tmp/playground-server.log 2>&1 &
+      - .tmp/playground-compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173 >.tmp/playground-compiler.log 2>&1 &
+      - defer: pkill -f '^.tmp/playground-(serve|compiler)' 2>/dev/null || true
+      - until test -f .tmp/playground-ready && curl --fail --silent http://127.0.0.1:4180/healthz >/dev/null; do sleep 0.1; done
+      - bun run --cwd "{{.ROOT_DIR}}/playground" test
 
   test:
-    desc: Run tests with the race detector
+    desc: Run workspace tests with the race detector
     cmds:
-      - go test -race -shuffle=on ./...
+      - go test -race -shuffle=on ./... ./playground/...
 
   test-short:
-    desc: Run short tests with the race detector
+    desc: Run short workspace tests with the race detector
     cmds:
-      - go test -race -short -shuffle=on ./...
+      - go test -race -short -shuffle=on ./... ./playground/...
 
   test-coverage:
     desc: Run tests and write a coverage profile
@@ -27,9 +79,9 @@ tasks:
       - go test -race -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
 
   lint:
-    desc: Run static analysis
+    desc: Run static analysis across the workspace
     cmds:
-      - go tool golangci-lint run ./...
+      - go tool golangci-lint run ./... ./playground/...
 
   deadcode:
     desc: Report unreachable internal and example functions
@@ -45,7 +97,7 @@ tasks:
   fmt-check:
     desc: Check formatting without modifying files
     cmds:
-      - go tool golangci-lint fmt --diff
+      - go tool golangci-lint fmt --diff ./... ./playground/...
 
   ci:
     desc: Run all checks
@@ -55,3 +107,4 @@ tasks:
       - task: deadcode
       - task: test
       - task: build
+      - task: playground-build
