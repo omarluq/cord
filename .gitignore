@@ -1,5 +1,9 @@
 # Build artifacts
 /bin/
+/dist/
+node_modules/
+test-results/
+playwright-report/
 *.exe
 *.exe~
 *.dll
@@ -21,6 +25,7 @@ __pycache__/
 /.gocache/
 /.gomodcache/
 /.tmp/
+/.task/
 
 # IDE files
 .idea/

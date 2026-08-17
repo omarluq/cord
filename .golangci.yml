@@ -101,6 +101,10 @@ linters:
       # Executable examples intentionally print their result and use small illustrative constants.
       - linters: [forbidigo, mnd, wrapcheck]
         path: "examples/"
+      # go-app event handlers and render helpers require framework interfaces;
+      # package-level named Cord steps require the session-scoped recorder.
+      - linters: [gochecknoglobals, gocritic, govet, ireturn, mnd, nlreturn, testpackage, wsl_v5, lll]
+        path: "playground/"
       - linters: [all]
         path: ".*\\.pb\\.go$"
       - linters: [all]
