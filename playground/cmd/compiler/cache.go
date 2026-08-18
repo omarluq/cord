@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
+	"fmt"
 
 	"github.com/omarluq/cord/playground/internal/protocol"
 	"github.com/samber/hot"
@@ -27,16 +29,26 @@ func newCompilationCache(cfg config) *compilationCache {
 	}
 }
 
-func (cache *compilationCache) get(
+func (cache *compilationCache) load(
 	source string,
-) (compilationArtifact, bool) {
-	artifact, found, err := cache.values.Get(sha256.Sum256([]byte(source)))
-	return artifact, found && err == nil
-}
-
-func (cache *compilationCache) put(
-	source string,
-	artifact compilationArtifact,
-) {
-	cache.values.Set(sha256.Sum256([]byte(source)), artifact)
+	loader func() (compilationArtifact, error),
+) (compilationArtifact, error) {
+	key := sha256.Sum256([]byte(source))
+	artifact, found, err := cache.values.GetWithLoaders(
+		key,
+		func([][sha256.Size]byte) (map[[sha256.Size]byte]compilationArtifact, error) {
+			loaded, loadErr := loader()
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			return map[[sha256.Size]byte]compilationArtifact{key: loaded}, nil
+		},
+	)
+	if err != nil {
+		return compilationArtifact{}, fmt.Errorf("load compiled artifact: %w", err)
+	}
+	if !found {
+		return compilationArtifact{}, errors.New("compiler cache loader returned no artifact")
+	}
+	return artifact, nil
 }

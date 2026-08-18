@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,7 +137,39 @@ func TestHandlerCachesSuccessfulCompilations(t *testing.T) {
 	require.Equal(t, 1, calls)
 }
 
-func TestHandlerLimitsConcurrency(t *testing.T) {
+func TestHandlerDeduplicatesConcurrentCompilations(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	handler := newHandler(
+		testConfig(),
+		compilerFunc(func(context.Context, string) ([]byte, error) {
+			calls.Add(1)
+			close(started)
+			<-release
+			return []byte("wasm"), nil
+		}),
+	)
+
+	responses := make(chan int, 2)
+	for range 2 {
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, compileRequestForTest(t.Context()))
+			responses <- response.Code
+		}()
+	}
+	<-started
+	close(release)
+
+	require.Equal(t, http.StatusOK, <-responses)
+	require.Equal(t, http.StatusOK, <-responses)
+	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestHandlerLimitsDistinctConcurrentCompilations(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
@@ -155,7 +190,10 @@ func TestHandlerLimitsConcurrency(t *testing.T) {
 	<-started
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, compileRequestForTest(t.Context()))
+	handler.ServeHTTP(
+		response,
+		compileRequestWithSource(t.Context(), "package main\n"),
+	)
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Equal(t, "1", response.Header().Get("Retry-After"))
 	close(release)
@@ -171,7 +209,11 @@ func TestHandlerReturnsCompilerDiagnostics(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, compileRequestForTest(t.Context()))
 	require.Equal(t, http.StatusUnprocessableEntity, response.Code)
-	require.JSONEq(t, `{"error":"compile source: undefined: missing"}`, response.Body.String())
+	require.JSONEq(
+		t,
+		`{"error":"load compiled artifact: compile workflow: compile source: undefined: missing"}`,
+		response.Body.String(),
+	)
 }
 
 func TestHandlerTimesOutCompilation(t *testing.T) {
@@ -189,7 +231,23 @@ func TestHandlerTimesOutCompilation(t *testing.T) {
 }
 
 func compileRequestForTest(ctx context.Context) *http.Request {
-	request := httptest.NewRequestWithContext(ctx, http.MethodPost, compilePath, strings.NewReader(`{"source":"package main"}`))
+	return compileRequestWithSource(ctx, "package main")
+}
+
+func compileRequestWithSource(
+	ctx context.Context,
+	source string,
+) *http.Request {
+	body, err := json.Marshal(compileRequest{Source: source})
+	if err != nil {
+		panic(err)
+	}
+	request := httptest.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		compilePath,
+		bytes.NewReader(body),
+	)
 	request.Header.Set("Content-Type", jsonMediaType)
 	request.Header.Set("Origin", "https://play.example")
 	return request
