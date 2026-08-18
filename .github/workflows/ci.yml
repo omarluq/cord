@@ -75,7 +75,8 @@ jobs:
       - name: Install browser test dependencies
         run: |
           bun install --cwd playground --frozen-lockfile --ignore-scripts
-          bunx --cwd playground playwright install --with-deps chromium
+          cd playground
+          bunx playwright install --with-deps chromium
 
       - name: Test WebAssembly playground
         run: task playground-test
