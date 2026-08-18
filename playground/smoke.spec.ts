@@ -9,6 +9,10 @@ interface GraphNodeStyle {
   height: number;
 }
 
+interface StateTrackingElement extends HTMLElement {
+  observedNodeStates?: string[];
+}
+
 const compilerURL = "http://127.0.0.1:4180/compile";
 
 async function graphNodeStyles(page: Page): Promise<GraphNodeStyle[]> {
@@ -63,6 +67,17 @@ test(
       "func increment",
     );
 
+    await page.locator("#workflow-graph").evaluate((element) => {
+      const graph = element as StateTrackingElement;
+      graph.observedNodeStates = [];
+      new MutationObserver(() => {
+        graph.observedNodeStates?.push(graph.dataset.nodeStates ?? "");
+      }).observe(graph, {
+        attributes: true,
+        attributeFilter: ["data-node-states"],
+      });
+    });
+
     await page.getByRole("button", {
       name: "Compile and run workflow",
     }).click();
@@ -74,11 +89,6 @@ test(
       "3",
       { timeout: 60_000 },
     );
-    await expect(page.locator("#workflow-graph")).toHaveAttribute(
-      "data-node-states",
-      /running/,
-      { timeout: 60_000 },
-    );
     await expect(page.locator('[data-testid="run-result"]')).toContainText(
       "result: 10",
       { timeout: 60_000 },
@@ -87,6 +97,13 @@ test(
       "data-node-states",
       "completed,completed",
     );
+    const observedNodeStates = await page
+      .locator("#workflow-graph")
+      .evaluate((element) => (
+        (element as StateTrackingElement).observedNodeStates ?? []
+      ));
+    expect(observedNodeStates.some((states) => states.includes("running")))
+      .toBe(true);
 
     await expect.poll(async () => (
       (await graphNodeStyles(page)).map(({
