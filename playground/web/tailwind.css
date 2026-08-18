@@ -35,54 +35,6 @@
   :where(button, input, a, [tabindex]):focus-visible { outline: 2px solid var(--color-nord-8); outline-offset: 2px; }
 }
 
-.dag-flow { animation: flow .8s linear infinite; }
-
-.execution-toggle {
-  position: relative;
-}
-
-.execution-toggle::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  content: "";
-  transform: translate(-50%, -50%);
-}
-
-.execution-toggle-start::before {
-  width: 0;
-  height: 0;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-left: 10px solid currentColor;
-  transform: translate(-40%, -50%);
-}
-
-.execution-toggle-stop::before {
-  width: 10px;
-  height: 10px;
-  border-radius: 1px;
-  background: currentColor;
-}
-
-.graph-zoom::before,
-.graph-zoom-in::after {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 12px;
-  height: 2px;
-  border-radius: 9999px;
-  background: currentColor;
-  content: "";
-  transform: translate(-50%, -50%);
-}
-
-.graph-zoom-in::after {
-  transform: translate(-50%, -50%) rotate(90deg);
-}
-
-@keyframes flow { to { stroke-dashoffset: -12; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
