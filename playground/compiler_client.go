@@ -2,6 +2,7 @@ package playground
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,11 +12,15 @@ import (
 	"net/http"
 	"time"
 
-	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
 	"github.com/omarluq/cord/playground/internal/protocol"
 )
 
-const compilationRequestTimeout = 3 * time.Minute
+const (
+	compilationRequestTimeout = 3 * time.Minute
+	maxCompilationErrorBytes  = 1 << 20
+	maxGraphBytes             = 1 << 20
+	maxWASMBytes              = 64 << 20
+)
 
 type compilationArtifact struct {
 	graph protocol.Graph
@@ -46,7 +51,7 @@ func (cache *compilationCache) put(
 }
 
 func compile(
-	ctx goapp.Context,
+	ctx context.Context,
 	endpoint string,
 	source string,
 ) (compilationArtifact, error) {
@@ -83,26 +88,35 @@ func compile(
 		)
 	}
 
-	result, readErr := io.ReadAll(response.Body)
+	artifact, responseErr := readCompilationResponse(response)
 
 	closeErr := response.Body.Close()
-	if responseErr := errors.Join(readErr, closeErr); responseErr != nil {
-		return compilationArtifact{}, fmt.Errorf(
-			"read compilation response: %w",
-			responseErr,
-		)
+	if err := errors.Join(responseErr, closeErr); err != nil {
+		return compilationArtifact{}, err
 	}
 
+	return artifact, nil
+}
+
+func readCompilationResponse(
+	response *http.Response,
+) (compilationArtifact, error) {
 	if response.StatusCode != http.StatusOK {
-		return compilationArtifact{}, compilationError(
-			response.Status,
-			result,
+		body, err := readLimited(
+			response.Body,
+			maxCompilationErrorBytes,
+			"compilation error",
 		)
+		if err != nil {
+			return compilationArtifact{}, err
+		}
+
+		return compilationArtifact{}, compilationError(response.Status, body)
 	}
 
 	artifact, err := decodeArtifact(
 		response.Header.Get("Content-Type"),
-		result,
+		response.Body,
 	)
 	if err != nil {
 		return compilationArtifact{}, fmt.Errorf(
@@ -127,7 +141,7 @@ func compilationError(status string, body []byte) error {
 
 func decodeArtifact(
 	contentType string,
-	body []byte,
+	body io.Reader,
 ) (compilationArtifact, error) {
 	mediaType, parameters, err := mime.ParseMediaType(contentType)
 	if err != nil {
@@ -153,10 +167,7 @@ func decodeArtifact(
 		wasm: []byte{},
 	}
 
-	reader := multipart.NewReader(
-		bytes.NewReader(body),
-		parameters["boundary"],
-	)
+	reader := multipart.NewReader(body, parameters["boundary"])
 	for {
 		finished, err := readArtifactPart(reader, &artifact)
 		if err != nil {
@@ -190,18 +201,21 @@ func readArtifactPart(
 		return false, fmt.Errorf("read part: %w", err)
 	}
 
-	content, readErr := io.ReadAll(part)
+	name := part.FormName()
+
+	limit := int64(maxGraphBytes)
+	if name == "wasm" {
+		limit = maxWASMBytes
+	}
+
+	content, readErr := readLimited(part, limit, name)
 
 	closeErr := part.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
-		return false, fmt.Errorf(
-			"read %s part: %w",
-			part.FormName(),
-			err,
-		)
+		return false, fmt.Errorf("read %s part: %w", name, err)
 	}
 
-	switch part.FormName() {
+	switch name {
 	case "graph":
 		if err := json.Unmarshal(content, &artifact.graph); err != nil {
 			return false, fmt.Errorf("decode graph: %w", err)
@@ -211,4 +225,21 @@ func readArtifactPart(
 	}
 
 	return false, nil
+}
+
+func readLimited(
+	reader io.Reader,
+	limit int64,
+	name string,
+) ([]byte, error) {
+	content, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", name, err)
+	}
+
+	if int64(len(content)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", name, limit)
+	}
+
+	return content, nil
 }

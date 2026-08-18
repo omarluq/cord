@@ -1,6 +1,7 @@
 package playground
 
 import (
+	"context"
 	"net/url"
 	"strings"
 
@@ -130,7 +131,18 @@ func (app *App) run(ctx goapp.Context, _ goapp.Event) {
 	}
 
 	ctx.Async(func() {
-		artifact, err := compile(ctx, app.compilerURL, source)
+		compileContext, cancel := context.WithTimeout(
+			context.Background(),
+			compilationRequestTimeout,
+		)
+		defer cancel()
+
+		artifact, err := compile(
+			compileContext,
+			app.compilerURL,
+			source,
+		)
+
 		ctx.Dispatch(func(goapp.Context) {
 			if err != nil {
 				app.fail(err)
