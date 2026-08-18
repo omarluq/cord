@@ -25,9 +25,11 @@ func TestIsBusy(t *testing.T) {
 		name string
 		want bool
 	}{
-		{name: "mattn primary", err: mattn.Error{Code: mattn.ErrBusy}, want: true},
+		{name: "mattn primary value", err: mattn.ErrBusy, want: true},
+		{name: "mattn extended value", err: mattn.ErrBusySnapshot, want: true},
+		{name: "mattn primary struct", err: mattn.Error{Code: mattn.ErrBusy}, want: true},
 		{
-			name: "mattn extended",
+			name: "mattn extended struct",
 			err:  mattn.Error{Code: mattn.ErrBusy, ExtendedCode: mattn.ErrBusySnapshot},
 			want: true,
 		},
@@ -36,7 +38,8 @@ func TestIsBusy(t *testing.T) {
 		{name: "modernc", err: moderncBusy, want: true},
 		{name: "wrapped", err: fmt.Errorf("wrapped: %w", ncruces.BUSY), want: true},
 		{name: "joined", err: errors.Join(errors.New("other"), moderncBusy), want: true},
-		{name: "mattn other", err: mattn.Error{Code: mattn.ErrConstraint}, want: false},
+		{name: "mattn other value", err: mattn.ErrConstraint, want: false},
+		{name: "mattn other struct", err: mattn.Error{Code: mattn.ErrConstraint}, want: false},
 		{name: "ncruces other", err: ncruces.CONSTRAINT, want: false},
 	}
 

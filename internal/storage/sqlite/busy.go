@@ -70,7 +70,8 @@ func methodCodeMatches(value reflect.Value) bool {
 }
 
 func valueCodeMatches(value reflect.Value, typeOf reflect.Type) bool {
-	if typeOf.Name() == "ErrorCode" || typeOf.Name() == "ExtendedErrorCode" {
+	switch typeOf.Name() {
+	case "ErrorCode", "ExtendedErrorCode", "ErrNo", "ErrNoExtended":
 		return codeValueMatches(value)
 	}
 
