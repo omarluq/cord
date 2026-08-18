@@ -14,6 +14,7 @@ func main() {
 		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
 			os.Exit(1)
 		}
+
 		os.Exit(1)
 	}
 }
@@ -21,6 +22,7 @@ func main() {
 func run(arguments []string) error {
 	flags := flag.NewFlagSet("playground-build", flag.ContinueOnError)
 	output := flags.String("output", "dist/playground", "static output directory")
+
 	prefix := flags.String("prefix", "", "deployment URL prefix")
 	if err := flags.Parse(arguments); err != nil {
 		return fmt.Errorf("parse flags: %w", err)

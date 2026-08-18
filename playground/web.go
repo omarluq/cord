@@ -35,21 +35,25 @@ func RegisterRoute() {
 
 // GenerateStatic assembles the playground website in output.
 func GenerateStatic(output, prefix string) error {
+	const imageDirectoryMode = 0o750
+
 	output, err := safeOutputPath(output)
 	if err != nil {
 		return err
 	}
 
 	RegisterRoute()
+
 	if err := os.RemoveAll(output); err != nil {
 		return fmt.Errorf("clear static output: %w", err)
 	}
+
 	if err := goapp.GenerateStaticWebsite(output, Handler(prefix)); err != nil {
 		return fmt.Errorf("generate static website: %w", err)
 	}
 
 	images := filepath.Join(output, "web", "images")
-	if err := os.MkdirAll(images, 0o750); err != nil {
+	if err := os.MkdirAll(images, imageDirectoryMode); err != nil {
 		return fmt.Errorf("create playground images directory: %w", err)
 	}
 
@@ -72,10 +76,12 @@ func safeOutputPath(output string) (string, error) {
 	if output == "" {
 		return "", errors.New("static output path is empty")
 	}
+
 	absolute, err := filepath.Abs(output)
 	if err != nil {
 		return "", fmt.Errorf("resolve static output: %w", err)
 	}
+
 	absolute = filepath.Clean(absolute)
 	if filepath.Dir(absolute) == absolute {
 		return "", fmt.Errorf("static output path %q is a filesystem root", output)
@@ -85,15 +91,18 @@ func safeOutputPath(output string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve working directory: %w", err)
 	}
+
 	relative, err := filepath.Rel(absolute, workingDirectory)
 	if err != nil {
 		return "", fmt.Errorf("compare static output with working directory: %w", err)
 	}
+
 	if relative == "." ||
 		(relative != ".." &&
 			!strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
 		return "", fmt.Errorf("static output path %q contains the working directory", output)
 	}
+
 	return absolute, nil
 }
 

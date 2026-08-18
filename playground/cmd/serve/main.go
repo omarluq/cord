@@ -26,6 +26,7 @@ func main() {
 		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
 			os.Exit(1)
 		}
+
 		os.Exit(1)
 	}
 }
@@ -43,6 +44,7 @@ func run(arguments []string) error {
 	server := &http.Server{
 		Addr: *address, Handler: contentTypes(http.FileServer(http.Dir(*directory))), ReadHeaderTimeout: readTimeout,
 	}
+
 	failures := serve(server)
 	if err := waitUntilServing(*address, failures); err != nil {
 		return err
@@ -88,17 +90,26 @@ func serve(server *http.Server) <-chan error {
 }
 
 func signalReady(filename, address string) (func(), error) {
-	if filename == "" {
-		return func() {}, nil
-	}
-	if err := os.MkdirAll(".tmp", 0o750); err != nil {
-		return nil, fmt.Errorf("create ready directory: %w", err)
-	}
-	if err := os.WriteFile(filename, []byte(address), 0o600); err != nil {
-		return nil, fmt.Errorf("write ready file: %w", err)
+	const (
+		readyDirectoryMode = 0o750
+		readyFileMode      = 0o600
+	)
+
+	if filename != "" {
+		if err := os.MkdirAll(".tmp", readyDirectoryMode); err != nil {
+			return nil, fmt.Errorf("create ready directory: %w", err)
+		}
+
+		if err := os.WriteFile(filename, []byte(address), readyFileMode); err != nil {
+			return nil, fmt.Errorf("write ready file: %w", err)
+		}
 	}
 
 	return func() {
+		if filename == "" {
+			return
+		}
+
 		if err := os.Remove(filename); err != nil && !errors.Is(err, os.ErrNotExist) {
 			if _, writeErr := fmt.Fprintf(
 				os.Stderr,
@@ -153,10 +164,12 @@ func waitUntilServing(address string, failures <-chan error) error {
 			if err != nil {
 				return fmt.Errorf("create startup request: %w", err)
 			}
+
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				continue
 			}
+
 			if err := response.Body.Close(); err != nil {
 				return fmt.Errorf("close startup response: %w", err)
 			}

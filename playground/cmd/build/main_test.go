@@ -33,6 +33,7 @@ func TestRunGeneratesStaticWebsite(t *testing.T) {
 	indexFile, err := os.DirFS(output).Open("index.html")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, indexFile.Close()) })
+
 	index, err := io.ReadAll(indexFile)
 	require.NoError(t, err)
 	require.Contains(t, string(index), `href="/cord/manifest.webmanifest"`)

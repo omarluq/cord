@@ -12,6 +12,7 @@ func TestExampleScriptsAreValidGoPrograms(t *testing.T) {
 	t.Parallel()
 
 	require.Len(t, exampleScripts, 6)
+
 	for _, script := range exampleScripts {
 		t.Run(script.filename, func(t *testing.T) {
 			t.Parallel()
@@ -37,6 +38,7 @@ func TestExampleSource(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+
 			source, found := exampleSource(test.filename)
 			require.Equal(t, test.source, source)
 			require.Equal(t, test.found, found)

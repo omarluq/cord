@@ -4,46 +4,61 @@ import (
 	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
 )
 
-var (
-	panelClasses = []string{
-		"overflow-hidden",
+const (
+	classBackgroundCurrent = "bg-current"
+	classBorderNord3       = "border-nord-3"
+	classCursorPointer     = "cursor-pointer"
+	classFlex1             = "flex-1"
+	classFlexColumn        = "flex-col"
+	classItemsCenter       = "items-center"
+	classMinHeight0        = "min-h-0"
+	classOverflowHidden    = "overflow-hidden"
+	classTextExtraSmall    = "text-xs"
+)
+
+func panelClasses() []string {
+	return []string{
+		classOverflowHidden,
 		"border",
-		"border-nord-3",
+		classBorderNord3,
 		"bg-nord-1",
 	}
-	buttonClasses = []string{
-		"cursor-pointer",
+}
+
+func buttonClasses() []string {
+	return []string{
+		classCursorPointer,
 		"rounded-md",
 		"border",
-		"border-nord-3",
+		classBorderNord3,
 		"bg-nord-2",
 		"px-3",
 		"py-2",
-		"text-xs",
+		classTextExtraSmall,
 		"font-semibold",
 		"transition-colors",
 		"hover:not-disabled:border-nord-8",
 		"disabled:cursor-not-allowed",
 		"disabled:opacity-40",
 	}
-)
+}
 
 // Render builds the editor, graph, and output interface.
 func (app *App) Render() goapp.UI {
 	return goapp.Main().Class(
 		"flex",
 		"h-dvh",
-		"min-h-0",
-		"flex-col",
-		"overflow-hidden",
+		classMinHeight0,
+		classFlexColumn,
+		classOverflowHidden,
 	).Body(
 		goapp.Div().Class(
 			"grid",
-			"min-h-0",
+			classMinHeight0,
 			"w-full",
-			"flex-1",
+			classFlex1,
 			"grid-cols-2",
-			"overflow-hidden",
+			classOverflowHidden,
 		).Body(
 			app.renderEditorPanel(),
 			app.renderResultsPanel(),
@@ -53,24 +68,24 @@ func (app *App) Render() goapp.UI {
 
 func (app *App) renderEditorPanel() goapp.UI {
 	return goapp.Section().Class(append(
-		panelClasses,
+		panelClasses(),
 		"flex",
-		"min-h-0",
-		"flex-col",
+		classMinHeight0,
+		classFlexColumn,
 	)...).Body(
 		goapp.Div().Class(
 			"flex",
 			"shrink-0",
-			"items-center",
+			classItemsCenter,
 			"justify-between",
 			"gap-4",
 			"border-b",
-			"border-nord-3",
+			classBorderNord3,
 			"px-4",
 			"py-3",
 		).Body(
 			app.renderExampleSelect(),
-			goapp.Div().Class("flex", "items-center", "gap-3").Body(
+			goapp.Div().Class("flex", classItemsCenter, "gap-3").Body(
 				goapp.Span().
 					DataSet("testid", "status").
 					Class("sr-only").
@@ -79,34 +94,34 @@ func (app *App) renderEditorPanel() goapp.UI {
 				app.renderExecutionButton(),
 			),
 		),
-		goapp.Div().ID(editorID).Class("min-h-0", "flex-1"),
+		goapp.Div().ID(editorID).Class(classMinHeight0, classFlex1),
 	)
 }
 
 func (app *App) renderResultsPanel() goapp.UI {
 	return goapp.Div().Class(
 		"grid",
-		"min-h-0",
+		classMinHeight0,
 		"min-w-0",
 		"grid-rows-[minmax(0,2fr)_minmax(0,1fr)]",
-		"overflow-hidden",
+		classOverflowHidden,
 	).Body(
 		app.renderGraphPanel(),
 		goapp.Section().Class(append(
-			panelClasses,
+			panelClasses(),
 			"flex",
-			"min-h-0",
-			"flex-col",
+			classMinHeight0,
+			classFlexColumn,
 		)...).Body(
 			goapp.Div().Class(
 				"shrink-0",
 				"border-b",
-				"border-nord-3",
+				classBorderNord3,
 				"px-4",
 				"py-3",
 			).Body(
 				goapp.H2().Class(
-					"text-xs",
+					classTextExtraSmall,
 					"font-bold",
 					"uppercase",
 					"tracking-wider",
@@ -115,8 +130,8 @@ func (app *App) renderResultsPanel() goapp.UI {
 			goapp.Pre().
 				DataSet("testid", "run-result").
 				Class(
-					"min-h-0",
-					"flex-1",
+					classMinHeight0,
+					classFlex1,
 					"overflow-x-hidden",
 					"overflow-y-auto",
 					"whitespace-pre-wrap",
@@ -132,11 +147,11 @@ func (app *App) renderResultsPanel() goapp.UI {
 
 func (app *App) renderGraphPanel() goapp.UI {
 	return goapp.Section().Class(append(
-		panelClasses,
+		panelClasses(),
 		"relative",
 		"flex",
-		"min-h-0",
-		"flex-col",
+		classMinHeight0,
+		classFlexColumn,
 	)...).Body(
 		goapp.Div().Class(
 			"absolute",
@@ -150,8 +165,8 @@ func (app *App) renderGraphPanel() goapp.UI {
 			app.renderZoomButton("in", 1),
 		),
 		goapp.Div().ID(graphID).Class(
-			"min-h-0",
-			"flex-1",
+			classMinHeight0,
+			classFlex1,
 			"bg-nord-0",
 		),
 	)
@@ -159,13 +174,14 @@ func (app *App) renderGraphPanel() goapp.UI {
 
 func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 	label := "Zoom " + direction + " workflow graph"
+
 	icon := []goapp.UI{
 		goapp.Span().Class(
 			"absolute",
 			"h-0.5",
 			"w-3",
 			"rounded-full",
-			"bg-current",
+			classBackgroundCurrent,
 		),
 	}
 	if direction == "in" {
@@ -176,7 +192,7 @@ func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 				"h-3",
 				"w-0.5",
 				"rounded-full",
-				"bg-current",
+				classBackgroundCurrent,
 			),
 		)
 	}
@@ -189,12 +205,12 @@ func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 			"relative",
 			"flex",
 			"size-8",
-			"cursor-pointer",
-			"items-center",
+			classCursorPointer,
+			classItemsCenter,
 			"justify-center",
 			"rounded",
 			"border",
-			"border-nord-3",
+			classBorderNord3,
 			"bg-nord-1/90",
 			"text-nord-5",
 			"hover:border-nord-8",
@@ -208,10 +224,10 @@ func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 
 func (app *App) renderExecutionButton() goapp.UI {
 	classes := append(
-		buttonClasses,
+		buttonClasses(),
 		"flex",
 		"size-9",
-		"items-center",
+		classItemsCenter,
 		"justify-center",
 		"p-0",
 	)
@@ -229,7 +245,7 @@ func (app *App) renderExecutionButton() goapp.UI {
 				goapp.Span().Class(
 					"size-2.5",
 					"rounded-xs",
-					"bg-current",
+					classBackgroundCurrent,
 				),
 			)
 	}
@@ -277,17 +293,17 @@ func (app *App) renderExampleSelect() goapp.UI {
 		goapp.Select().
 			Aria("label", "Example workflow").
 			Class(
-				"cursor-pointer",
+				classCursorPointer,
 				"appearance-none",
 				"rounded",
 				"border",
-				"border-nord-3",
+				classBorderNord3,
 				"bg-nord-0",
 				"py-1",
 				"pr-2",
 				"pl-8",
 				"font-mono",
-				"text-xs",
+				classTextExtraSmall,
 				"text-nord-5",
 			).
 			Disabled(

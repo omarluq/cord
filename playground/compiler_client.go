@@ -32,6 +32,7 @@ func (cache *compilationCache) get(source string) (compilationArtifact, bool) {
 	if !cache.valid || cache.source != source {
 		return compilationArtifact{}, false
 	}
+
 	return cache.artifact, true
 }
 
@@ -69,9 +70,11 @@ func compile(
 			err,
 		)
 	}
+
 	request.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: compilationRequestTimeout}
+
 	response, err := client.Do(request)
 	if err != nil {
 		return compilationArtifact{}, fmt.Errorf(
@@ -79,14 +82,17 @@ func compile(
 			err,
 		)
 	}
+
 	result, readErr := io.ReadAll(response.Body)
+
 	closeErr := response.Body.Close()
-	if err := errors.Join(readErr, closeErr); err != nil {
+	if responseErr := errors.Join(readErr, closeErr); responseErr != nil {
 		return compilationArtifact{}, fmt.Errorf(
 			"read compilation response: %w",
-			err,
+			responseErr,
 		)
 	}
+
 	if response.StatusCode != http.StatusOK {
 		return compilationArtifact{}, compilationError(
 			response.Status,
@@ -104,6 +110,7 @@ func compile(
 			err,
 		)
 	}
+
 	return artifact, nil
 }
 
@@ -114,6 +121,7 @@ func compilationError(status string, body []byte) error {
 	if json.Unmarshal(body, &failure) == nil && failure.Error != "" {
 		return fmt.Errorf("compile workflow: %s", failure.Error)
 	}
+
 	return fmt.Errorf("compile workflow: %s", status)
 }
 
@@ -128,6 +136,7 @@ func decodeArtifact(
 			err,
 		)
 	}
+
 	if mediaType != "multipart/form-data" ||
 		parameters["boundary"] == "" {
 		return compilationArtifact{}, fmt.Errorf(
@@ -143,6 +152,7 @@ func decodeArtifact(
 		},
 		wasm: []byte{},
 	}
+
 	reader := multipart.NewReader(
 		bytes.NewReader(body),
 		parameters["boundary"],
@@ -152,15 +162,18 @@ func decodeArtifact(
 		if err != nil {
 			return compilationArtifact{}, err
 		}
+
 		if finished {
 			break
 		}
 	}
+
 	if len(artifact.wasm) == 0 {
 		return compilationArtifact{}, errors.New(
 			"WebAssembly part is missing",
 		)
 	}
+
 	return artifact, nil
 }
 
@@ -172,10 +185,13 @@ func readArtifactPart(
 	if errors.Is(err, io.EOF) {
 		return true, nil
 	}
+
 	if err != nil {
 		return false, fmt.Errorf("read part: %w", err)
 	}
+
 	content, readErr := io.ReadAll(part)
+
 	closeErr := part.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return false, fmt.Errorf(
@@ -193,5 +209,6 @@ func readArtifactPart(
 	case "wasm":
 		artifact.wasm = content
 	}
+
 	return false, nil
 }
