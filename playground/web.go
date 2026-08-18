@@ -22,6 +22,9 @@ var goLogo []byte
 //go:embed web/playground.js
 var playgroundScript []byte
 
+//go:embed web/worker.js
+var workerScript []byte
+
 const (
 	route     = "/"
 	iconPath  = "/web/icon.svg"
@@ -48,6 +51,7 @@ func GenerateStatic(output, prefix string) error {
 		"icon.svg":       icon,
 		"go-logo.svg":    goLogo,
 		"playground.js":  playgroundScript,
+		"worker.js":      workerScript,
 	}
 	for name, content := range assets {
 		asset := filepath.Join(output, "web", name)
@@ -77,7 +81,8 @@ func Handler(prefix string) *goapp.Handler {
 		Styles:          []string{"/web/playground.css"},
 		Scripts:         []string{"/web/playground.js defer"},
 		CacheableResources: []string{
-			"/web/playground.css", iconPath, "/web/go-logo.svg", "/web/playground.js",
+			"/web/playground.css", iconPath, "/web/go-logo.svg",
+			"/web/playground.js", "/web/worker.js",
 		},
 		Resources: resources,
 		StartURL:  route,
