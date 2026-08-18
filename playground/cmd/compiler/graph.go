@@ -41,12 +41,17 @@ func instrumentWorkflow(source string, graph protocol.Graph) (string, error) {
 	}
 
 	steps := make(map[string]string, len(graph.Nodes))
+	ambiguous := make(map[string]struct{})
 	for _, node := range graph.Nodes {
-		name := node.ID
-		if separator := strings.LastIndexByte(name, '.'); separator >= 0 {
-			name = name[separator+1:]
+		name := stepBaseName(node.ID)
+		if existing, found := steps[name]; found && existing != node.ID {
+			delete(steps, name)
+			ambiguous[name] = struct{}{}
+			continue
 		}
-		steps[name] = node.ID
+		if _, found := ambiguous[name]; !found {
+			steps[name] = node.ID
+		}
 	}
 	for _, declaration := range file.Decls {
 		instrumentStep(declaration, steps)
@@ -102,10 +107,23 @@ func nameStepResults(function *ast.FuncDecl) (string, bool) {
 			resultNames = append(resultNames, name.Name)
 		}
 	}
-	if len(resultNames) != 2 {
+	if len(resultNames) != 2 || !isErrorResult(function.Type.Results.List) {
 		return "", false
 	}
 	return resultNames[1], true
+}
+
+func stepBaseName(identifier string) string {
+	if separator := strings.LastIndexByte(identifier, '.'); separator >= 0 {
+		return identifier[separator+1:]
+	}
+	return identifier
+}
+
+func isErrorResult(results []*ast.Field) bool {
+	last := results[len(results)-1]
+	identifier, ok := last.Type.(*ast.Ident)
+	return ok && identifier.Name == "error"
 }
 
 func nodeCompletionStatement(identifier, errorResult string) ast.Stmt {
