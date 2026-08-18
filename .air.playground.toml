@@ -4,7 +4,7 @@ tmp_dir = ".tmp/air-playground"
 [build]
 cmd = "task playground-build && go build -o .tmp/air-playground/serve ./playground/cmd/serve"
 entrypoint = [".tmp/air-playground/serve", "-dir", "dist/playground"]
-include_ext = ["go", "css", "svg", "mod", "sum"]
+include_ext = ["go", "ts", "css", "svg", "mod", "sum"]
 include_dir = ["playground", "internal", "docs"]
 include_file = ["go.mod", "go.sum", "go.work", "playground/go.mod", "playground/go.sum", "Taskfile.yml"]
 exclude_dir = ["dist", "node_modules", ".tmp", ".git"]
