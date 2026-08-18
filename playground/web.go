@@ -2,28 +2,21 @@
 package playground
 
 import (
-	_ "embed"
+	_ "embed" // Embed the static browser assets into the site generator.
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
 )
-
-//go:embed web/playground.css
-var stylesheet []byte
 
 //go:embed web/icon.svg
 var icon []byte
 
 //go:embed web/go-logo.svg
 var goLogo []byte
-
-//go:embed web/playground.js
-var playgroundScript []byte
-
-//go:embed web/worker.js
-var workerScript []byte
 
 const (
 	route     = "/"
@@ -38,6 +31,11 @@ func RegisterRoute() {
 
 // GenerateStatic assembles the playground website in output.
 func GenerateStatic(output, prefix string) error {
+	output, err := safeOutputPath(output)
+	if err != nil {
+		return err
+	}
+
 	RegisterRoute()
 	if err := os.RemoveAll(output); err != nil {
 		return fmt.Errorf("clear static output: %w", err)
@@ -47,11 +45,8 @@ func GenerateStatic(output, prefix string) error {
 	}
 
 	assets := map[string][]byte{
-		"playground.css": stylesheet,
-		"icon.svg":       icon,
-		"go-logo.svg":    goLogo,
-		"playground.js":  playgroundScript,
-		"worker.js":      workerScript,
+		"icon.svg":    icon,
+		"go-logo.svg": goLogo,
 	}
 	for name, content := range assets {
 		asset := filepath.Join(output, "web", name)
@@ -61,6 +56,35 @@ func GenerateStatic(output, prefix string) error {
 	}
 
 	return nil
+}
+
+func safeOutputPath(output string) (string, error) {
+	if output == "" {
+		return "", errors.New("static output path is empty")
+	}
+	absolute, err := filepath.Abs(output)
+	if err != nil {
+		return "", fmt.Errorf("resolve static output: %w", err)
+	}
+	absolute = filepath.Clean(absolute)
+	if filepath.Dir(absolute) == absolute {
+		return "", fmt.Errorf("static output path %q is a filesystem root", output)
+	}
+
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory: %w", err)
+	}
+	relative, err := filepath.Rel(absolute, workingDirectory)
+	if err != nil {
+		return "", fmt.Errorf("compare static output with working directory: %w", err)
+	}
+	if relative == "." ||
+		(relative != ".." &&
+			!strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return "", fmt.Errorf("static output path %q contains the working directory", output)
+	}
+	return absolute, nil
 }
 
 // Handler returns the go-app static-site configuration for the given asset prefix.
