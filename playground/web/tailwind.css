@@ -17,6 +17,7 @@
   --color-nord-13: #ebcb8b;
   --color-nord-14: #a3be8c;
   --color-nord-15: #b48ead;
+  --color-graph-queued: #607087;
 }
 
 @layer base {
