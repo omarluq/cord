@@ -70,11 +70,15 @@ test(
     await page.locator("#workflow-graph").evaluate((element) => {
       const graph = element as StateTrackingElement;
       graph.observedNodeStates = [];
-      new MutationObserver(() => {
+      new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          graph.observedNodeStates?.push(mutation.oldValue ?? "");
+        }
         graph.observedNodeStates?.push(graph.dataset.nodeStates ?? "");
       }).observe(graph, {
         attributes: true,
         attributeFilter: ["data-node-states"],
+        attributeOldValue: true,
       });
     });
 
