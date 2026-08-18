@@ -1,0 +1,88 @@
+interface GoRuntime {
+  importObject: WebAssembly.Imports;
+  run(instance: WebAssembly.Instance): Promise<void>;
+  _scheduledTimeouts: Map<number, ReturnType<typeof setTimeout>>;
+}
+
+interface GoConstructor {
+  new (): GoRuntime;
+}
+
+interface WorkerGlobal extends DedicatedWorkerGlobalScope {
+  Go: GoConstructor;
+}
+
+interface RunRequest {
+  bytes: ArrayBuffer;
+  wasmExecURL: string;
+}
+
+type NodeState = "running" | "completed" | "failed";
+
+type WorkerMessage =
+  | { type: "node"; id: string; state: NodeState }
+  | { type: "output"; value: string }
+  | { type: "error"; message: string }
+  | { type: "exit" };
+
+const worker = self as unknown as WorkerGlobal;
+
+worker.onerror = (event: ErrorEvent): boolean => {
+  if (event.message.includes("Go program has already exited")) {
+    event.preventDefault();
+    return true;
+  }
+  return false;
+};
+
+function send(message: WorkerMessage): void {
+  worker.postMessage(message);
+}
+
+function sendOutput(type: "output" | "error", values: unknown[]): void {
+  const value = values.map(String).join(" ");
+  const node = value.match(
+    /^__CORD_NODE__:([^:]+):(running|completed|failed)$/,
+  );
+  if (node?.[1] && node[2]) {
+    send({
+      type: "node",
+      id: node[1],
+      state: node[2] as NodeState,
+    });
+    return;
+  }
+
+  if (type === "error") {
+    send({ type, message: value });
+    return;
+  }
+  send({ type, value });
+}
+
+console.log = (...values: unknown[]): void => sendOutput("output", values);
+console.error = (...values: unknown[]): void => sendOutput("error", values);
+
+worker.onmessage = async (event: MessageEvent<RunRequest>): Promise<void> => {
+  try {
+    worker.importScripts(event.data.wasmExecURL);
+    const goRuntime = new worker.Go();
+    const result = await WebAssembly.instantiate(
+      event.data.bytes,
+      goRuntime.importObject,
+    );
+    await goRuntime.run(result.instance);
+    for (const timeout of goRuntime._scheduledTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    goRuntime._scheduledTimeouts.clear();
+    send({ type: "exit" });
+  } catch (error: unknown) {
+    send({
+      type: "error",
+      message: error instanceof Error ? error.stack ?? error.message : String(error),
+    });
+  }
+};
+
+export {};
