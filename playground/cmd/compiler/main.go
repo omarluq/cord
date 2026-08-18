@@ -42,6 +42,7 @@ func main() {
 		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
 			os.Exit(1)
 		}
+
 		os.Exit(1)
 	}
 }
@@ -59,7 +60,7 @@ func run(arguments []string) error {
 
 	server := &http.Server{
 		Addr:              cfg.address,
-		Handler:           newHandler(cfg, compiler),
+		Handler:           newHandler(&cfg, compiler),
 		ReadHeaderTimeout: serverHeaderTimeout,
 		ReadTimeout:       serverHeaderTimeout,
 		WriteTimeout:      cfg.compileTimeout + serverShutdownTimeout,
@@ -79,13 +80,16 @@ func run(arguments []string) error {
 		if !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("serve compiler: %w", err)
 		}
+
 		return nil
 	case <-ctx.Done():
 		shutdownContext, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		defer cancel()
+
 		if err := server.Shutdown(shutdownContext); err != nil {
 			return fmt.Errorf("shut down compiler: %w", err)
 		}
+
 		return nil
 	}
 }
@@ -94,7 +98,12 @@ func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("playground-compiler", flag.ContinueOnError)
 	cfg := config{}
 	flags.StringVar(&cfg.address, "addr", "127.0.0.1:8080", "listen address")
-	flags.StringVar(&cfg.allowedOrigin, "allowed-origin", os.Getenv("CORD_COMPILER_ALLOWED_ORIGIN"), "allowed CORS origin")
+	flags.StringVar(
+		&cfg.allowedOrigin,
+		"allowed-origin",
+		os.Getenv("CORD_COMPILER_ALLOWED_ORIGIN"),
+		"allowed CORS origin",
+	)
 	flags.StringVar(&cfg.cordDirectory, "cord-dir", ".", "Cord module directory")
 	flags.Int64Var(&cfg.maxRequestBytes, "max-request-bytes", defaultMaxRequestBytes, "maximum JSON request size")
 	flags.IntVar(&cfg.maxSourceBytes, "max-source-bytes", defaultMaxSourceBytes, "maximum source size")
@@ -117,9 +126,11 @@ func parseConfig(arguments []string) (config, error) {
 		defaultCacheTTL,
 		"compiled artifact cache lifetime",
 	)
+
 	if err := flags.Parse(arguments); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
 	}
+
 	if cfg.maxRequestBytes < 1 ||
 		cfg.maxSourceBytes < 1 ||
 		cfg.compileTimeout <= 0 ||
