@@ -15,6 +15,7 @@ playwright-report/
 *.test
 *.out
 coverage.out
+playground-coverage.out
 coverage.html
 
 # Python artifacts
