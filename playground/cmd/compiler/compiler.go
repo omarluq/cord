@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -27,6 +28,7 @@ type wasmCompiler struct {
 	cordDirectory string
 	goBinary      string
 	goRoot        string
+	goCache       string
 }
 
 func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
@@ -45,15 +47,16 @@ func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 		return nil, fmt.Errorf("resolve Go compiler: %w", err)
 	}
 
-	goroot, err := goRoot(context.Background(), goBinary)
+	goRoot, goCache, err := goEnvironment(goBinary)
 	if err != nil {
-		return nil, fmt.Errorf("resolve Go root: %w", err)
+		return nil, fmt.Errorf("resolve Go environment: %w", err)
 	}
 
 	return &wasmCompiler{
 		cordDirectory: cordPath,
 		goBinary:      goBinary,
-		goRoot:        goroot,
+		goRoot:        goRoot,
+		goCache:       goCache,
 	}, nil
 }
 
@@ -69,14 +72,7 @@ func (compiler *wasmCompiler) Compile(ctx context.Context, source string) ([]byt
 		}
 	}()
 
-	module := fmt.Sprintf(`module playground.user
-
-go 1.27rc2
-
-require %s v0.0.0
-
-replace %s => %s
-`, cordModule, cordModule, filepath.ToSlash(compiler.cordDirectory))
+	module := moduleSource(compiler.cordDirectory)
 	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(module), moduleFileMode); err != nil {
 		return nil, fmt.Errorf("write module: %w", err)
 	}
@@ -87,6 +83,7 @@ replace %s => %s
 
 	command := compiler.buildCommand(ctx)
 	command.Dir = directory
+
 	command.Env = append(
 		environmentWithoutPath(),
 		"GOOS=js",
@@ -94,7 +91,7 @@ replace %s => %s
 		"CGO_ENABLED=0",
 		"GOROOT="+compiler.goRoot,
 		"GOTOOLCHAIN=local",
-		"GOCACHE="+filepath.Join(directory, "cache"),
+		"GOCACHE="+compiler.goCache,
 		"GOPROXY=off",
 		"GOSUMDB=off",
 	)
@@ -113,6 +110,17 @@ replace %s => %s
 	}
 
 	return readWASM(directory)
+}
+
+func moduleSource(cordDirectory string) string {
+	return fmt.Sprintf(`module playground.user
+
+go 1.27rc2
+
+require %s v0.0.0
+
+replace %s => %s
+`, cordModule, cordModule, strconv.Quote(filepath.ToSlash(cordDirectory)))
 }
 
 func readWASM(directory string) ([]byte, error) {
@@ -161,6 +169,8 @@ func (compiler *wasmCompiler) buildCommand(_ context.Context) *exec.Cmd {
 }
 
 func runCommand(ctx context.Context, command *exec.Cmd) error {
+	configureProcessGroup(command)
+
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start compiler: %w", err)
 	}
@@ -174,21 +184,34 @@ func runCommand(ctx context.Context, command *exec.Cmd) error {
 	case err := <-completed:
 		return err
 	case <-ctx.Done():
-		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return errors.Join(ctx.Err(), fmt.Errorf("kill compiler: %w", err), <-completed)
-		}
+		terminationErr := terminateProcessGroup(command)
+		waitErr := <-completed
 
-		return errors.Join(ctx.Err(), <-completed)
+		return errors.Join(ctx.Err(), terminationErr, waitErr)
 	}
 }
 
-func goRoot(ctx context.Context, goBinary string) (string, error) {
-	output, err := exec.CommandContext(ctx, goBinary, "env", "GOROOT").Output()
-	if err != nil {
-		return "", fmt.Errorf("run go env GOROOT: %w", err)
+func goEnvironment(goBinary string) (
+	goRoot string,
+	goCache string,
+	err error,
+) {
+	command := &exec.Cmd{
+		Path: goBinary,
+		Args: []string{goBinary, "env", "GOROOT", "GOCACHE"},
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	output, err := command.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("run go env: %w", err)
+	}
+
+	values := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(values) != 2 || values[0] == "" || values[1] == "" {
+		return "", "", errors.New("go env returned invalid GOROOT or GOCACHE")
+	}
+
+	return values[0], values[1], nil
 }
 
 func environmentWithoutPath() []string {
