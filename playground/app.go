@@ -70,10 +70,11 @@ func (app *App) OnMount(ctx goapp.Context) {
 				}
 				app.bridge = bridge
 				app.status = statusReady
-				ctx.Defer(func(goapp.Context) {
+				ctx.Defer(func(ctx goapp.Context) {
 					app.bridge.mountEditor(editorID, linearSource)
 					app.bridge.mountGraph(graphID)
 					app.mounted = true
+					ctx.Update()
 				})
 			})
 		})
@@ -88,6 +89,10 @@ func (app *App) OnDismount() {
 }
 
 func (app *App) selectExample(_ goapp.Context, event goapp.Event) {
+	if !app.mounted {
+		return
+	}
+
 	filename := event.Get("target").Get("value").String()
 	source, ok := exampleSource(filename)
 	if !ok {
@@ -164,10 +169,7 @@ func (app *App) handleWorkerEvent(message workerEvent) {
 	switch message.Type() {
 	case "node":
 		app.bridge.setNodeState(message.ID(), message.State())
-		if detail := message.Message(); detail != "" {
-			app.output = detail
-		}
-	case "result", "output":
+	case "output":
 		app.output = appendOutput(app.output, message.Value())
 	case "error":
 		app.bridge.setGraphState("failed")
@@ -178,7 +180,9 @@ func (app *App) handleWorkerEvent(message workerEvent) {
 }
 
 func (app *App) fail(err error) {
-	app.bridge.setGraphState("failed")
+	if app.mounted {
+		app.bridge.setGraphState("failed")
+	}
 	app.status = statusFailed
 	app.output = err.Error()
 }

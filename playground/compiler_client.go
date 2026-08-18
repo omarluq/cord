@@ -9,10 +9,13 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"time"
 
 	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
 	"github.com/omarluq/cord/playground/internal/protocol"
 )
+
+const compilationRequestTimeout = 3 * time.Minute
 
 type compilationArtifact struct {
 	graph protocol.Graph
@@ -68,7 +71,8 @@ func compile(
 	}
 	request.Header.Set("Content-Type", "application/json")
 
-	response, err := http.DefaultClient.Do(request)
+	client := &http.Client{Timeout: compilationRequestTimeout}
+	response, err := client.Do(request)
 	if err != nil {
 		return compilationArtifact{}, fmt.Errorf(
 			"compile workflow: %w",
