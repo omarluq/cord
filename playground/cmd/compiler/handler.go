@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -62,7 +63,7 @@ func (service *service) serveHTTP(response http.ResponseWriter, request *http.Re
 		response.Header().Set(contentTypeHeader, "text/plain; charset=utf-8")
 		response.WriteHeader(http.StatusOK)
 		if _, err := response.Write([]byte("ok\n")); err != nil {
-			return
+			slog.Error("write health response", "error", err)
 		}
 	case request.Method == http.MethodPost && request.URL.Path == compilePath:
 		service.compile(response, request)
@@ -85,7 +86,7 @@ func (service *service) options(response http.ResponseWriter, request *http.Requ
 func (service *service) compile(response http.ResponseWriter, request *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get(contentTypeHeader))
 	if err != nil || mediaType != jsonMediaType {
-		http.Error(
+		writeJSONError(
 			response,
 			"Content-Type must be application/json",
 			http.StatusUnsupportedMediaType,
@@ -95,7 +96,7 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 
 	input, status, err := service.readRequest(response, request)
 	if err != nil {
-		http.Error(response, err.Error(), status)
+		writeJSONError(response, err.Error(), status)
 		return
 	}
 	if !service.validSource(response, input.Source) {
@@ -119,7 +120,7 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	if err := writeArtifact(response, artifact.graph, artifact.wasm); err != nil {
-		return
+		slog.Error("write compilation response", "error", err)
 	}
 }
 
@@ -149,7 +150,7 @@ func (service *service) writeCompileError(response http.ResponseWriter, err erro
 	switch {
 	case errors.Is(err, errCompilerBusy):
 		response.Header().Set("Retry-After", "1")
-		http.Error(response, err.Error(), http.StatusServiceUnavailable)
+		writeJSONError(response, err.Error(), http.StatusServiceUnavailable)
 	case errors.Is(err, context.DeadlineExceeded):
 		writeJSONError(response, "compilation timed out", http.StatusGatewayTimeout)
 	default:
@@ -211,11 +212,11 @@ func (service *service) validSource(
 	source string,
 ) bool {
 	if source == "" {
-		http.Error(response, "source is required", http.StatusBadRequest)
+		writeJSONError(response, "source is required", http.StatusBadRequest)
 		return false
 	}
 	if len(source) > service.maxSource {
-		http.Error(response, "source is too large", http.StatusRequestEntityTooLarge)
+		writeJSONError(response, "source is too large", http.StatusRequestEntityTooLarge)
 		return false
 	}
 	return true
@@ -233,10 +234,10 @@ func (service *service) acquire() bool {
 func decodeRequest(decoder *json.Decoder) (compileRequest, int, error) {
 	var input compileRequest
 	if err := decoder.Decode(&input); err != nil {
-		tooLarge, _ := errors.AsType[*http.MaxBytesError](err)
-		if tooLarge != nil {
+		maxBytesError, requestTooLarge := errors.AsType[*http.MaxBytesError](err)
+		if requestTooLarge && maxBytesError != nil {
 			return compileRequest{}, http.StatusRequestEntityTooLarge,
-				errors.New("invalid JSON request")
+				errors.New("request body is too large")
 		}
 		return compileRequest{}, http.StatusBadRequest,
 			errors.New("invalid JSON request")
@@ -291,7 +292,7 @@ func writeJSONError(response http.ResponseWriter, message string, status int) {
 	if err := json.NewEncoder(response).Encode(
 		map[string]string{"error": message},
 	); err != nil {
-		return
+		slog.Error("write JSON error response", "error", err)
 	}
 }
 

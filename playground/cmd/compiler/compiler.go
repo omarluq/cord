@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +18,7 @@ const (
 )
 
 type compiler interface {
+	// Compile builds Go source into a WebAssembly module.
 	Compile(context.Context, string) ([]byte, error)
 }
 
@@ -52,12 +53,17 @@ func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 	}, nil
 }
 
-func (compiler *wasmCompiler) Compile(ctx context.Context, source string) (wasm []byte, resultErr error) {
+// Compile builds source with the constrained playground toolchain.
+func (compiler *wasmCompiler) Compile(ctx context.Context, source string) ([]byte, error) {
 	directory, err := os.MkdirTemp("", "cord-playground-compile-")
 	if err != nil {
 		return nil, fmt.Errorf("create compilation directory: %w", err)
 	}
-	defer func() { resultErr = errors.Join(resultErr, os.RemoveAll(directory)) }()
+	defer func() {
+		if err := os.RemoveAll(directory); err != nil {
+			slog.Warn("remove compilation directory", "error", err)
+		}
+	}()
 
 	module := fmt.Sprintf(`module playground.user
 
@@ -83,6 +89,7 @@ replace %s => %s
 		"CGO_ENABLED=0",
 		"GOROOT="+compiler.goRoot,
 		"GOTOOLCHAIN=local",
+		"GOCACHE="+filepath.Join(directory, "cache"),
 		"GOPROXY=off",
 		"GOSUMDB=off",
 		"PATH="+compiler.goDirectory,
@@ -97,17 +104,29 @@ replace %s => %s
 		return nil, fmt.Errorf("compile source: %w: %s", err, diagnostics.String())
 	}
 
+	return readWASM(directory)
+}
+
+func readWASM(directory string) ([]byte, error) {
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return nil, fmt.Errorf("open compilation directory: %w", err)
 	}
-	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	defer func() {
+		if err := root.Close(); err != nil {
+			slog.Warn("close compilation root", "error", err)
+		}
+	}()
 	outputFile, err := root.Open("app.wasm")
 	if err != nil {
 		return nil, fmt.Errorf("open WebAssembly: %w", err)
 	}
-	defer func() { resultErr = errors.Join(resultErr, outputFile.Close()) }()
-	wasm, err = io.ReadAll(outputFile)
+	defer func() {
+		if err := outputFile.Close(); err != nil {
+			slog.Warn("close WebAssembly output", "error", err)
+		}
+	}()
+	wasm, err := io.ReadAll(outputFile)
 	if err != nil {
 		return nil, fmt.Errorf("read WebAssembly: %w", err)
 	}
