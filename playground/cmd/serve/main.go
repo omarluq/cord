@@ -23,7 +23,9 @@ const (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
+			os.Exit(1)
+		}
 		os.Exit(1)
 	}
 }
@@ -98,7 +100,13 @@ func signalReady(filename, address string) (func(), error) {
 
 	return func() {
 		if err := os.Remove(filename); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_, _ = fmt.Fprintf(os.Stderr, "remove ready file: %v\n", err)
+			if _, writeErr := fmt.Fprintf(
+				os.Stderr,
+				"remove ready file: %v\n",
+				err,
+			); writeErr != nil {
+				return
+			}
 		}
 	}, nil
 }
