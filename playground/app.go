@@ -2,6 +2,7 @@ package playground
 
 import (
 	"net/url"
+	"strings"
 
 	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
 	"github.com/omarluq/cord/playground/internal/protocol"
@@ -52,7 +53,11 @@ func NewApp() *App {
 
 // OnMount loads the editor and graph modules.
 func (app *App) OnMount(ctx goapp.Context) {
-	if endpoint := ctx.Page().URL().Query().Get("compiler"); endpoint != "" {
+	pageURL := ctx.Page().URL()
+	if endpoint, ok := compilerEndpoint(
+		pageURL,
+		pageURL.Query().Get("compiler"),
+	); ok {
 		app.compilerURL = endpoint
 	}
 
@@ -176,4 +181,29 @@ func (app *App) fail(err error) {
 	app.bridge.setGraphState("failed")
 	app.status = statusFailed
 	app.output = err.Error()
+}
+
+func compilerEndpoint(pageURL *url.URL, endpoint string) (string, bool) {
+	if endpoint == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.User != nil {
+		return "", false
+	}
+	resolved := pageURL.ResolveReference(parsed)
+	if resolved.Scheme == pageURL.Scheme && resolved.Host == pageURL.Host {
+		return resolved.String(), true
+	}
+
+	// Local development serves the static app and compiler on separate ports.
+	if isLoopbackHost(pageURL.Hostname()) && endpoint == defaultCompilerURL {
+		return endpoint, true
+	}
+	return "", false
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.HasSuffix(host, ".localhost")
 }

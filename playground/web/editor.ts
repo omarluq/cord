@@ -336,16 +336,23 @@ export function runWasm(
   stopWasm();
   const workerURL = new URL("web/worker.js", wasmExecURL);
   worker = new Worker(workerURL);
+  const finish = (): void => {
+    worker?.terminate();
+    worker = undefined;
+    onExit();
+  };
   worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
     if (event.data.type === "exit") {
-      onExit();
+      finish();
       return;
     }
     onMessage(event.data);
   };
   worker.onerror = (event: ErrorEvent) => {
-    if (event.message.includes("Go program has already exited")) return;
-    onMessage({ type: "error", message: event.message });
+    if (!event.message.includes("Go program has already exited")) {
+      onMessage({ type: "error", message: event.message });
+    }
+    finish();
   };
   worker.postMessage({ bytes, wasmExecURL }, [bytes]);
 }

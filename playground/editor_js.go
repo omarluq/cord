@@ -11,7 +11,9 @@ import (
 )
 
 type browserBridge struct {
-	module js.Value
+	module    js.Value
+	onMessage js.Func
+	onExit    js.Func
 }
 
 type workerEvent struct {
@@ -82,22 +84,42 @@ func (bridge browserBridge) setNodeState(identifier, state string) {
 	bridge.module.Call("setNodeState", identifier, state)
 }
 
-func (bridge browserBridge) runWasm(bytes []byte, wasmExecURL string, receive func(workerEvent), exited func()) {
+func (bridge *browserBridge) runWasm(bytes []byte, wasmExecURL string, receive func(workerEvent), exited func()) {
+	bridge.stopWasm()
 	array := js.Global().Get("Uint8Array").New(len(bytes))
 	js.CopyBytesToJS(array, bytes)
 	buffer := array.Get("buffer")
 
-	onMessage := js.FuncOf(func(_ js.Value, arguments []js.Value) any {
+	bridge.onMessage = js.FuncOf(func(_ js.Value, arguments []js.Value) any {
 		receive(workerEvent{value: arguments[0]})
 		return nil
 	})
-	onExit := js.FuncOf(func(js.Value, []js.Value) any {
+	bridge.onExit = js.FuncOf(func(js.Value, []js.Value) any {
 		exited()
+		bridge.releaseCallbacks()
 		return nil
 	})
-	bridge.module.Call("runWasm", buffer, wasmExecURL, onMessage, onExit)
+	bridge.module.Call(
+		"runWasm",
+		buffer,
+		wasmExecURL,
+		bridge.onMessage,
+		bridge.onExit,
+	)
 }
 
-func (bridge browserBridge) stopWasm() {
+func (bridge *browserBridge) stopWasm() {
 	bridge.module.Call("stopWasm")
+	bridge.releaseCallbacks()
+}
+
+func (bridge *browserBridge) releaseCallbacks() {
+	if !bridge.onMessage.IsUndefined() {
+		bridge.onMessage.Release()
+		bridge.onMessage = js.Func{}
+	}
+	if !bridge.onExit.IsUndefined() {
+		bridge.onExit.Release()
+		bridge.onExit = js.Func{}
+	}
 }

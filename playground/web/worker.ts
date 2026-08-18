@@ -65,7 +65,11 @@ console.error = (...values: unknown[]): void => sendOutput("error", values);
 
 worker.onmessage = async (event: MessageEvent<RunRequest>): Promise<void> => {
   try {
-    worker.importScripts(event.data.wasmExecURL);
+    const wasmExecURL = new URL(event.data.wasmExecURL, worker.location.href);
+    if (wasmExecURL.origin !== worker.location.origin) {
+      throw new Error("wasm_exec.js must use the playground origin");
+    }
+    worker.importScripts(wasmExecURL.href);
     const goRuntime = new worker.Go();
     const result = await WebAssembly.instantiate(
       event.data.bytes,
@@ -76,12 +80,13 @@ worker.onmessage = async (event: MessageEvent<RunRequest>): Promise<void> => {
       clearTimeout(timeout);
     }
     goRuntime._scheduledTimeouts.clear();
-    send({ type: "exit" });
   } catch (error: unknown) {
     send({
       type: "error",
       message: error instanceof Error ? error.stack ?? error.message : String(error),
     });
+  } finally {
+    send({ type: "exit" });
   }
 };
 
