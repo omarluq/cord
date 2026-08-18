@@ -36,7 +36,7 @@ tasks:
   playground-compiler:
     desc: Run the local Go-to-WebAssembly compilation endpoint
     cmds:
-      - go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173
+      - go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173,http://127.0.0.1:4174
 
   playground-serve:
     desc: Serve the built playground locally
@@ -45,9 +45,15 @@ tasks:
       - go run ./playground/cmd/serve -dir dist/playground
 
   playground-dev:
-    desc: Rebuild and live-reload the playground with Air
+    desc: Run the compiler and live-reload the playground with Air
     cmds:
-      - go tool air -c .air.playground.toml
+      - |
+        sh -c '
+          go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173,http://127.0.0.1:4174 &
+          compiler=$!
+          trap "kill $compiler 2>/dev/null || true" EXIT INT TERM
+          go tool air -c .air.playground.toml
+        '
 
   playground-test:
     desc: Compile and exercise a user-authored Cord workflow in Chromium
