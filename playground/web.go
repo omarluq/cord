@@ -12,16 +12,20 @@ import (
 	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
 )
 
-//go:embed web/icon.svg
+//go:embed web/images/icon.svg
 var icon []byte
 
-//go:embed web/go-logo.svg
+//go:embed web/images/icon.png
+var iconPNG []byte
+
+//go:embed web/images/go-logo.svg
 var goLogo []byte
 
 const (
-	route     = "/"
-	iconPath  = "/web/icon.svg"
-	assetMode = 0o600
+	route       = "/"
+	iconPath    = "/web/images/icon.svg"
+	iconPNGPath = "/web/images/icon.png"
+	assetMode   = 0o644
 )
 
 // RegisterRoute registers the playground root component with go-app.
@@ -44,12 +48,18 @@ func GenerateStatic(output, prefix string) error {
 		return fmt.Errorf("generate static website: %w", err)
 	}
 
+	images := filepath.Join(output, "web", "images")
+	if err := os.MkdirAll(images, 0o750); err != nil {
+		return fmt.Errorf("create playground images directory: %w", err)
+	}
+
 	assets := map[string][]byte{
 		"icon.svg":    icon,
+		"icon.png":    iconPNG,
 		"go-logo.svg": goLogo,
 	}
 	for name, content := range assets {
-		asset := filepath.Join(output, "web", name)
+		asset := filepath.Join(images, name)
 		if err := os.WriteFile(asset, content, assetMode); err != nil {
 			return fmt.Errorf("write playground asset %q: %w", name, err)
 		}
@@ -97,7 +107,7 @@ func Handler(prefix string) *goapp.Handler {
 		Title:           "Cord Playground · Durable Go Workflows",
 		Description:     "Explore durable typed Go workflows directly in your browser.",
 		Author:          "Cord contributors",
-		Icon:            goapp.Icon{Default: iconPath, SVG: iconPath},
+		Icon:            goapp.Icon{Default: iconPNGPath, SVG: iconPath},
 		BackgroundColor: "#2e3440",
 		ThemeColor:      "#2e3440",
 		LoadingLabel:    "Loading Cord {progress}%",
@@ -105,8 +115,8 @@ func Handler(prefix string) *goapp.Handler {
 		Styles:          []string{"/web/playground.css"},
 		Scripts:         []string{"/web/playground.js defer"},
 		CacheableResources: []string{
-			"/web/playground.css", iconPath, "/web/go-logo.svg",
-			"/web/playground.js", "/web/worker.js",
+			"/web/playground.css", iconPath, iconPNGPath,
+			"/web/images/go-logo.svg", "/web/playground.js", "/web/worker.js",
 		},
 		Resources: resources,
 		StartURL:  route,
