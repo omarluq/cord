@@ -23,6 +23,7 @@ type compiler interface {
 
 type wasmCompiler struct {
 	cordDirectory string
+	goDirectory   string
 	goRoot        string
 }
 
@@ -31,15 +32,24 @@ func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve Cord directory: %w", err)
 	}
-	if _, err := exec.LookPath("go"); err != nil {
+	goBinary, err := exec.LookPath("go")
+	if err != nil {
 		return nil, fmt.Errorf("find Go compiler: %w", err)
 	}
-	goroot, err := goRoot(context.Background())
+	goBinary, err = filepath.Abs(goBinary)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Go compiler: %w", err)
+	}
+	goroot, err := goRoot(context.Background(), goBinary)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Go root: %w", err)
 	}
 
-	return &wasmCompiler{cordDirectory: cordPath, goRoot: goroot}, nil
+	return &wasmCompiler{
+		cordDirectory: cordPath,
+		goDirectory:   filepath.Dir(goBinary),
+		goRoot:        goroot,
+	}, nil
 }
 
 func (compiler *wasmCompiler) Compile(ctx context.Context, source string) (wasm []byte, resultErr error) {
@@ -67,7 +77,7 @@ replace %s => %s
 	command := compiler.buildCommand(ctx)
 	command.Dir = directory
 	command.Env = append(
-		os.Environ(),
+		environmentWithoutPath(),
 		"GOOS=js",
 		"GOARCH=wasm",
 		"CGO_ENABLED=0",
@@ -75,6 +85,7 @@ replace %s => %s
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
 		"GOSUMDB=off",
+		"PATH="+compiler.goDirectory,
 	)
 	var diagnostics bytes.Buffer
 	command.Stdout = &diagnostics
@@ -104,13 +115,33 @@ replace %s => %s
 }
 
 func (compiler *wasmCompiler) buildCommand(ctx context.Context) *exec.Cmd {
-	return exec.CommandContext(ctx, "go", "build", "-mod=mod", "-trimpath", "-o", "app.wasm", ".")
+	return exec.CommandContext(
+		ctx,
+		"go",
+		"build",
+		"-mod=mod",
+		"-trimpath",
+		"-o",
+		"app.wasm",
+		".",
+	)
 }
 
-func goRoot(ctx context.Context) (string, error) {
-	output, err := exec.CommandContext(ctx, "go", "env", "GOROOT").Output()
+func goRoot(ctx context.Context, goBinary string) (string, error) {
+	output, err := exec.CommandContext(ctx, goBinary, "env", "GOROOT").Output()
 	if err != nil {
 		return "", fmt.Errorf("run go env GOROOT: %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func environmentWithoutPath() []string {
+	environment := os.Environ()
+	filtered := make([]string, 0, len(environment))
+	for _, variable := range environment {
+		if !strings.HasPrefix(variable, "PATH=") {
+			filtered = append(filtered, variable)
+		}
+	}
+	return filtered
 }
