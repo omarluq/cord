@@ -3,8 +3,11 @@
 package playground
 
 import (
+	"encoding/json"
 	"fmt"
 	"syscall/js"
+
+	"github.com/omarluq/cord/playground/internal/protocol"
 )
 
 type browserBridge struct {
@@ -50,13 +53,29 @@ func (bridge browserBridge) source() string {
 	return bridge.module.Call("source").String()
 }
 
+func (bridge browserBridge) setSource(source string) {
+	bridge.module.Call("setSource", source)
+}
+
 func (bridge browserBridge) mountGraph(elementID string) {
 	element := js.Global().Get("document").Call("getElementById", elementID)
 	bridge.module.Call("mountGraph", element)
 }
 
-func (bridge browserBridge) setGraph(message workerEvent) {
-	bridge.module.Call("setGraph", message.value)
+func (bridge browserBridge) setGraph(graph protocol.Graph) {
+	encoded, err := json.Marshal(graph)
+	if err != nil {
+		return
+	}
+	bridge.module.Call("setGraph", js.Global().Get("JSON").Call("parse", string(encoded)))
+}
+
+func (bridge browserBridge) zoomGraph(direction int) {
+	bridge.module.Call("zoomGraph", direction)
+}
+
+func (bridge browserBridge) setGraphState(state string) {
+	bridge.module.Call("setGraphState", state)
 }
 
 func (bridge browserBridge) setNodeState(identifier, state string) {

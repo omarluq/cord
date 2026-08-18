@@ -2,6 +2,8 @@
 
 package playground
 
+import "github.com/omarluq/cord/playground/internal/protocol"
+
 type browserBridge struct{}
 
 type workerEvent struct {
@@ -21,8 +23,11 @@ func (event workerEvent) Message() string { return event.message }
 func loadBridge(done func(browserBridge, error))  { done(browserBridge{}, nil) }
 func (browserBridge) mountEditor(string, string)  {}
 func (browserBridge) source() string              { return "" }
+func (browserBridge) setSource(string)            {}
 func (browserBridge) mountGraph(string)           {}
-func (browserBridge) setGraph(workerEvent)        {}
+func (browserBridge) setGraph(protocol.Graph)     {}
+func (browserBridge) zoomGraph(int)               {}
+func (browserBridge) setGraphState(string)        {}
 func (browserBridge) setNodeState(string, string) {}
 func (browserBridge) runWasm([]byte, string, func(workerEvent), func()) {
 }

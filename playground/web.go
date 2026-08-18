@@ -16,11 +16,15 @@ var stylesheet []byte
 //go:embed web/icon.svg
 var icon []byte
 
+//go:embed web/go-logo.svg
+var goLogo []byte
+
 //go:embed web/playground.js
 var playgroundScript []byte
 
 const (
 	route     = "/"
+	iconPath  = "/web/icon.svg"
 	assetMode = 0o600
 )
 
@@ -42,6 +46,7 @@ func GenerateStatic(output, prefix string) error {
 	assets := map[string][]byte{
 		"playground.css": stylesheet,
 		"icon.svg":       icon,
+		"go-logo.svg":    goLogo,
 		"playground.js":  playgroundScript,
 	}
 	for name, content := range assets {
@@ -64,7 +69,7 @@ func Handler(prefix string) *goapp.Handler {
 		Title:           "Cord Playground · Durable Go Workflows",
 		Description:     "Explore durable typed Go workflows directly in your browser.",
 		Author:          "Cord contributors",
-		Icon:            goapp.Icon{Default: "/web/icon.svg"},
+		Icon:            goapp.Icon{Default: iconPath, SVG: iconPath},
 		BackgroundColor: "#2e3440",
 		ThemeColor:      "#2e3440",
 		LoadingLabel:    "Loading Cord {progress}%",
@@ -72,7 +77,7 @@ func Handler(prefix string) *goapp.Handler {
 		Styles:          []string{"/web/playground.css"},
 		Scripts:         []string{"/web/playground.js defer"},
 		CacheableResources: []string{
-			"/web/playground.css", "/web/icon.svg", "/web/playground.js",
+			"/web/playground.css", iconPath, "/web/go-logo.svg", "/web/playground.js",
 		},
 		Resources: resources,
 		StartURL:  route,
