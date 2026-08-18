@@ -9,8 +9,10 @@ import (
 	"os/exec"
 )
 
-func configureProcessGroup(_ *exec.Cmd) {
-	// Process-group configuration is available only in process_unix.go.
+const processGroupsSupported = false
+
+func configureProcessGroup(_ *exec.Cmd) error {
+	return errors.New("compiler process groups are unsupported")
 }
 
 func terminateProcessGroup(command *exec.Cmd) error {

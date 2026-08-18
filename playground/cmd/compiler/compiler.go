@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -32,6 +33,10 @@ type wasmCompiler struct {
 }
 
 func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
+	if !processGroupsSupported {
+		return nil, fmt.Errorf("compiler service does not support %s", runtime.GOOS)
+	}
+
 	cordPath, err := filepath.Abs(cordDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Cord directory: %w", err)
@@ -169,7 +174,9 @@ func (compiler *wasmCompiler) buildCommand(_ context.Context) *exec.Cmd {
 }
 
 func runCommand(ctx context.Context, command *exec.Cmd) error {
-	configureProcessGroup(command)
+	if err := configureProcessGroup(command); err != nil {
+		return fmt.Errorf("configure compiler process group: %w", err)
+	}
 
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start compiler: %w", err)

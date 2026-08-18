@@ -10,8 +10,12 @@ import (
 	"syscall"
 )
 
-func configureProcessGroup(command *exec.Cmd) {
+const processGroupsSupported = true
+
+func configureProcessGroup(command *exec.Cmd) error {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	return nil
 }
 
 func terminateProcessGroup(command *exec.Cmd) error {
