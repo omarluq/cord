@@ -1,6 +1,7 @@
 package playground
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/omarluq/cord/playground/internal/protocol"
@@ -27,6 +28,44 @@ func TestCompilationCache(t *testing.T) {
 
 	_, found = cache.get("changed source")
 	assert.False(t, found)
+}
+
+func TestCompilerEndpoint(t *testing.T) {
+	t.Parallel()
+
+	pageURL, err := url.Parse("https://example.com/cord/")
+	require.NoError(t, err)
+
+	const sameOriginCompiler = "https://example.com/compile"
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+		allowed  bool
+	}{
+		{name: "relative", endpoint: "/compile", want: sameOriginCompiler, allowed: true},
+		{name: "same origin", endpoint: sameOriginCompiler, want: sameOriginCompiler, allowed: true},
+		{name: "different origin", endpoint: "https://evil.example/compile", want: "", allowed: false},
+		{name: "credentials", endpoint: "https://user@example.com/compile", want: "", allowed: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, allowed := compilerEndpoint(pageURL, test.endpoint)
+			assert.Equal(t, test.allowed, allowed)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
+func TestCompilerEndpointAllowsDevelopmentCompiler(t *testing.T) {
+	t.Parallel()
+
+	pageURL, err := url.Parse("http://127.0.0.1:4173/")
+	require.NoError(t, err)
+	endpoint, allowed := compilerEndpoint(pageURL, defaultCompilerURL)
+	require.True(t, allowed)
+	assert.Equal(t, defaultCompilerURL, endpoint)
 }
 
 func TestAppendOutput(t *testing.T) {
