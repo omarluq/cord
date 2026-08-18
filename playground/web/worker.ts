@@ -6,9 +6,7 @@ interface GoRuntime {
   _scheduledTimeouts?: Map<number, ReturnType<typeof setTimeout>>;
 }
 
-interface GoConstructor {
-  new (): GoRuntime;
-}
+type GoConstructor = new () => GoRuntime;
 
 interface WorkerGlobal extends DedicatedWorkerGlobalScope {
   Go: GoConstructor;
@@ -35,8 +33,8 @@ function send(message: WorkerMessage): void {
 
 function sendOutput(type: "output" | "error", values: unknown[]): void {
   const value = values.map(String).join(" ");
-  const node = value.match(
-    /^__CORD_NODE__:([^:]+):(running|completed|failed)$/,
+  const node = /^__CORD_NODE__:([^:]+):(running|completed|failed)$/.exec(
+    value,
   );
   if (node?.[1] && node[2]) {
     send({

@@ -40,5 +40,6 @@ func exampleSource(filename string) (string, bool) {
 			return script.source, true
 		}
 	}
+
 	return "", false
 }

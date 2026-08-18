@@ -16,6 +16,7 @@ func TestCompilationCache(t *testing.T) {
 		graph: protocol.Graph{Nodes: []protocol.Node{{ID: "step", Label: "step"}}, Edges: []protocol.Edge{}},
 		wasm:  []byte("wasm"),
 	}
+
 	var cache compilationCache
 
 	_, found := cache.get("source")
@@ -37,6 +38,7 @@ func TestCompilerEndpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	const sameOriginCompiler = "https://example.com/compile"
+
 	tests := []struct {
 		name     string
 		endpoint string
@@ -51,6 +53,7 @@ func TestCompilerEndpoint(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+
 			got, allowed := compilerEndpoint(pageURL, test.endpoint)
 			assert.Equal(t, test.allowed, allowed)
 			assert.Equal(t, test.want, got)
@@ -63,6 +66,7 @@ func TestCompilerEndpointAllowsDevelopmentCompiler(t *testing.T) {
 
 	pageURL, err := url.Parse("http://127.0.0.1:4173/")
 	require.NoError(t, err)
+
 	endpoint, allowed := compilerEndpoint(pageURL, defaultCompilerURL)
 	require.True(t, allowed)
 	assert.Equal(t, defaultCompilerURL, endpoint)
@@ -72,6 +76,7 @@ func TestAppendOutput(t *testing.T) {
 	t.Parallel()
 
 	const firstLine = "first"
+
 	tests := []struct {
 		name    string
 		current string

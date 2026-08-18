@@ -27,14 +27,14 @@ const (
 
 // App is the browser playground component.
 type App struct {
+	bridge browserBridge
 	goapp.Compo
-	bridge          browserBridge
 	status          appStatus
 	output          string
 	compilerURL     string
-	mounted         bool
 	selectedExample string
 	compilations    compilationCache
+	mounted         bool
 }
 
 // NewApp creates the browser playground component.
@@ -66,14 +66,18 @@ func (app *App) OnMount(ctx goapp.Context) {
 			ctx.Dispatch(func(goapp.Context) {
 				if err != nil {
 					app.fail(err)
+
 					return
 				}
+
 				app.bridge = bridge
 				app.status = statusReady
+
 				ctx.Defer(func(ctx goapp.Context) {
 					app.bridge.mountEditor(editorID, linearSource)
 					app.bridge.mountGraph(graphID)
 					app.mounted = true
+
 					ctx.Update()
 				})
 			})
@@ -94,10 +98,12 @@ func (app *App) selectExample(_ goapp.Context, event goapp.Event) {
 	}
 
 	filename := event.Get("target").Get("value").String()
+
 	source, ok := exampleSource(filename)
 	if !ok {
 		return
 	}
+
 	app.selectedExample = filename
 	app.bridge.setSource(source)
 	app.bridge.setGraph(protocol.Graph{
@@ -119,6 +125,7 @@ func (app *App) run(ctx goapp.Context, _ goapp.Event) {
 
 	if artifact, ok := app.compilations.get(source); ok {
 		app.execute(ctx, artifact)
+
 		return
 	}
 
@@ -127,8 +134,10 @@ func (app *App) run(ctx goapp.Context, _ goapp.Event) {
 		ctx.Dispatch(func(goapp.Context) {
 			if err != nil {
 				app.fail(err)
+
 				return
 			}
+
 			app.compilations.put(source, artifact)
 			app.execute(ctx, artifact)
 		})
@@ -143,7 +152,7 @@ func (app *App) execute(ctx goapp.Context, artifact compilationArtifact) {
 	app.bridge.runWasm(
 		artifact.wasm,
 		ctx.Page().URL().ResolveReference(&url.URL{Path: "wasm_exec.js"}).String(),
-		func(message workerEvent) {
+		func(message *workerEvent) {
 			ctx.Dispatch(func(goapp.Context) {
 				app.handleWorkerEvent(message)
 			})
@@ -165,7 +174,7 @@ func (app *App) stop(_ goapp.Context, _ goapp.Event) {
 	app.output = "Execution stopped."
 }
 
-func (app *App) handleWorkerEvent(message workerEvent) {
+func (app *App) handleWorkerEvent(message *workerEvent) {
 	switch message.Type() {
 	case "node":
 		app.bridge.setNodeState(message.ID(), message.State())
@@ -183,6 +192,7 @@ func (app *App) fail(err error) {
 	if app.mounted {
 		app.bridge.setGraphState("failed")
 	}
+
 	app.status = statusFailed
 	app.output = err.Error()
 }
@@ -191,10 +201,12 @@ func compilerEndpoint(pageURL *url.URL, endpoint string) (string, bool) {
 	if endpoint == "" {
 		return "", false
 	}
+
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.User != nil {
 		return "", false
 	}
+
 	resolved := pageURL.ResolveReference(parsed)
 	if resolved.Scheme == pageURL.Scheme && resolved.Host == pageURL.Host {
 		return resolved.String(), true
@@ -204,6 +216,7 @@ func compilerEndpoint(pageURL *url.URL, endpoint string) (string, bool) {
 	if isLoopbackHost(pageURL.Hostname()) && endpoint == defaultCompilerURL {
 		return endpoint, true
 	}
+
 	return "", false
 }
 
