@@ -31,13 +31,16 @@ type service struct {
 	maxSource      int
 	timeout        time.Duration
 	slots          chan struct{}
+	cache          *compilationCache
 }
 
 func newHandler(cfg config, compiler compiler) http.Handler {
 	service := &service{
 		compiler: compiler, allowedOrigins: parseAllowedOrigins(cfg.allowedOrigin),
 		maxRequest: cfg.maxRequestBytes, maxSource: cfg.maxSourceBytes,
-		timeout: cfg.compileTimeout, slots: make(chan struct{}, cfg.maxConcurrency),
+		timeout: cfg.compileTimeout,
+		slots:   make(chan struct{}, cfg.maxConcurrency),
+		cache:   newCompilationCache(cfg),
 	}
 	return http.HandlerFunc(service.serveHTTP)
 }
@@ -89,21 +92,53 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	if !service.validSource(response, input.Source) {
 		return
 	}
+	if service.writeCached(response, input.Source) {
+		return
+	}
 
 	if !service.acquire(response) {
 		return
 	}
 	defer func() { <-service.slots }()
 
-	ctx, cancel := context.WithTimeout(request.Context(), service.timeout)
+	ctx, cancel := context.WithTimeout(
+		request.Context(),
+		service.timeout,
+	)
 	defer cancel()
-	graph, err := extractGraph(input.Source)
+	service.compileSource(ctx, response, input.Source)
+}
+
+func (service *service) writeCached(
+	response http.ResponseWriter,
+	source string,
+) bool {
+	artifact, found := service.cache.get(source)
+	if !found {
+		return false
+	}
+	if err := writeArtifact(
+		response,
+		artifact.graph,
+		artifact.wasm,
+	); err != nil {
+		return true
+	}
+	return true
+}
+
+func (service *service) compileSource(
+	ctx context.Context,
+	response http.ResponseWriter,
+	source string,
+) {
+	graph, err := extractGraph(source)
 	if err != nil {
 		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 
-	instrumentedSource, err := instrumentWorkflow(input.Source, graph)
+	instrumentedSource, err := instrumentWorkflow(source, graph)
 	if err != nil {
 		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
 		return
@@ -115,6 +150,10 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
+	service.cache.put(source, compilationArtifact{
+		graph: graph,
+		wasm:  wasm,
+	})
 	if err := writeArtifact(response, graph, wasm); err != nil {
 		return
 	}

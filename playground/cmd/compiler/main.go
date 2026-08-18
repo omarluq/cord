@@ -18,6 +18,8 @@ const (
 	defaultMaxSourceBytes  = 512 << 10
 	defaultTimeout         = 2 * time.Minute
 	defaultConcurrency     = 2
+	defaultCacheCapacity   = 8
+	defaultCacheTTL        = 15 * time.Minute
 	serverHeaderTimeout    = 5 * time.Second
 	serverIdleTimeout      = 30 * time.Second
 	serverShutdownTimeout  = 5 * time.Second
@@ -31,6 +33,8 @@ type config struct {
 	maxSourceBytes  int
 	compileTimeout  time.Duration
 	maxConcurrency  int
+	cacheCapacity   int
+	cacheTTL        time.Duration
 }
 
 func main() {
@@ -93,11 +97,33 @@ func parseConfig(arguments []string) (config, error) {
 	flags.Int64Var(&cfg.maxRequestBytes, "max-request-bytes", defaultMaxRequestBytes, "maximum JSON request size")
 	flags.IntVar(&cfg.maxSourceBytes, "max-source-bytes", defaultMaxSourceBytes, "maximum source size")
 	flags.DurationVar(&cfg.compileTimeout, "timeout", defaultTimeout, "compilation timeout")
-	flags.IntVar(&cfg.maxConcurrency, "concurrency", defaultConcurrency, "maximum concurrent compilations")
+	flags.IntVar(
+		&cfg.maxConcurrency,
+		"concurrency",
+		defaultConcurrency,
+		"maximum concurrent compilations",
+	)
+	flags.IntVar(
+		&cfg.cacheCapacity,
+		"cache-capacity",
+		defaultCacheCapacity,
+		"maximum cached compilation artifacts",
+	)
+	flags.DurationVar(
+		&cfg.cacheTTL,
+		"cache-ttl",
+		defaultCacheTTL,
+		"compiled artifact cache lifetime",
+	)
 	if err := flags.Parse(arguments); err != nil {
 		return config{}, fmt.Errorf("parse flags: %w", err)
 	}
-	if cfg.maxRequestBytes < 1 || cfg.maxSourceBytes < 1 || cfg.compileTimeout <= 0 || cfg.maxConcurrency < 1 {
+	if cfg.maxRequestBytes < 1 ||
+		cfg.maxSourceBytes < 1 ||
+		cfg.compileTimeout <= 0 ||
+		cfg.maxConcurrency < 1 ||
+		cfg.cacheCapacity < 1 ||
+		cfg.cacheTTL <= 0 {
 		return config{}, errors.New("request limits, timeout, and concurrency must be positive")
 	}
 
