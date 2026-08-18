@@ -9,6 +9,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { go } from "@codemirror/lang-go";
 import { oneDark } from "@codemirror/theme-one-dark";
+import type { NodeState, WorkerMessage } from "./messages";
 
 interface GraphNode {
   id: string;
@@ -25,16 +26,10 @@ interface GraphData {
   edges?: GraphEdge[];
 }
 
-type NodeState = "queued" | "running" | "completed" | "failed";
-
-type WorkerMessage =
-  | { type: "node"; id: string; state: NodeState; message?: string }
-  | { type: "output" | "result"; value: string }
-  | { type: "error"; message: string }
-  | { type: "exit" };
+type GraphState = "queued" | NodeState;
 
 interface GraphNodeStyle {
-  state: NodeState;
+  state: GraphState;
   backgroundColor: string;
   borderColor: string;
   textColor: string;
@@ -49,7 +44,7 @@ interface CordPlaygroundAPI {
   mountGraph(container: HTMLElement): void;
   setGraph(data: GraphData): void;
   zoomGraph(direction: number): void;
-  setGraphState(state: NodeState): void;
+  setGraphState(state: GraphState): void;
   setNodeState(id: string, state: NodeState): void;
   runWasm(
     bytes: ArrayBuffer,
@@ -74,14 +69,14 @@ let graphSignature = "";
 let graphRenderCount = 0;
 let worker: Worker | undefined;
 
-const nodeStates: readonly NodeState[] = [
+const nodeStates: readonly GraphState[] = [
   "queued",
   "running",
   "completed",
   "failed",
 ];
 
-const edgeColors: Record<NodeState, string> = {
+const edgeColors: Record<GraphState, string> = {
   queued: "#607087",
   running: "#81a1c1",
   completed: "#8fbcbb",
@@ -251,7 +246,7 @@ export function setGraph(data: GraphData): void {
     data: {
       id: node.id,
       label: node.label || node.id,
-      state: "queued" satisfies NodeState,
+      state: "queued" satisfies GraphState,
     },
     classes: "queued",
   }));
@@ -299,7 +294,7 @@ export function setNodeState(id: string, state: NodeState): void {
   updateStateMarker();
 }
 
-export function setGraphState(state: NodeState): void {
+export function setGraphState(state: GraphState): void {
   if (!graph) return;
 
   graph.nodes().forEach((node) => applyNodeState(node, state));
@@ -312,7 +307,7 @@ export function setGraphState(state: NodeState): void {
   updateStateMarker();
 }
 
-function applyNodeState(node: NodeSingular, state: NodeState): void {
+function applyNodeState(node: NodeSingular, state: GraphState): void {
   node.removeClass(nodeStates.join(" "));
   node.addClass(state);
   node.data("state", state);
@@ -323,7 +318,7 @@ function updateStateMarker(): void {
 
   graphContainer.dataset.nodeStates = graph
     .nodes()
-    .map((node) => node.data("state") as NodeState)
+    .map((node) => node.data("state") as GraphState)
     .join(",");
 }
 
@@ -336,25 +331,28 @@ export function runWasm(
   stopWasm();
   const workerURL = new URL("web/worker.js", wasmExecURL);
   worker = new Worker(workerURL);
+  const currentWorker = worker;
   const finish = (): void => {
-    worker?.terminate();
-    worker = undefined;
+    currentWorker.terminate();
+    if (worker === currentWorker) {
+      worker = undefined;
+    }
     onExit();
   };
-  worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+  currentWorker.onmessage = (event: MessageEvent<WorkerMessage>) => {
     if (event.data.type === "exit") {
       finish();
       return;
     }
     onMessage(event.data);
   };
-  worker.onerror = (event: ErrorEvent) => {
+  currentWorker.onerror = (event: ErrorEvent) => {
     if (!event.message.includes("Go program has already exited")) {
       onMessage({ type: "error", message: event.message });
     }
     finish();
   };
-  worker.postMessage({ bytes, wasmExecURL }, [bytes]);
+  currentWorker.postMessage({ bytes, wasmExecURL }, [bytes]);
 }
 
 export function stopWasm(): void {
@@ -366,7 +364,7 @@ export function graphNodeStyles(): GraphNodeStyle[] {
   if (!graph) return [];
 
   return graph.nodes().map((node) => ({
-    state: node.data("state") as NodeState,
+    state: node.data("state") as GraphState,
     backgroundColor: node.style("background-color"),
     borderColor: node.style("border-color"),
     textColor: node.style("color"),

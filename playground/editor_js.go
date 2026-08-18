@@ -95,8 +95,9 @@ func (bridge *browserBridge) runWasm(bytes []byte, wasmExecURL string, receive f
 		return nil
 	})
 	bridge.onExit = js.FuncOf(func(js.Value, []js.Value) any {
-		exited()
+		bridge.module.Call("stopWasm")
 		bridge.releaseCallbacks()
+		exited()
 		return nil
 	})
 	bridge.module.Call(

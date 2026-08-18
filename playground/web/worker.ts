@@ -1,7 +1,9 @@
+import type { NodeState, WorkerMessage } from "./messages";
+
 interface GoRuntime {
   importObject: WebAssembly.Imports;
   run(instance: WebAssembly.Instance): Promise<void>;
-  _scheduledTimeouts: Map<number, ReturnType<typeof setTimeout>>;
+  _scheduledTimeouts?: Map<number, ReturnType<typeof setTimeout>>;
 }
 
 interface GoConstructor {
@@ -16,14 +18,6 @@ interface RunRequest {
   bytes: ArrayBuffer;
   wasmExecURL: string;
 }
-
-type NodeState = "running" | "completed" | "failed";
-
-type WorkerMessage =
-  | { type: "node"; id: string; state: NodeState }
-  | { type: "output"; value: string }
-  | { type: "error"; message: string }
-  | { type: "exit" };
 
 const worker = self as unknown as WorkerGlobal;
 
@@ -76,10 +70,13 @@ worker.onmessage = async (event: MessageEvent<RunRequest>): Promise<void> => {
       goRuntime.importObject,
     );
     await goRuntime.run(result.instance);
-    for (const timeout of goRuntime._scheduledTimeouts.values()) {
-      clearTimeout(timeout);
+    const timeouts = goRuntime._scheduledTimeouts;
+    if (timeouts) {
+      for (const timeout of timeouts.values()) {
+        clearTimeout(timeout);
+      }
+      timeouts.clear();
     }
-    goRuntime._scheduledTimeouts.clear();
   } catch (error: unknown) {
     send({
       type: "error",

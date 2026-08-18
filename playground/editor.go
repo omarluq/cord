@@ -20,15 +20,45 @@ func (event workerEvent) State() string   { return event.state }
 func (event workerEvent) Value() string   { return event.value }
 func (event workerEvent) Message() string { return event.message }
 
-func loadBridge(done func(browserBridge, error))  { done(browserBridge{}, nil) }
-func (browserBridge) mountEditor(string, string)  {}
-func (browserBridge) source() string              { return "" }
-func (browserBridge) setSource(string)            {}
-func (browserBridge) mountGraph(string)           {}
-func (browserBridge) setGraph(protocol.Graph)     {}
-func (browserBridge) zoomGraph(int)               {}
-func (browserBridge) setGraphState(string)        {}
-func (browserBridge) setNodeState(string, string) {}
-func (browserBridge) runWasm([]byte, string, func(workerEvent), func()) {
+func loadBridge(done func(browserBridge, error)) {
+	// Native tests do not load browser resources.
+	done(browserBridge{}, nil)
 }
-func (browserBridge) stopWasm() {}
+
+func (browserBridge) mountEditor(string, string) {
+	// Native tests do not mount browser resources.
+}
+
+func (browserBridge) source() string { return "" }
+
+func (browserBridge) setSource(string) {
+	// Native tests do not update browser resources.
+}
+
+func (browserBridge) mountGraph(string) {
+	// Native tests do not mount browser resources.
+}
+
+func (browserBridge) setGraph(protocol.Graph) {
+	// Native tests do not update browser resources.
+}
+
+func (browserBridge) zoomGraph(int) {
+	// Native tests do not update browser resources.
+}
+
+func (browserBridge) setGraphState(string) {
+	// Native tests do not update browser resources.
+}
+
+func (browserBridge) setNodeState(string, string) {
+	// Native tests do not update browser resources.
+}
+
+func (browserBridge) runWasm([]byte, string, func(workerEvent), func()) {
+	// Native tests do not execute browser WebAssembly.
+}
+
+func (browserBridge) stopWasm() {
+	// Native tests do not execute browser WebAssembly.
+}
