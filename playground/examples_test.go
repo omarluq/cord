@@ -25,10 +25,21 @@ func TestExampleScriptsAreValidGoPrograms(t *testing.T) {
 func TestExampleSource(t *testing.T) {
 	t.Parallel()
 
-	source, ok := exampleSource(defaultExample)
-	require.True(t, ok)
-	require.Equal(t, linearSource, source)
-
-	_, ok = exampleSource("missing.go")
-	require.False(t, ok)
+	tests := []struct {
+		name     string
+		filename string
+		source   string
+		found    bool
+	}{
+		{name: "present", filename: defaultExample, source: linearSource, found: true},
+		{name: "missing", filename: "missing.go", source: "", found: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source, found := exampleSource(test.filename)
+			require.Equal(t, test.source, source)
+			require.Equal(t, test.found, found)
+		})
+	}
 }

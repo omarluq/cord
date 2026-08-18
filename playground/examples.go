@@ -1,6 +1,6 @@
 package playground
 
-import _ "embed"
+import _ "embed" // Enable the go:embed directives below.
 
 type exampleScript struct {
 	filename string

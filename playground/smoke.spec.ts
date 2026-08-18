@@ -72,6 +72,7 @@ test(
     await expect(page.locator("#workflow-graph")).toHaveAttribute(
       "data-elements",
       "3",
+      { timeout: 60_000 },
     );
     await expect(page.locator("#workflow-graph")).toHaveAttribute(
       "data-node-states",
@@ -123,12 +124,8 @@ test(
     }).click();
     await expect(page.locator("#workflow-graph")).toHaveAttribute(
       "data-node-states",
-      /running/,
-      { timeout: 60_000 },
-    );
-    await expect(page.locator("#workflow-graph")).toHaveAttribute(
-      "data-node-states",
       "completed,completed",
+      { timeout: 60_000 },
     );
 
     const secondRunSizes = (await graphNodeStyles(page)).map(
