@@ -184,6 +184,7 @@ func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 	return goapp.Button().
 		Aria("label", label).
 		Title("Zoom "+direction).
+		Disabled(!app.mounted).
 		Class(
 			"relative",
 			"flex",
@@ -290,13 +291,14 @@ func (app *App) renderExampleSelect() goapp.UI {
 				"text-nord-5",
 			).
 			Disabled(
-				app.status == statusCompiling ||
+				!app.mounted ||
+					app.status == statusCompiling ||
 					app.status == statusRunning,
 			).
 			OnChange(app.selectExample).
 			Body(options...),
 		goapp.Img().
-			Src("/web/go-logo.svg").
+			Src("web/images/go-logo.svg").
 			Alt("").
 			Aria("hidden", "true").
 			Class(
