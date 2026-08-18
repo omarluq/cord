@@ -9,7 +9,9 @@ import (
 	"os/exec"
 )
 
-func configureProcessGroup(_ *exec.Cmd) {}
+func configureProcessGroup(_ *exec.Cmd) {
+	// Process-group configuration is available only in process_unix.go.
+}
 
 func terminateProcessGroup(command *exec.Cmd) error {
 	err := command.Process.Kill()
