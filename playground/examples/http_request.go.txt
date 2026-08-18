@@ -1,0 +1,90 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/vfs/memdb"
+	"github.com/omarluq/cord"
+)
+
+func fetchWisdom(ctx context.Context, endpoint string) (string, error) {
+	slog.Info("fetching endpoint", "url", endpoint)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status: %s", response.Status)
+	}
+	body, err := io.ReadAll(response.Body)
+	return string(body), err
+}
+
+func normalize(_ context.Context, value string) (string, error) {
+	slog.Info("normalizing response", "bytes", len(value))
+	return strings.TrimSpace(value), nil
+}
+
+func report(_ context.Context, value string) (string, error) {
+	slog.Info("formatting report")
+	return "GitHub says: " + value, nil
+}
+
+func main() {
+	slog.SetDefault(
+		slog.New(
+			slog.NewTextHandler(os.Stdout, nil),
+		),
+	)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancel()
+	database, err := sql.Open(
+		"sqlite3",
+		"file:/playground.db?vfs=memdb&_pragma=foreign_keys(1)",
+	)
+	if err != nil {
+		panic(err)
+	}
+	database.SetMaxOpenConns(1)
+	runtime, err := cord.New(
+		ctx,
+		database,
+		cord.Options{PollInterval: 25 * time.Millisecond},
+	)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := errors.Join(runtime.Close(), database.Close()); err != nil {
+			panic(err)
+		}
+	}()
+
+	workflow := runtime.
+		From("http-request", fetchWisdom).
+		Then(normalize).
+		Then(report)
+	result, err := workflow.Run(ctx, "https://api.github.com/zen")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result)
+}
