@@ -1,0 +1,191 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/vfs/memdb"
+	"github.com/omarluq/cord"
+)
+
+func loadOrder(_ context.Context, quantity int) (int, error) {
+	slog.Info("running step", "step", "loadOrder")
+	time.Sleep(80 * time.Millisecond)
+	return quantity, nil
+}
+
+func validateQuantity(_ context.Context, quantity int) (int, error) {
+	slog.Info("running step", "step", "validateQuantity")
+	time.Sleep(80 * time.Millisecond)
+	if quantity < 1 {
+		return 0, errors.New("quantity must be positive")
+	}
+	return quantity, nil
+}
+
+func calculateSubtotal(_ context.Context, quantity int) (int, error) {
+	slog.Info("running step", "step", "calculateSubtotal")
+	time.Sleep(80 * time.Millisecond)
+	return quantity * 12, nil
+}
+
+func loadLoyaltyDiscount(_ context.Context, quantity int) (int, error) {
+	slog.Info("running step", "step", "loadLoyaltyDiscount")
+	time.Sleep(80 * time.Millisecond)
+	return quantity, nil
+}
+
+func calculateDiscount(_ context.Context, quantity int) (int, error) {
+	slog.Info("running step", "step", "calculateDiscount")
+	time.Sleep(80 * time.Millisecond)
+	return quantity * 2, nil
+}
+
+func applyDiscount(_ context.Context, subtotal, discount int) (int, error) {
+	slog.Info("running step", "step", "applyDiscount")
+	time.Sleep(80 * time.Millisecond)
+	return subtotal - discount, nil
+}
+
+func calculateTax(_ context.Context, subtotal int) (int, error) {
+	slog.Info("running step", "step", "calculateTax")
+	time.Sleep(80 * time.Millisecond)
+	return subtotal / 5, nil
+}
+
+func addTax(_ context.Context, tax int) (int, error) {
+	slog.Info("running step", "step", "addTax")
+	time.Sleep(80 * time.Millisecond)
+	return tax, nil
+}
+
+func estimateWeight(_ context.Context, subtotal int) (int, error) {
+	slog.Info("running step", "step", "estimateWeight")
+	time.Sleep(80 * time.Millisecond)
+	return subtotal / 10, nil
+}
+
+func calculateShipping(_ context.Context, weight int) (int, error) {
+	slog.Info("running step", "step", "calculateShipping")
+	time.Sleep(80 * time.Millisecond)
+	return weight + 5, nil
+}
+
+func calculateServiceFee(_ context.Context, subtotal int) (int, error) {
+	slog.Info("running step", "step", "calculateServiceFee")
+	time.Sleep(80 * time.Millisecond)
+	return subtotal / 20, nil
+}
+
+func combineDeliveryCharges(
+	_ context.Context,
+	tax,
+	shipping int,
+) (int, error) {
+	slog.Info("running step", "step", "combineDeliveryCharges")
+	time.Sleep(80 * time.Millisecond)
+	return tax + shipping, nil
+}
+
+func combineAdditionalCharges(
+	_ context.Context,
+	deliveryCharges,
+	serviceFee int,
+) (int, error) {
+	slog.Info("running step", "step", "combineAdditionalCharges")
+	time.Sleep(80 * time.Millisecond)
+	return deliveryCharges + serviceFee, nil
+}
+
+func calculateTotal(
+	_ context.Context,
+	subtotal,
+	additionalCharges int,
+) (int, error) {
+	slog.Info("running step", "step", "calculateTotal")
+	time.Sleep(80 * time.Millisecond)
+	return subtotal + additionalCharges, nil
+}
+
+func recordAudit(_ context.Context, total int) (int, error) {
+	slog.Info("running step", "step", "recordAudit")
+	time.Sleep(80 * time.Millisecond)
+	fmt.Printf("audit: calculated charges of $%d\n", total)
+	return total, nil
+}
+
+func formatReceipt(_ context.Context, total int) (string, error) {
+	slog.Info("running step", "step", "formatReceipt")
+	return fmt.Sprintf("order charges: $%d", total), nil
+}
+
+func main() {
+	slog.SetDefault(
+		slog.New(
+			slog.NewTextHandler(os.Stdout, nil),
+		),
+	)
+	ctx := context.Background()
+	database, err := sql.Open(
+		"sqlite3",
+		"file:/playground.db?vfs=memdb&_pragma=foreign_keys(1)",
+	)
+	if err != nil {
+		panic(err)
+	}
+	database.SetMaxOpenConns(1)
+	runtime, err := cord.New(
+		ctx,
+		database,
+		cord.Options{
+			Concurrency:  4,
+			PollInterval: 20 * time.Millisecond,
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := errors.Join(runtime.Close(), database.Close()); err != nil {
+			panic(err)
+		}
+	}()
+
+	order := runtime.From("large-pipeline", loadOrder)
+	pricing := order.
+		Then(validateQuantity).
+		Then(calculateSubtotal)
+	discount := order.
+		Then(loadLoyaltyDiscount).
+		Then(calculateDiscount)
+	subtotal := cord.Join(pricing, discount).
+		Then(applyDiscount)
+	tax := subtotal.
+		Then(calculateTax).
+		Then(addTax)
+	shipping := subtotal.
+		Then(estimateWeight).
+		Then(calculateShipping)
+	serviceFee := subtotal.
+		Then(calculateServiceFee)
+	deliveryCharges := cord.Join(tax, shipping).
+		Then(combineDeliveryCharges)
+	additionalCharges := cord.Join(deliveryCharges, serviceFee).
+		Then(combineAdditionalCharges)
+	workflow := cord.Join(subtotal, additionalCharges).
+		Then(calculateTotal).
+		Then(recordAudit).
+		Then(formatReceipt)
+
+	result, err := workflow.Run(ctx, 5)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result)
+}

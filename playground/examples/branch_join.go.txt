@@ -1,0 +1,89 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/vfs/memdb"
+	"github.com/omarluq/cord"
+)
+
+func load(_ context.Context, value int) (int, error) {
+	slog.Info("loaded input", "value", value)
+	return value, nil
+}
+
+func double(_ context.Context, value int) (int, error) {
+	slog.Info("doubling branch", "value", value)
+	time.Sleep(400 * time.Millisecond)
+	return value * 2, nil
+}
+
+func addThree(_ context.Context, value int) (int, error) {
+	slog.Info("adding on branch", "value", value, "amount", 3)
+	time.Sleep(400 * time.Millisecond)
+	return value + 3, nil
+}
+
+func sum(_ context.Context, left, right int) (int, error) {
+	slog.Info("joining branches", "left", left, "right", right)
+	return left + right, nil
+}
+
+func main() {
+	slog.SetDefault(
+		slog.New(
+			slog.NewTextHandler(os.Stdout, nil),
+		),
+	)
+	ctx := context.Background()
+	database, runtime := openRuntime(ctx)
+	defer closeRuntime(runtime, database)
+
+	root := runtime.From("branch-join", load)
+	workflow := cord.Join(
+		root.Then(double),
+		root.Then(addThree),
+	).Then(sum)
+
+	result, err := workflow.Run(ctx, 4)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("joined result: %d\n", result)
+}
+
+func openRuntime(ctx context.Context) (*sql.DB, *cord.Cord) {
+	database, err := sql.Open(
+		"sqlite3",
+		"file:/playground.db?vfs=memdb&_pragma=foreign_keys(1)",
+	)
+	if err != nil {
+		panic(err)
+	}
+	database.SetMaxOpenConns(1)
+	runtime, err := cord.New(
+		ctx,
+		database,
+		cord.Options{
+			Concurrency:  2,
+			PollInterval: 25 * time.Millisecond,
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return database, runtime
+}
+
+func closeRuntime(runtime *cord.Cord, database *sql.DB) {
+	if err := errors.Join(runtime.Close(), database.Close()); err != nil {
+		panic(err)
+	}
+}
