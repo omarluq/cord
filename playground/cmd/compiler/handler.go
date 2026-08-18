@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	compilePath   = "/compile"
-	jsonMediaType = "application/json"
+	compilePath       = "/compile"
+	contentTypeHeader = "Content-Type"
+	jsonMediaType     = "application/json"
 )
 
 var errCompilerBusy = errors.New("compiler is busy")
@@ -58,9 +59,11 @@ func (service *service) serveHTTP(response http.ResponseWriter, request *http.Re
 
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/healthz":
-		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		response.Header().Set(contentTypeHeader, "text/plain; charset=utf-8")
 		response.WriteHeader(http.StatusOK)
-		_, _ = response.Write([]byte("ok\n"))
+		if _, err := response.Write([]byte("ok\n")); err != nil {
+			return
+		}
 	case request.Method == http.MethodPost && request.URL.Path == compilePath:
 		service.compile(response, request)
 	case request.URL.Path == compilePath || request.URL.Path == "/healthz":
@@ -80,7 +83,7 @@ func (service *service) options(response http.ResponseWriter, request *http.Requ
 }
 
 func (service *service) compile(response http.ResponseWriter, request *http.Request) {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get(contentTypeHeader))
 	if err != nil || mediaType != jsonMediaType {
 		http.Error(
 			response,
@@ -98,7 +101,6 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	if !service.validSource(response, input.Source) {
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(request.Context(), service.timeout)
 	defer cancel()
 
@@ -116,7 +118,9 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		service.writeCompileError(response, err)
 		return
 	}
-	_ = writeArtifact(response, artifact.graph, artifact.wasm)
+	if err := writeArtifact(response, artifact.graph, artifact.wasm); err != nil {
+		return
+	}
 }
 
 func (service *service) compileSource(
@@ -177,11 +181,8 @@ func writeArtifact(
 	wasm []byte,
 ) error {
 	writer := multipart.NewWriter(response)
-	response.Header().Set("Content-Type", writer.FormDataContentType())
-	response.Header().Set(
-		"Content-Disposition",
-		`attachment; filename="cord-workflow"`,
-	)
+	response.Header().Set(contentTypeHeader, writer.FormDataContentType())
+	response.Header().Set("Content-Disposition", `attachment; filename="cord-workflow"`)
 	response.WriteHeader(http.StatusOK)
 
 	graphPart, err := writer.CreateFormField("graph")
@@ -284,14 +285,14 @@ func parseAllowedOrigins(value string) map[string]struct{} {
 	return origins
 }
 
-func writeJSONError(
-	response http.ResponseWriter,
-	message string,
-	status int,
-) {
-	response.Header().Set("Content-Type", jsonMediaType)
+func writeJSONError(response http.ResponseWriter, message string, status int) {
+	response.Header().Set(contentTypeHeader, jsonMediaType)
 	response.WriteHeader(status)
-	_ = json.NewEncoder(response).Encode(map[string]string{"error": message})
+	if err := json.NewEncoder(response).Encode(
+		map[string]string{"error": message},
+	); err != nil {
+		return
+	}
 }
 
 func allowedMethods(path string) string {
