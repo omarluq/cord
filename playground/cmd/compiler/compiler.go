@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,7 +25,7 @@ type compiler interface {
 
 type wasmCompiler struct {
 	cordDirectory string
-	goDirectory   string
+	goBinary      string
 	goRoot        string
 }
 
@@ -33,14 +34,17 @@ func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve Cord directory: %w", err)
 	}
+
 	goBinary, err := exec.LookPath("go")
 	if err != nil {
 		return nil, fmt.Errorf("find Go compiler: %w", err)
 	}
+
 	goBinary, err = filepath.Abs(goBinary)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Go compiler: %w", err)
 	}
+
 	goroot, err := goRoot(context.Background(), goBinary)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Go root: %w", err)
@@ -48,7 +52,7 @@ func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 
 	return &wasmCompiler{
 		cordDirectory: cordPath,
-		goDirectory:   filepath.Dir(goBinary),
+		goBinary:      goBinary,
 		goRoot:        goroot,
 	}, nil
 }
@@ -76,6 +80,7 @@ replace %s => %s
 	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(module), moduleFileMode); err != nil {
 		return nil, fmt.Errorf("write module: %w", err)
 	}
+
 	if err := os.WriteFile(filepath.Join(directory, "main.go"), []byte(source), moduleFileMode); err != nil {
 		return nil, fmt.Errorf("write source: %w", err)
 	}
@@ -92,15 +97,18 @@ replace %s => %s
 		"GOCACHE="+filepath.Join(directory, "cache"),
 		"GOPROXY=off",
 		"GOSUMDB=off",
-		"PATH="+compiler.goDirectory,
 	)
+
 	var diagnostics bytes.Buffer
+
 	command.Stdout = &diagnostics
+
 	command.Stderr = &diagnostics
-	if err := command.Run(); err != nil {
+	if err := runCommand(ctx, command); err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("compile context: %w", ctx.Err())
 		}
+
 		return nil, fmt.Errorf("compile source: %w: %s", err, diagnostics.String())
 	}
 
@@ -113,37 +121,65 @@ func readWASM(directory string) ([]byte, error) {
 		return nil, fmt.Errorf("open compilation directory: %w", err)
 	}
 	defer func() {
-		if err := root.Close(); err != nil {
-			slog.Warn("close compilation root", "error", err)
+		if closeErr := root.Close(); closeErr != nil {
+			slog.Warn("close compilation root", "error", closeErr)
 		}
 	}()
+
 	outputFile, err := root.Open("app.wasm")
 	if err != nil {
 		return nil, fmt.Errorf("open WebAssembly: %w", err)
 	}
+
 	defer func() {
-		if err := outputFile.Close(); err != nil {
-			slog.Warn("close WebAssembly output", "error", err)
+		if closeErr := outputFile.Close(); closeErr != nil {
+			slog.Warn("close WebAssembly output", "error", closeErr)
 		}
 	}()
+
 	wasm, err := io.ReadAll(outputFile)
 	if err != nil {
 		return nil, fmt.Errorf("read WebAssembly: %w", err)
 	}
+
 	return wasm, nil
 }
 
-func (compiler *wasmCompiler) buildCommand(ctx context.Context) *exec.Cmd {
-	return exec.CommandContext(
-		ctx,
-		"go",
-		"build",
-		"-mod=mod",
-		"-trimpath",
-		"-o",
-		"app.wasm",
-		".",
-	)
+func (compiler *wasmCompiler) buildCommand(_ context.Context) *exec.Cmd {
+	return &exec.Cmd{
+		Path: compiler.goBinary,
+		Args: []string{
+			compiler.goBinary,
+			"build",
+			"-mod=mod",
+			"-trimpath",
+			"-o",
+			"app.wasm",
+			".",
+		},
+	}
+}
+
+func runCommand(ctx context.Context, command *exec.Cmd) error {
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start compiler: %w", err)
+	}
+
+	completed := make(chan error, 1)
+	go func() {
+		completed <- command.Wait()
+	}()
+
+	select {
+	case err := <-completed:
+		return err
+	case <-ctx.Done():
+		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return errors.Join(ctx.Err(), fmt.Errorf("kill compiler: %w", err), <-completed)
+		}
+
+		return errors.Join(ctx.Err(), <-completed)
+	}
 }
 
 func goRoot(ctx context.Context, goBinary string) (string, error) {
@@ -151,16 +187,19 @@ func goRoot(ctx context.Context, goBinary string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("run go env GOROOT: %w", err)
 	}
+
 	return strings.TrimSpace(string(output)), nil
 }
 
 func environmentWithoutPath() []string {
 	environment := os.Environ()
+
 	filtered := make([]string, 0, len(environment))
 	for _, variable := range environment {
 		if !strings.HasPrefix(variable, "PATH=") {
 			filtered = append(filtered, variable)
 		}
 	}
+
 	return filtered
 }
