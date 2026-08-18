@@ -27,7 +27,6 @@ type config struct {
 	address         string
 	allowedOrigin   string
 	cordDirectory   string
-	playDirectory   string
 	maxRequestBytes int64
 	maxSourceBytes  int
 	compileTimeout  time.Duration
@@ -47,7 +46,7 @@ func run(arguments []string) error {
 		return err
 	}
 
-	compiler, err := newWASMCompiler(cfg.cordDirectory, cfg.playDirectory)
+	compiler, err := newWASMCompiler(cfg.cordDirectory)
 	if err != nil {
 		return err
 	}
@@ -91,7 +90,6 @@ func parseConfig(arguments []string) (config, error) {
 	flags.StringVar(&cfg.address, "addr", "127.0.0.1:8080", "listen address")
 	flags.StringVar(&cfg.allowedOrigin, "allowed-origin", os.Getenv("CORD_COMPILER_ALLOWED_ORIGIN"), "allowed CORS origin")
 	flags.StringVar(&cfg.cordDirectory, "cord-dir", ".", "Cord module directory")
-	flags.StringVar(&cfg.playDirectory, "playground-dir", "playground", "playground module directory")
 	flags.Int64Var(&cfg.maxRequestBytes, "max-request-bytes", defaultMaxRequestBytes, "maximum JSON request size")
 	flags.IntVar(&cfg.maxSourceBytes, "max-source-bytes", defaultMaxSourceBytes, "maximum source size")
 	flags.DurationVar(&cfg.compileTimeout, "timeout", defaultTimeout, "compilation timeout")

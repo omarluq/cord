@@ -21,10 +21,12 @@ func (function compilerFunc) Compile(ctx context.Context, source string) ([]byte
 
 func testConfig() config {
 	return config{
-		address: "", allowedOrigin: "https://play.example", cordDirectory: "", playDirectory: "",
+		address: "", allowedOrigin: "https://play.example", cordDirectory: "",
 		maxRequestBytes: 128, maxSourceBytes: 32, compileTimeout: time.Second, maxConcurrency: 1,
 	}
 }
+
+const compileCase = "compile"
 
 func TestHandlerRoutesAndHeaders(t *testing.T) {
 	t.Parallel()
@@ -45,7 +47,7 @@ func TestHandlerRoutesAndHeaders(t *testing.T) {
 	}{
 		{name: "health", method: http.MethodGet, path: "/healthz", body: "", contentType: "", status: http.StatusOK, response: "ok\n"},
 		{name: "preflight", method: http.MethodOptions, path: compilePath, body: "", contentType: "", status: http.StatusNoContent, response: ""},
-		{name: "compile", method: http.MethodPost, path: compilePath, body: `{"source":"package main"}`, contentType: jsonMediaType, status: http.StatusOK, response: "wasm"},
+		{name: compileCase, method: http.MethodPost, path: compilePath, body: `{"source":"package main"}`, contentType: jsonMediaType, status: http.StatusOK, response: ""},
 		{name: "method", method: http.MethodGet, path: compilePath, body: "", contentType: "", status: http.StatusMethodNotAllowed, response: "method not allowed\n"},
 		{name: "missing", method: http.MethodGet, path: "/missing", body: "", contentType: "", status: http.StatusNotFound, response: "404 page not found\n"},
 	}
@@ -54,15 +56,20 @@ func TestHandlerRoutesAndHeaders(t *testing.T) {
 			t.Parallel()
 			request := httptest.NewRequestWithContext(t.Context(), test.method, test.path, strings.NewReader(test.body))
 			request.Header.Set("Content-Type", test.contentType)
+			request.Header.Set("Origin", "https://play.example")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 
 			require.Equal(t, test.status, response.Code)
-			require.Equal(t, test.response, response.Body.String())
+			if test.name != compileCase {
+				require.Equal(t, test.response, response.Body.String())
+			}
 			require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 			require.Equal(t, "https://play.example", response.Header().Get("Access-Control-Allow-Origin"))
-			if test.name == "compile" {
-				require.Equal(t, "application/wasm", response.Header().Get("Content-Type"))
+			if test.name == compileCase {
+				require.Contains(t, response.Header().Get("Content-Type"), "multipart/form-data")
+				require.Contains(t, response.Body.String(), "wasm")
+				require.Contains(t, response.Body.String(), `"nodes":[]`)
 			}
 		})
 	}
@@ -156,5 +163,6 @@ func TestHandlerTimesOutCompilation(t *testing.T) {
 func compileRequestForTest(ctx context.Context) *http.Request {
 	request := httptest.NewRequestWithContext(ctx, http.MethodPost, compilePath, strings.NewReader(`{"source":"package main"}`))
 	request.Header.Set("Content-Type", jsonMediaType)
+	request.Header.Set("Origin", "https://play.example")
 	return request
 }

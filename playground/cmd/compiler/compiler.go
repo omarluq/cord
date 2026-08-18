@@ -9,12 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const (
-	cordModule       = "github.com/omarluq/cord"
-	playgroundModule = "github.com/omarluq/cord/playground"
-	moduleFileMode   = 0o600
+	cordModule     = "github.com/omarluq/cord"
+	moduleFileMode = 0o600
 )
 
 type compiler interface {
@@ -23,23 +23,23 @@ type compiler interface {
 
 type wasmCompiler struct {
 	cordDirectory string
-	playDirectory string
+	goRoot        string
 }
 
-func newWASMCompiler(cordDirectory, playDirectory string) (*wasmCompiler, error) {
+func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 	cordPath, err := filepath.Abs(cordDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Cord directory: %w", err)
 	}
-	playPath, err := filepath.Abs(playDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("resolve playground directory: %w", err)
-	}
 	if _, err := exec.LookPath("go"); err != nil {
 		return nil, fmt.Errorf("find Go compiler: %w", err)
 	}
+	goroot, err := goRoot(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("resolve Go root: %w", err)
+	}
 
-	return &wasmCompiler{cordDirectory: cordPath, playDirectory: playPath}, nil
+	return &wasmCompiler{cordDirectory: cordPath, goRoot: goroot}, nil
 }
 
 func (compiler *wasmCompiler) Compile(ctx context.Context, source string) (wasm []byte, resultErr error) {
@@ -53,15 +53,10 @@ func (compiler *wasmCompiler) Compile(ctx context.Context, source string) (wasm 
 
 go 1.27rc2
 
-require (
-	%s v0.0.0
-	%s v0.0.0
-)
+require %s v0.0.0
 
 replace %s => %s
-replace %s => %s
-`, cordModule, playgroundModule, cordModule, filepath.ToSlash(compiler.cordDirectory),
-		playgroundModule, filepath.ToSlash(compiler.playDirectory))
+`, cordModule, cordModule, filepath.ToSlash(compiler.cordDirectory))
 	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(module), moduleFileMode); err != nil {
 		return nil, fmt.Errorf("write module: %w", err)
 	}
@@ -69,13 +64,15 @@ replace %s => %s
 		return nil, fmt.Errorf("write source: %w", err)
 	}
 
-	command := exec.CommandContext(ctx, "go", "build", "-mod=mod", "-trimpath", "-o", "app.wasm", ".")
+	command := compiler.buildCommand(ctx)
 	command.Dir = directory
 	command.Env = append(
 		os.Environ(),
 		"GOOS=js",
 		"GOARCH=wasm",
 		"CGO_ENABLED=0",
+		"GOROOT="+compiler.goRoot,
+		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
 		"GOSUMDB=off",
 	)
@@ -104,4 +101,16 @@ replace %s => %s
 		return nil, fmt.Errorf("read WebAssembly: %w", err)
 	}
 	return wasm, nil
+}
+
+func (compiler *wasmCompiler) buildCommand(ctx context.Context) *exec.Cmd {
+	return exec.CommandContext(ctx, "go", "build", "-mod=mod", "-trimpath", "-o", "app.wasm", ".")
+}
+
+func goRoot(ctx context.Context) (string, error) {
+	output, err := exec.CommandContext(ctx, "go", "env", "GOROOT").Output()
+	if err != nil {
+		return "", fmt.Errorf("run go env GOROOT: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }

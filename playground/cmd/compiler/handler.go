@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/omarluq/cord/playground/internal/protocol"
 )
 
 const (
@@ -21,17 +25,17 @@ type compileRequest struct {
 }
 
 type service struct {
-	compiler      compiler
-	allowedOrigin string
-	maxRequest    int64
-	maxSource     int
-	timeout       time.Duration
-	slots         chan struct{}
+	compiler       compiler
+	allowedOrigins map[string]struct{}
+	maxRequest     int64
+	maxSource      int
+	timeout        time.Duration
+	slots          chan struct{}
 }
 
 func newHandler(cfg config, compiler compiler) http.Handler {
 	service := &service{
-		compiler: compiler, allowedOrigin: cfg.allowedOrigin,
+		compiler: compiler, allowedOrigins: parseAllowedOrigins(cfg.allowedOrigin),
 		maxRequest: cfg.maxRequestBytes, maxSource: cfg.maxSourceBytes,
 		timeout: cfg.compileTimeout, slots: make(chan struct{}, cfg.maxConcurrency),
 	}
@@ -39,7 +43,7 @@ func newHandler(cfg config, compiler compiler) http.Handler {
 }
 
 func (service *service) serveHTTP(response http.ResponseWriter, request *http.Request) {
-	service.setHeaders(response)
+	service.setHeaders(response, request.Header.Get("Origin"))
 	if request.Method == http.MethodOptions {
 		service.options(response, request)
 		return
@@ -77,16 +81,9 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	body := http.MaxBytesReader(response, request.Body, service.maxRequest)
-	decoder := json.NewDecoder(body)
-	decoder.DisallowUnknownFields()
-	input, status, err := decodeRequest(decoder)
+	input, status, err := service.readRequest(response, request)
 	if err != nil {
 		http.Error(response, err.Error(), status)
-		return
-	}
-	if err := ensureJSONEnd(decoder); err != nil {
-		http.Error(response, "request must contain one JSON object", http.StatusBadRequest)
 		return
 	}
 	if !service.validSource(response, input.Source) {
@@ -100,22 +97,76 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 
 	ctx, cancel := context.WithTimeout(request.Context(), service.timeout)
 	defer cancel()
-	wasm, err := service.compiler.Compile(ctx, input.Source)
+	graph, err := extractGraph(input.Source)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			writeJSONError(response, "compilation timed out", http.StatusGatewayTimeout)
-			return
-		}
 		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 
-	response.Header().Set("Content-Type", "application/wasm")
-	response.Header().Set("Content-Disposition", `attachment; filename="app.wasm"`)
-	response.WriteHeader(http.StatusOK)
-	if _, err := response.Write(wasm); err != nil {
+	instrumentedSource, err := instrumentWorkflow(input.Source, graph)
+	if err != nil {
+		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+
+	wasm, err := service.compiler.Compile(ctx, instrumentedSource)
+	if err != nil {
+		writeCompilationError(response, err)
+		return
+	}
+
+	if err := writeArtifact(response, graph, wasm); err != nil {
+		return
+	}
+}
+
+func writeCompilationError(response http.ResponseWriter, err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeJSONError(response, "compilation timed out", http.StatusGatewayTimeout)
+		return
+	}
+	writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
+}
+
+func (service *service) readRequest(response http.ResponseWriter, request *http.Request) (compileRequest, int, error) {
+	body := http.MaxBytesReader(response, request.Body, service.maxRequest)
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	input, status, err := decodeRequest(decoder)
+	if err != nil {
+		return compileRequest{}, status, err
+	}
+	if err := ensureJSONEnd(decoder); err != nil {
+		return compileRequest{}, http.StatusBadRequest, errors.New("request must contain one JSON object")
+	}
+	return input, 0, nil
+}
+
+func writeArtifact(response http.ResponseWriter, graph protocol.Graph, wasm []byte) error {
+	writer := multipart.NewWriter(response)
+	response.Header().Set("Content-Type", writer.FormDataContentType())
+	response.Header().Set("Content-Disposition", `attachment; filename="cord-workflow"`)
+	response.WriteHeader(http.StatusOK)
+
+	graphPart, err := writer.CreateFormField("graph")
+	if err != nil {
+		return fmt.Errorf("create graph response: %w", err)
+	}
+	if err := json.NewEncoder(graphPart).Encode(graph); err != nil {
+		return fmt.Errorf("encode graph response: %w", err)
+	}
+
+	wasmPart, err := writer.CreateFormFile("wasm", "app.wasm")
+	if err != nil {
+		return fmt.Errorf("create WebAssembly response: %w", err)
+	}
+	if _, err := wasmPart.Write(wasm); err != nil {
+		return fmt.Errorf("write WebAssembly response: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("finish compilation response: %w", err)
+	}
+	return nil
 }
 
 func (service *service) validSource(response http.ResponseWriter, source string) bool {
@@ -164,17 +215,28 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 	return nil
 }
 
-func (service *service) setHeaders(response http.ResponseWriter) {
+func (service *service) setHeaders(response http.ResponseWriter, origin string) {
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.Header().Set("X-Frame-Options", "DENY")
 	response.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 	response.Header().Set("Cache-Control", "no-store")
-	if service.allowedOrigin != "" {
-		response.Header().Set("Access-Control-Allow-Origin", service.allowedOrigin)
+	if _, allowed := service.allowedOrigins[origin]; allowed {
+		response.Header().Set("Access-Control-Allow-Origin", origin)
 		response.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		response.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		response.Header().Set("Vary", "Origin")
 	}
+}
+
+func parseAllowedOrigins(value string) map[string]struct{} {
+	origins := make(map[string]struct{})
+	for origin := range strings.SplitSeq(value, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			origins[origin] = struct{}{}
+		}
+	}
+	return origins
 }
 
 func writeJSONError(response http.ResponseWriter, message string, status int) {
