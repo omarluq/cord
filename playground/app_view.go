@@ -159,15 +159,38 @@ func (app *App) renderGraphPanel() goapp.UI {
 
 func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 	label := "Zoom " + direction + " workflow graph"
+	icon := []goapp.UI{
+		goapp.Span().Class(
+			"absolute",
+			"h-0.5",
+			"w-3",
+			"rounded-full",
+			"bg-current",
+		),
+	}
+	if direction == "in" {
+		icon = append(
+			icon,
+			goapp.Span().Class(
+				"absolute",
+				"h-3",
+				"w-0.5",
+				"rounded-full",
+				"bg-current",
+			),
+		)
+	}
+
 	return goapp.Button().
 		Aria("label", label).
 		Title("Zoom "+direction).
 		Class(
-			"graph-zoom",
-			"graph-zoom-"+direction,
 			"relative",
+			"flex",
 			"size-8",
 			"cursor-pointer",
+			"items-center",
+			"justify-center",
 			"rounded",
 			"border",
 			"border-nord-3",
@@ -178,14 +201,17 @@ func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
 		).
 		OnClick(func(goapp.Context, goapp.Event) {
 			app.bridge.zoomGraph(amount)
-		})
+		}).
+		Body(icon...)
 }
 
 func (app *App) renderExecutionButton() goapp.UI {
 	classes := append(
 		buttonClasses,
-		"execution-toggle",
+		"flex",
 		"size-9",
+		"items-center",
+		"justify-center",
 		"p-0",
 	)
 	if app.status == statusRunning {
@@ -194,11 +220,17 @@ func (app *App) renderExecutionButton() goapp.UI {
 			Title("Stop workflow").
 			Class(append(
 				classes,
-				"execution-toggle-stop",
 				"border-nord-11",
 				"text-nord-11",
 			)...).
-			OnClick(app.stop)
+			OnClick(app.stop).
+			Body(
+				goapp.Span().Class(
+					"size-2.5",
+					"rounded-xs",
+					"bg-current",
+				),
+			)
 	}
 
 	return goapp.Button().
@@ -206,7 +238,6 @@ func (app *App) renderExecutionButton() goapp.UI {
 		Title("Compile and run workflow").
 		Class(append(
 			classes,
-			"execution-toggle-start",
 			"border-nord-10",
 			"bg-nord-10",
 			"text-white",
@@ -215,7 +246,18 @@ func (app *App) renderExecutionButton() goapp.UI {
 			app.status != statusReady &&
 				app.status != statusFailed,
 		).
-		OnClick(app.run)
+		OnClick(app.run).
+		Body(
+			goapp.Span().Class(
+				"ml-0.5",
+				"h-0",
+				"w-0",
+				"border-y-[6px]",
+				"border-l-[10px]",
+				"border-y-transparent",
+				"border-l-current",
+			),
+		)
 }
 
 func (app *App) renderExampleSelect() goapp.UI {
