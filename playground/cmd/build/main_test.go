@@ -21,9 +21,8 @@ func TestRunGeneratesStaticWebsite(t *testing.T) {
 		"app-worker.js",
 		"wasm_exec.js",
 		"manifest.webmanifest",
-		filepath.Join("web", "playground.css"),
 		filepath.Join("web", "icon.svg"),
-		filepath.Join("web", "playground.js"),
+		filepath.Join("web", "go-logo.svg"),
 	} {
 		info, err := os.Stat(filepath.Join(output, path))
 		require.NoError(t, err, path)

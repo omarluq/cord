@@ -22,18 +22,18 @@ tasks:
       - playground/web/worker.ts
       - playground/web/tailwind.css
     generates:
-      - playground/web/playground.js
-      - playground/web/worker.js
-      - playground/web/playground.css
+      - dist/playground/web/playground.js
+      - dist/playground/web/worker.js
+      - dist/playground/web/playground.css
     cmds:
       - bun run --cwd "{{.ROOT_DIR}}/playground" assets
       - bun run --cwd "{{.ROOT_DIR}}/playground" css
 
   playground-build:
     desc: Build the static WebAssembly playground
-    deps: [playground-assets]
     cmds:
       - go run ./playground/cmd/build -output dist/playground {{.CLI_ARGS}}
+      - task: playground-assets
       - GOOS=js GOARCH=wasm go build -o dist/playground/web/app.wasm ./playground/cmd/wasm
 
   playground-compiler:
@@ -62,6 +62,7 @@ tasks:
     desc: Compile and exercise a user-authored Cord workflow in Chromium
     cmds:
       - task: playground-build
+      - mkdir -p .tmp
       - rm -f .tmp/playground-ready
       - go build -o .tmp/playground-serve ./playground/cmd/serve
       - go build -o .tmp/playground-compiler ./playground/cmd/compiler
@@ -69,7 +70,19 @@ tasks:
       - .tmp/playground-serve -dir dist/playground -ready-file .tmp/playground-ready >.tmp/playground-server.log 2>&1 &
       - .tmp/playground-compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173 >.tmp/playground-compiler.log 2>&1 &
       - defer: pkill -f '^.tmp/playground-(serve|compiler)' 2>/dev/null || true
-      - until test -f .tmp/playground-ready && curl --fail --silent http://127.0.0.1:4180/healthz >/dev/null; do sleep 0.1; done
+      - |
+        ready=false
+        for _ in $(seq 1 300); do
+          if test -f .tmp/playground-ready && curl --fail --silent http://127.0.0.1:4180/healthz >/dev/null; then
+            ready=true
+            break
+          fi
+          sleep 0.1
+        done
+        if test "$ready" != true; then
+          cat .tmp/playground-server.log .tmp/playground-compiler.log
+          exit 1
+        fi
       - bun run --cwd "{{.ROOT_DIR}}/playground" test
 
   test:
@@ -86,6 +99,7 @@ tasks:
     desc: Run tests and write a coverage profile
     cmds:
       - go test -race -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
+      - go test -race -shuffle=on ./playground/...
 
   lint:
     desc: Run static analysis across the workspace
