@@ -1,0 +1,68 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/vfs/memdb"
+	"github.com/omarluq/cord"
+)
+
+func validate(_ context.Context, value int) (int, error) {
+	slog.Info("validating value", "value", value)
+	if value < 0 {
+		return 0, cord.Permanent(fmt.Errorf("value must be non-negative: %d", value))
+	}
+	return value, nil
+}
+
+func process(_ context.Context, value int) (int, error) {
+	slog.Info("processing value", "value", value)
+	return value * 2, nil
+}
+
+func main() {
+	slog.SetDefault(
+		slog.New(
+			slog.NewTextHandler(os.Stdout, nil),
+		),
+	)
+	ctx := context.Background()
+	database, err := sql.Open(
+		"sqlite3",
+		"file:/playground.db?vfs=memdb&_pragma=foreign_keys(1)",
+	)
+	if err != nil {
+		panic(err)
+	}
+	database.SetMaxOpenConns(1)
+	runtime, err := cord.New(
+		ctx,
+		database,
+		cord.Options{PollInterval: 25 * time.Millisecond},
+	)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := errors.Join(runtime.Close(), database.Close()); err != nil {
+			panic(err)
+		}
+	}()
+
+	workflow := runtime.
+		From("permanent-failure", validate).
+		Then(process)
+	result, err := workflow.Run(ctx, -1)
+	if err != nil {
+		fmt.Println("workflow failed:", err)
+		return
+	}
+	fmt.Println(result)
+}
