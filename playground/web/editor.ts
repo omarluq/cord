@@ -76,12 +76,31 @@ const nodeStates: readonly GraphState[] = [
   "failed",
 ];
 
-const edgeColors: Record<GraphState, string> = {
-  queued: "#607087",
-  running: "#81a1c1",
-  completed: "#8fbcbb",
-  failed: "#bf616a",
-};
+interface GraphPalette {
+  background: string;
+  text: string;
+  queued: string;
+  running: string;
+  completed: string;
+  failed: string;
+}
+
+function themeColor(name: string): string {
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
+}
+
+function graphPalette(): GraphPalette {
+  return {
+    background: themeColor("--color-nord-3"),
+    text: themeColor("--color-nord-6"),
+    queued: themeColor("--color-graph-queued"),
+    running: themeColor("--color-nord-8"),
+    completed: themeColor("--color-nord-14"),
+    failed: themeColor("--color-nord-11"),
+  };
+}
 
 export function mountEditor(parent: HTMLElement, sourceText: string): void {
   editor?.destroy();
@@ -95,7 +114,10 @@ export function mountEditor(parent: HTMLElement, sourceText: string): void {
         go(),
         oneDark,
         EditorView.theme({
-          "&": { height: "100%", background: "#2e3440" },
+          "&": {
+            height: "100%",
+            background: "var(--color-nord-0)",
+          },
           ".cm-scroller": {
             overflow: "auto",
             fontFamily: "ui-monospace, monospace",
@@ -153,14 +175,15 @@ export function setSource(sourceText: string): void {
   editor.focus();
 }
 
-const graphStyles: StylesheetJson = [
-  {
-    selector: "node",
+function graphStyles(palette: GraphPalette): StylesheetJson {
+  return [
+    {
+      selector: "node",
     style: {
-      "background-color": "#4c566a",
-      "border-color": "#607087",
+      "background-color": palette.background,
+      "border-color": palette.queued,
       "border-width": 2,
-      color: "#eceff4",
+      color: palette.text,
       label: "data(label)",
       "font-family": "ui-monospace, monospace",
       "font-size": 11,
@@ -175,39 +198,40 @@ const graphStyles: StylesheetJson = [
       "transition-duration": 240,
     },
   },
-  {
-    selector: "node.running",
-    style: { "border-color": "#88c0d0", "border-width": 4 },
+    {
+      selector: "node.running",
+    style: { "border-color": palette.running, "border-width": 4 },
   },
-  {
-    selector: "node.completed",
-    style: { "border-color": "#a3be8c", "border-width": 3 },
+    {
+      selector: "node.completed",
+    style: { "border-color": palette.completed, "border-width": 3 },
   },
-  {
-    selector: "node.failed",
-    style: { "border-color": "#bf616a", "border-width": 4 },
+    {
+      selector: "node.failed",
+    style: { "border-color": palette.failed, "border-width": 4 },
   },
-  {
-    selector: "node.queued",
-    style: {
-      "background-color": "#4c566a",
-      "border-color": "#607087",
-      "border-width": 2,
+    {
+      selector: "node.queued",
+      style: {
+        "background-color": palette.background,
+        "border-color": palette.queued,
+        "border-width": 2,
+      },
     },
-  },
-  {
-    selector: "edge",
+    {
+      selector: "edge",
     style: {
       width: 2,
-      "line-color": "#607087",
-      "target-arrow-color": "#607087",
+      "line-color": palette.queued,
+      "target-arrow-color": palette.queued,
       "target-arrow-shape": "triangle",
       "curve-style": "bezier",
       "transition-property": "line-color, target-arrow-color, width",
       "transition-duration": 240,
     },
-  },
-];
+    },
+  ];
+}
 
 export function mountGraph(container: HTMLElement): void {
   graph?.destroy();
@@ -220,7 +244,7 @@ export function mountGraph(container: HTMLElement): void {
     maxZoom: 2,
     minZoom: 0.25,
     layout: graphLayout(),
-    style: graphStyles,
+    style: graphStyles(graphPalette()),
   });
 }
 
@@ -299,7 +323,7 @@ export function setGraphState(state: GraphState): void {
 
   graph.nodes().forEach((node) => applyNodeState(node, state));
   graph.edges().forEach((edge) => {
-    const color = edgeColors[state];
+    const color = graphPalette()[state];
     edge.style("line-color", color);
     edge.style("target-arrow-color", color);
     edge.style("width", state === "running" ? 3 : 2);
