@@ -24,7 +24,9 @@ func (function compilerFunc) Compile(ctx context.Context, source string) ([]byte
 
 func testConfig() config {
 	return config{
-		address: "", allowedOrigin: "https://play.example", cordDirectory: "",
+		address:         "",
+		allowedOrigin:   "https://play.example",
+		cordDirectory:   "",
 		maxRequestBytes: 128,
 		maxSourceBytes:  32,
 		compileTimeout:  time.Second,
