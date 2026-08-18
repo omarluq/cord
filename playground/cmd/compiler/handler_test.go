@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 
 type compilerFunc func(context.Context, string) ([]byte, error)
 
+// Compile invokes the test compiler function.
 func (function compilerFunc) Compile(ctx context.Context, source string) ([]byte, error) {
 	return function(ctx, source)
 }
@@ -96,13 +98,14 @@ func TestHandlerRejectsInvalidRequests(t *testing.T) {
 		body        string
 		contentType string
 		status      int
+		message     string
 	}{
-		{name: "media type", body: `{}`, contentType: "text/plain", status: http.StatusUnsupportedMediaType},
-		{name: "malformed", body: `{`, contentType: jsonMediaType, status: http.StatusBadRequest},
-		{name: "unknown field", body: `{"source":"x","other":1}`, contentType: jsonMediaType, status: http.StatusBadRequest},
-		{name: "empty", body: `{"source":""}`, contentType: jsonMediaType, status: http.StatusBadRequest},
-		{name: "source limit", body: `{"source":"abcdefghijklmnopqrstuvwxyz0123456789"}`, contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge},
-		{name: "request limit", body: `{"source":"` + strings.Repeat("x", 200) + `"}`, contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge},
+		{name: "media type", body: `{}`, contentType: "text/plain", status: http.StatusUnsupportedMediaType, message: "Content-Type must be application/json"},
+		{name: "malformed", body: `{`, contentType: jsonMediaType, status: http.StatusBadRequest, message: "invalid JSON request"},
+		{name: "unknown field", body: `{"source":"x","other":1}`, contentType: jsonMediaType, status: http.StatusBadRequest, message: "invalid JSON request"},
+		{name: "empty", body: `{"source":""}`, contentType: jsonMediaType, status: http.StatusBadRequest, message: "source is required"},
+		{name: "source limit", body: `{"source":"abcdefghijklmnopqrstuvwxyz0123456789"}`, contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge, message: "source is too large"},
+		{name: "request limit", body: `{"source":"` + strings.Repeat("x", 200) + `"}`, contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge, message: "request body is too large"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -112,6 +115,8 @@ func TestHandlerRejectsInvalidRequests(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			require.Equal(t, test.status, response.Code)
+			require.Contains(t, response.Result().Header.Get(contentTypeHeader), jsonMediaType)
+			require.JSONEq(t, `{"error":`+strconv.Quote(test.message)+`}`, response.Body.String())
 		})
 	}
 }
