@@ -38,13 +38,20 @@ func testConfig() config {
 	}
 }
 
+func testConfigPointer() *config {
+	cfg := testConfig()
+
+	return &cfg
+}
+
 const compileCase = "compile"
 
 func TestHandlerRoutesAndHeaders(t *testing.T) {
 	t.Parallel()
 
-	handler := newHandler(testConfig(), compilerFunc(func(_ context.Context, source string) ([]byte, error) {
+	handler := newHandler(testConfigPointer(), compilerFunc(func(_ context.Context, source string) ([]byte, error) {
 		require.Equal(t, "package main", source)
+
 		return []byte("wasm"), nil
 	}))
 
@@ -54,14 +61,29 @@ func TestHandlerRoutesAndHeaders(t *testing.T) {
 		path        string
 		body        string
 		contentType string
-		status      int
 		response    string
+		status      int
 	}{
-		{name: "health", method: http.MethodGet, path: "/healthz", body: "", contentType: "", status: http.StatusOK, response: "ok\n"},
-		{name: "preflight", method: http.MethodOptions, path: compilePath, body: "", contentType: "", status: http.StatusNoContent, response: ""},
-		{name: compileCase, method: http.MethodPost, path: compilePath, body: `{"source":"package main"}`, contentType: jsonMediaType, status: http.StatusOK, response: ""},
-		{name: "method", method: http.MethodGet, path: compilePath, body: "", contentType: "", status: http.StatusMethodNotAllowed, response: "method not allowed\n"},
-		{name: "missing", method: http.MethodGet, path: "/missing", body: "", contentType: "", status: http.StatusNotFound, response: "404 page not found\n"},
+		{
+			name: "health", method: http.MethodGet, path: "/healthz", body: "", contentType: "",
+			status: http.StatusOK, response: "ok\n",
+		},
+		{
+			name: "preflight", method: http.MethodOptions, path: compilePath, body: "", contentType: "",
+			status: http.StatusNoContent, response: "",
+		},
+		{
+			name: compileCase, method: http.MethodPost, path: compilePath,
+			body: `{"source":"package main"}`, contentType: jsonMediaType, status: http.StatusOK, response: "",
+		},
+		{
+			name: "method", method: http.MethodGet, path: compilePath, body: "", contentType: "",
+			status: http.StatusMethodNotAllowed, response: "method not allowed\n",
+		},
+		{
+			name: "missing", method: http.MethodGet, path: "/missing", body: "", contentType: "",
+			status: http.StatusNotFound, response: "404 page not found\n",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -69,15 +91,19 @@ func TestHandlerRoutesAndHeaders(t *testing.T) {
 			request := httptest.NewRequestWithContext(t.Context(), test.method, test.path, strings.NewReader(test.body))
 			request.Header.Set("Content-Type", test.contentType)
 			request.Header.Set("Origin", "https://play.example")
+
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 
 			require.Equal(t, test.status, response.Code)
+
 			if test.name != compileCase {
 				require.Equal(t, test.response, response.Body.String())
 			}
+
 			require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 			require.Equal(t, "https://play.example", response.Header().Get("Access-Control-Allow-Origin"))
+
 			if test.name == compileCase {
 				require.Contains(t, response.Header().Get("Content-Type"), "multipart/form-data")
 				require.Contains(t, response.Body.String(), "wasm")
@@ -90,28 +116,50 @@ func TestHandlerRoutesAndHeaders(t *testing.T) {
 func TestHandlerRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
 
-	handler := newHandler(testConfig(), compilerFunc(func(context.Context, string) ([]byte, error) {
+	handler := newHandler(testConfigPointer(), compilerFunc(func(context.Context, string) ([]byte, error) {
 		return nil, errors.New("unexpected compilation")
 	}))
+
 	tests := []struct {
 		name        string
 		body        string
 		contentType string
-		status      int
 		message     string
+		status      int
 	}{
-		{name: "media type", body: `{}`, contentType: "text/plain", status: http.StatusUnsupportedMediaType, message: "Content-Type must be application/json"},
-		{name: "malformed", body: `{`, contentType: jsonMediaType, status: http.StatusBadRequest, message: "invalid JSON request"},
-		{name: "unknown field", body: `{"source":"x","other":1}`, contentType: jsonMediaType, status: http.StatusBadRequest, message: "invalid JSON request"},
-		{name: "empty", body: `{"source":""}`, contentType: jsonMediaType, status: http.StatusBadRequest, message: "source is required"},
-		{name: "source limit", body: `{"source":"abcdefghijklmnopqrstuvwxyz0123456789"}`, contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge, message: "source is too large"},
-		{name: "request limit", body: `{"source":"` + strings.Repeat("x", 200) + `"}`, contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge, message: "request body is too large"},
+		{
+			name: "media type", body: `{}`, contentType: "text/plain",
+			status: http.StatusUnsupportedMediaType, message: "Content-Type must be application/json",
+		},
+		{
+			name: "malformed", body: `{`, contentType: jsonMediaType,
+			status: http.StatusBadRequest, message: "invalid JSON request",
+		},
+		{
+			name: "unknown field", body: `{"source":"x","other":1}`, contentType: jsonMediaType,
+			status: http.StatusBadRequest, message: "invalid JSON request",
+		},
+		{
+			name: "empty", body: `{"source":""}`, contentType: jsonMediaType,
+			status: http.StatusBadRequest, message: "source is required",
+		},
+		{
+			name: "source limit", body: `{"source":"abcdefghijklmnopqrstuvwxyz0123456789"}`,
+			contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge, message: "source is too large",
+		},
+		{
+			name: "request limit", body: `{"source":"` + strings.Repeat("x", 200) + `"}`,
+			contentType: jsonMediaType, status: http.StatusRequestEntityTooLarge, message: "request body is too large",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, compilePath, strings.NewReader(test.body))
+			request := httptest.NewRequestWithContext(
+				t.Context(), http.MethodPost, compilePath, strings.NewReader(test.body),
+			)
 			request.Header.Set("Content-Type", test.contentType)
+
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			require.Equal(t, test.status, response.Code)
@@ -126,9 +174,10 @@ func TestHandlerCachesSuccessfulCompilations(t *testing.T) {
 
 	calls := 0
 	handler := newHandler(
-		testConfig(),
+		testConfigPointer(),
 		compilerFunc(func(context.Context, string) ([]byte, error) {
 			calls++
+
 			return []byte("wasm"), nil
 		}),
 	)
@@ -141,6 +190,7 @@ func TestHandlerCachesSuccessfulCompilations(t *testing.T) {
 		)
 		require.Equal(t, http.StatusOK, response.Code)
 	}
+
 	require.Equal(t, 1, calls)
 }
 
@@ -149,25 +199,31 @@ func TestHandlerDeduplicatesConcurrentCompilations(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+
 	var calls atomic.Int32
+
 	handler := newHandler(
-		testConfig(),
+		testConfigPointer(),
 		compilerFunc(func(context.Context, string) ([]byte, error) {
 			calls.Add(1)
 			close(started)
 			<-release
+
 			return []byte("wasm"), nil
 		}),
 	)
 
 	responses := make(chan int, 2)
+
 	for range 2 {
 		go func() {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, compileRequestForTest(t.Context()))
+
 			responses <- response.Code
 		}()
 	}
+
 	<-started
 	close(release)
 
@@ -181,19 +237,25 @@ func TestHandlerLimitsDistinctConcurrentCompilations(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+
 	var once sync.Once
-	handler := newHandler(testConfig(), compilerFunc(func(context.Context, string) ([]byte, error) {
+
+	handler := newHandler(testConfigPointer(), compilerFunc(func(context.Context, string) ([]byte, error) {
 		once.Do(func() { close(started) })
 		<-release
+
 		return []byte("wasm"), nil
 	}))
 
 	firstDone := make(chan int)
+
 	go func() {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, compileRequestForTest(t.Context()))
+
 		firstDone <- response.Code
 	}()
+
 	<-started
 
 	response := httptest.NewRecorder()
@@ -210,7 +272,7 @@ func TestHandlerLimitsDistinctConcurrentCompilations(t *testing.T) {
 func TestHandlerReturnsCompilerDiagnostics(t *testing.T) {
 	t.Parallel()
 
-	handler := newHandler(testConfig(), compilerFunc(func(context.Context, string) ([]byte, error) {
+	handler := newHandler(testConfigPointer(), compilerFunc(func(context.Context, string) ([]byte, error) {
 		return nil, errors.New("compile source: undefined: missing")
 	}))
 	response := httptest.NewRecorder()
@@ -228,8 +290,9 @@ func TestHandlerTimesOutCompilation(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.compileTimeout = time.Millisecond
-	handler := newHandler(cfg, compilerFunc(func(ctx context.Context, _ string) ([]byte, error) {
+	handler := newHandler(&cfg, compilerFunc(func(ctx context.Context, _ string) ([]byte, error) {
 		<-ctx.Done()
+
 		return nil, ctx.Err()
 	}))
 	response := httptest.NewRecorder()
@@ -249,6 +312,7 @@ func compileRequestWithSource(
 	if err != nil {
 		panic(err)
 	}
+
 	request := httptest.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -257,5 +321,6 @@ func compileRequestWithSource(
 	)
 	request.Header.Set("Content-Type", jsonMediaType)
 	request.Header.Set("Origin", "https://play.example")
+
 	return request
 }

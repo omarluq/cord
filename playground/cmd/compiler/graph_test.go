@@ -69,6 +69,7 @@ func main() {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+
 			graph, err := extractGraph(test.source)
 			require.NoError(t, err)
 			require.Equal(t, test.graph, graph)
@@ -137,13 +138,16 @@ func main() { runtime.From("example", pair) }
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+
 			graph, err := extractGraph(test.source)
 			require.NoError(t, err)
 			instrumented, err := instrumentWorkflow(test.source, graph)
 			require.NoError(t, err)
+
 			for _, expected := range test.contains {
 				require.Contains(t, instrumented, expected)
 			}
+
 			for _, unexpected := range test.excludes {
 				require.NotContains(t, instrumented, unexpected)
 			}

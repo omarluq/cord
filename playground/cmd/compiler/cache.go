@@ -18,7 +18,7 @@ type compilationCache struct {
 	values *hot.HotCache[[sha256.Size]byte, compilationArtifact]
 }
 
-func newCompilationCache(cfg config) *compilationCache {
+func newCompilationCache(cfg *config) *compilationCache {
 	return &compilationCache{
 		values: hot.NewHotCache[
 			[sha256.Size]byte,
@@ -34,6 +34,7 @@ func (cache *compilationCache) load(
 	loader func() (compilationArtifact, error),
 ) (compilationArtifact, error) {
 	key := sha256.Sum256([]byte(source))
+
 	artifact, found, err := cache.values.GetWithLoaders(
 		key,
 		func([][sha256.Size]byte) (map[[sha256.Size]byte]compilationArtifact, error) {
@@ -41,14 +42,17 @@ func (cache *compilationCache) load(
 			if loadErr != nil {
 				return nil, loadErr
 			}
+
 			return map[[sha256.Size]byte]compilationArtifact{key: loaded}, nil
 		},
 	)
 	if err != nil {
 		return compilationArtifact{}, fmt.Errorf("load compiled artifact: %w", err)
 	}
+
 	if !found {
 		return compilationArtifact{}, errors.New("compiler cache loader returned no artifact")
 	}
+
 	return artifact, nil
 }
