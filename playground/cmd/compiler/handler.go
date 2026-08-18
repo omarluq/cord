@@ -38,11 +38,13 @@ type service struct {
 
 func newHandler(cfg config, compiler compiler) http.Handler {
 	service := &service{
-		compiler: compiler, allowedOrigins: parseAllowedOrigins(cfg.allowedOrigin),
-		maxRequest: cfg.maxRequestBytes, maxSource: cfg.maxSourceBytes,
-		timeout: cfg.compileTimeout,
-		slots:   make(chan struct{}, cfg.maxConcurrency),
-		cache:   newCompilationCache(cfg),
+		compiler:       compiler,
+		allowedOrigins: parseAllowedOrigins(cfg.allowedOrigin),
+		maxRequest:     cfg.maxRequestBytes,
+		maxSource:      cfg.maxSourceBytes,
+		timeout:        cfg.compileTimeout,
+		slots:          make(chan struct{}, cfg.maxConcurrency),
+		cache:          newCompilationCache(cfg),
 	}
 	return http.HandlerFunc(service.serveHTTP)
 }
@@ -58,9 +60,7 @@ func (service *service) serveHTTP(response http.ResponseWriter, request *http.Re
 	case request.Method == http.MethodGet && request.URL.Path == "/healthz":
 		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		response.WriteHeader(http.StatusOK)
-		if _, err := response.Write([]byte("ok\n")); err != nil {
-			return
-		}
+		_, _ = response.Write([]byte("ok\n"))
 	case request.Method == http.MethodPost && request.URL.Path == compilePath:
 		service.compile(response, request)
 	case request.URL.Path == compilePath || request.URL.Path == "/healthz":
@@ -82,7 +82,11 @@ func (service *service) options(response http.ResponseWriter, request *http.Requ
 func (service *service) compile(response http.ResponseWriter, request *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != jsonMediaType {
-		http.Error(response, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		http.Error(
+			response,
+			"Content-Type must be application/json",
+			http.StatusUnsupportedMediaType,
+		)
 		return
 	}
 
@@ -94,26 +98,25 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	if !service.validSource(response, input.Source) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(
-		request.Context(),
-		service.timeout,
-	)
+
+	ctx, cancel := context.WithTimeout(request.Context(), service.timeout)
 	defer cancel()
 
-	artifact, err := service.cache.load(input.Source, func() (compilationArtifact, error) {
-		if !service.acquire() {
-			return compilationArtifact{}, errCompilerBusy
-		}
-		defer func() { <-service.slots }()
-		return service.compileSource(ctx, input.Source)
-	})
+	artifact, err := service.cache.load(
+		input.Source,
+		func() (compilationArtifact, error) {
+			if !service.acquire() {
+				return compilationArtifact{}, errCompilerBusy
+			}
+			defer func() { <-service.slots }()
+			return service.compileSource(ctx, input.Source)
+		},
+	)
 	if err != nil {
 		service.writeCompileError(response, err)
 		return
 	}
-	if err := writeArtifact(response, artifact.graph, artifact.wasm); err != nil {
-		return
-	}
+	_ = writeArtifact(response, artifact.graph, artifact.wasm)
 }
 
 func (service *service) compileSource(
@@ -135,10 +138,7 @@ func (service *service) compileSource(
 		return compilationArtifact{}, fmt.Errorf("compile workflow: %w", err)
 	}
 
-	return compilationArtifact{
-		graph: graph,
-		wasm:  wasm,
-	}, nil
+	return compilationArtifact{graph: graph, wasm: wasm}, nil
 }
 
 func (service *service) writeCompileError(response http.ResponseWriter, err error) {
@@ -153,7 +153,10 @@ func (service *service) writeCompileError(response http.ResponseWriter, err erro
 	}
 }
 
-func (service *service) readRequest(response http.ResponseWriter, request *http.Request) (compileRequest, int, error) {
+func (service *service) readRequest(
+	response http.ResponseWriter,
+	request *http.Request,
+) (compileRequest, int, error) {
 	body := http.MaxBytesReader(response, request.Body, service.maxRequest)
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
@@ -162,15 +165,23 @@ func (service *service) readRequest(response http.ResponseWriter, request *http.
 		return compileRequest{}, status, err
 	}
 	if err := ensureJSONEnd(decoder); err != nil {
-		return compileRequest{}, http.StatusBadRequest, errors.New("request must contain one JSON object")
+		return compileRequest{}, http.StatusBadRequest,
+			errors.New("request must contain one JSON object")
 	}
 	return input, 0, nil
 }
 
-func writeArtifact(response http.ResponseWriter, graph protocol.Graph, wasm []byte) error {
+func writeArtifact(
+	response http.ResponseWriter,
+	graph protocol.Graph,
+	wasm []byte,
+) error {
 	writer := multipart.NewWriter(response)
 	response.Header().Set("Content-Type", writer.FormDataContentType())
-	response.Header().Set("Content-Disposition", `attachment; filename="cord-workflow"`)
+	response.Header().Set(
+		"Content-Disposition",
+		`attachment; filename="cord-workflow"`,
+	)
 	response.WriteHeader(http.StatusOK)
 
 	graphPart, err := writer.CreateFormField("graph")
@@ -194,7 +205,10 @@ func writeArtifact(response http.ResponseWriter, graph protocol.Graph, wasm []by
 	return nil
 }
 
-func (service *service) validSource(response http.ResponseWriter, source string) bool {
+func (service *service) validSource(
+	response http.ResponseWriter,
+	source string,
+) bool {
 	if source == "" {
 		http.Error(response, "source is required", http.StatusBadRequest)
 		return false
@@ -220,9 +234,11 @@ func decodeRequest(decoder *json.Decoder) (compileRequest, int, error) {
 	if err := decoder.Decode(&input); err != nil {
 		tooLarge, _ := errors.AsType[*http.MaxBytesError](err)
 		if tooLarge != nil {
-			return compileRequest{}, http.StatusRequestEntityTooLarge, errors.New("invalid JSON request")
+			return compileRequest{}, http.StatusRequestEntityTooLarge,
+				errors.New("invalid JSON request")
 		}
-		return compileRequest{}, http.StatusBadRequest, errors.New("invalid JSON request")
+		return compileRequest{}, http.StatusBadRequest,
+			errors.New("invalid JSON request")
 	}
 	return input, 0, nil
 }
@@ -238,10 +254,16 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 	return nil
 }
 
-func (service *service) setHeaders(response http.ResponseWriter, origin string) {
+func (service *service) setHeaders(
+	response http.ResponseWriter,
+	origin string,
+) {
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.Header().Set("X-Frame-Options", "DENY")
-	response.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+	response.Header().Set(
+		"Content-Security-Policy",
+		"default-src 'none'; frame-ancestors 'none'",
+	)
 	response.Header().Set("Cache-Control", "no-store")
 	if _, allowed := service.allowedOrigins[origin]; allowed {
 		response.Header().Set("Access-Control-Allow-Origin", origin)
@@ -262,12 +284,14 @@ func parseAllowedOrigins(value string) map[string]struct{} {
 	return origins
 }
 
-func writeJSONError(response http.ResponseWriter, message string, status int) {
+func writeJSONError(
+	response http.ResponseWriter,
+	message string,
+	status int,
+) {
 	response.Header().Set("Content-Type", jsonMediaType)
 	response.WriteHeader(status)
-	if err := json.NewEncoder(response).Encode(map[string]string{"error": message}); err != nil {
-		return
-	}
+	_ = json.NewEncoder(response).Encode(map[string]string{"error": message})
 }
 
 func allowedMethods(path string) string {
