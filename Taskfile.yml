@@ -96,10 +96,14 @@ tasks:
       - go test -race -short -shuffle=on ./... ./playground/...
 
   test-coverage:
-    desc: Run tests and write a coverage profile
+    desc: Run library tests and write a coverage profile
     cmds:
       - go test -race -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
-      - go test -race -shuffle=on ./playground/...
+
+  playground-test-coverage:
+    desc: Run playground tests and write a separate coverage profile
+    cmds:
+      - go test -race -shuffle=on -coverpkg=./playground/... -coverprofile=playground-coverage.out -covermode=atomic ./playground/...
 
   lint:
     desc: Run static analysis across the workspace
