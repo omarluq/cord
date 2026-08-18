@@ -4,7 +4,7 @@
 package main
 
 import (
-	goapp "github.com/maxence-charriere/go-app/v10/pkg/app"
+	goapp "github.com/maxence-charriere/go-app/v11/pkg/app"
 	"github.com/omarluq/cord/playground"
 )
 

@@ -133,8 +133,8 @@ github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsRe
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/mattn/go-runewidth v0.0.24 h1:cpokDiIn0MGnhdHwuWnJBITySJ20QyNGnY2kR/ay2DU=
 github.com/mattn/go-runewidth v0.0.24/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
-github.com/maxence-charriere/go-app/v10 v10.1.11 h1:4JUSlVQ8zVIeL3acFJEpuerP6FLoEQWg6CUTtHcz7Ro=
-github.com/maxence-charriere/go-app/v10 v10.1.11/go.mod h1:FqUW4on4nJewVfBnSkuxQd3fvtK2RdKS/z76OOUDAAY=
+github.com/maxence-charriere/go-app/v11 v11.0.5 h1:2pbM2MZyDRppY67d+NG66Es6cbHB6IfMrSmE2rAGI9s=
+github.com/maxence-charriere/go-app/v11 v11.0.5/go.mod h1:03mGNjBIo1LJq9VGPxOcmBFAv/sNL2GIF5LxCV3BRgA=
 github.com/microcosm-cc/bluemonday v1.0.27 h1:MpEUotklkwCSLeH+Qdx1VJgNqLlpY2KXwXFM08ygZfk=
 github.com/microcosm-cc/bluemonday v1.0.27/go.mod h1:jFi9vgW+H7c3V0lb6nR74Ib/DIB5OBs92Dimizgw2cA=
 github.com/mitchellh/mapstructure v1.5.1-0.20231216201459-8508981c8b6c h1:cqn374mizHuIWj+OSJCajGr/phAmuMug9qIX3l9CflE=
