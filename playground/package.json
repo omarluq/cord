@@ -2,14 +2,17 @@
   "name": "cord-playground",
   "private": true,
   "scripts": {
-    "assets": "bun build web/editor.js --outfile web/playground.js --format=iife --global-name=CordPlayground --minify",
+    "assets": "bun run typecheck && bun build web/editor.ts --outfile web/playground.js --format=iife --global-name=CordPlayground --minify && bun build web/worker.ts --outfile web/worker.js --format=iife --minify",
     "css": "tailwindcss -i web/tailwind.css -o web/playground.css --minify",
-    "test": "playwright test smoke.spec.js --reporter=line --workers=1"
+    "test": "playwright test smoke.spec.ts --reporter=line --workers=1",
+    "typecheck": "tsc --project tsconfig.json && tsc --project tsconfig.worker.json && tsc --project tsconfig.test.json"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@tailwindcss/cli": "4.3.3",
-    "tailwindcss": "4.3.3"
+    "@types/node": "26.2.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.0",

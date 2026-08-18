@@ -17,10 +17,13 @@ tasks:
       - playground/**/*.go
       - playground/package.json
       - playground/bun.lock
-      - playground/web/editor.js
+      - playground/tsconfig*.json
+      - playground/web/editor.ts
+      - playground/web/worker.ts
       - playground/web/tailwind.css
     generates:
       - playground/web/playground.js
+      - playground/web/worker.js
       - playground/web/playground.css
     cmds:
       - bun run --cwd "{{.ROOT_DIR}}/playground" assets
