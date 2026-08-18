@@ -22,7 +22,12 @@ func (function compilerFunc) Compile(ctx context.Context, source string) ([]byte
 func testConfig() config {
 	return config{
 		address: "", allowedOrigin: "https://play.example", cordDirectory: "",
-		maxRequestBytes: 128, maxSourceBytes: 32, compileTimeout: time.Second, maxConcurrency: 1,
+		maxRequestBytes: 128,
+		maxSourceBytes:  32,
+		compileTimeout:  time.Second,
+		maxConcurrency:  1,
+		cacheCapacity:   8,
+		cacheTTL:        time.Minute,
 	}
 }
 
@@ -104,6 +109,29 @@ func TestHandlerRejectsInvalidRequests(t *testing.T) {
 			require.Equal(t, test.status, response.Code)
 		})
 	}
+}
+
+func TestHandlerCachesSuccessfulCompilations(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	handler := newHandler(
+		testConfig(),
+		compilerFunc(func(context.Context, string) ([]byte, error) {
+			calls++
+			return []byte("wasm"), nil
+		}),
+	)
+
+	for range 2 {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(
+			response,
+			compileRequestForTest(t.Context()),
+		)
+		require.Equal(t, http.StatusOK, response.Code)
+	}
+	require.Equal(t, 1, calls)
 }
 
 func TestHandlerLimitsConcurrency(t *testing.T) {
