@@ -20,6 +20,8 @@ const (
 	jsonMediaType = "application/json"
 )
 
+var errCompilerBusy = errors.New("compiler is busy")
+
 type compileRequest struct {
 	Source string `json:"source"`
 }
@@ -92,79 +94,63 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	if !service.validSource(response, input.Source) {
 		return
 	}
-	if service.writeCached(response, input.Source) {
-		return
-	}
-
-	if !service.acquire(response) {
-		return
-	}
-	defer func() { <-service.slots }()
-
 	ctx, cancel := context.WithTimeout(
 		request.Context(),
 		service.timeout,
 	)
 	defer cancel()
-	service.compileSource(ctx, response, input.Source)
-}
 
-func (service *service) writeCached(
-	response http.ResponseWriter,
-	source string,
-) bool {
-	artifact, found := service.cache.get(source)
-	if !found {
-		return false
+	artifact, err := service.cache.load(input.Source, func() (compilationArtifact, error) {
+		if !service.acquire() {
+			return compilationArtifact{}, errCompilerBusy
+		}
+		defer func() { <-service.slots }()
+		return service.compileSource(ctx, input.Source)
+	})
+	if err != nil {
+		service.writeCompileError(response, err)
+		return
 	}
-	if err := writeArtifact(
-		response,
-		artifact.graph,
-		artifact.wasm,
-	); err != nil {
-		return true
+	if err := writeArtifact(response, artifact.graph, artifact.wasm); err != nil {
+		return
 	}
-	return true
 }
 
 func (service *service) compileSource(
 	ctx context.Context,
-	response http.ResponseWriter,
 	source string,
-) {
+) (compilationArtifact, error) {
 	graph, err := extractGraph(source)
 	if err != nil {
-		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return compilationArtifact{}, err
 	}
 
 	instrumentedSource, err := instrumentWorkflow(source, graph)
 	if err != nil {
-		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return compilationArtifact{}, err
 	}
 
 	wasm, err := service.compiler.Compile(ctx, instrumentedSource)
 	if err != nil {
-		writeCompilationError(response, err)
-		return
+		return compilationArtifact{}, fmt.Errorf("compile workflow: %w", err)
 	}
 
-	service.cache.put(source, compilationArtifact{
+	return compilationArtifact{
 		graph: graph,
 		wasm:  wasm,
-	})
-	if err := writeArtifact(response, graph, wasm); err != nil {
-		return
-	}
+	}, nil
 }
 
-func writeCompilationError(response http.ResponseWriter, err error) {
-	if errors.Is(err, context.DeadlineExceeded) {
+func (service *service) writeCompileError(response http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errCompilerBusy):
+		response.Header().Set("Retry-After", "1")
+		http.Error(response, err.Error(), http.StatusServiceUnavailable)
+	case errors.Is(err, context.DeadlineExceeded):
 		writeJSONError(response, "compilation timed out", http.StatusGatewayTimeout)
-		return
+	default:
+		writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
 	}
-	writeJSONError(response, err.Error(), http.StatusUnprocessableEntity)
 }
 
 func (service *service) readRequest(response http.ResponseWriter, request *http.Request) (compileRequest, int, error) {
@@ -220,13 +206,11 @@ func (service *service) validSource(response http.ResponseWriter, source string)
 	return true
 }
 
-func (service *service) acquire(response http.ResponseWriter) bool {
+func (service *service) acquire() bool {
 	select {
 	case service.slots <- struct{}{}:
 		return true
 	default:
-		response.Header().Set("Retry-After", "1")
-		http.Error(response, "compiler is busy", http.StatusServiceUnavailable)
 		return false
 	}
 }
