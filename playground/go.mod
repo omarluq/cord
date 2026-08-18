@@ -4,6 +4,7 @@ go 1.27rc2
 
 require (
 	github.com/maxence-charriere/go-app/v10 v10.1.11
+	github.com/maxence-charriere/go-app/v11 v11.0.5
 	github.com/samber/hot v0.13.0
 	github.com/stretchr/testify v1.12.0
 )
