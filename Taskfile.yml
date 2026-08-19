@@ -34,12 +34,80 @@ tasks:
     cmds:
       - go run ./playground/cmd/build -output dist/playground {{.CLI_ARGS}}
       - task: playground-assets
-      - GOOS=js GOARCH=wasm go build -o dist/playground/web/app.wasm ./playground/cmd/wasm
+      - GOOS=js GOARCH=wasm go build -ldflags="-X github.com/omarluq/cord/playground.configuredCompilerURL=${CORD_COMPILER_URL:-}" -o dist/playground/web/app.wasm ./playground/cmd/wasm
 
   playground-compiler:
     desc: Run the local Go-to-WebAssembly compilation endpoint
     cmds:
-      - go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173,http://127.0.0.1:4174
+      - go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173,http://127.0.0.1:4174,http://localhost:4173,http://localhost:4174
+
+  playground-compiler-image:
+    desc: Build the playground compiler container image
+    cmds:
+      - docker build -f playground/Dockerfile -t cord-playground-compiler:local .
+
+  playground-compiler-image-test:
+    desc: Smoke-test the playground compiler container image
+    cmds:
+      - |
+        sh -eu -c '
+          container=cord-playground-compiler-test
+          response=$(mktemp)
+          standard_library_source=$(mktemp)
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            rm -f "$response" "$standard_library_source"
+          }
+          trap cleanup EXIT INT TERM
+          cleanup
+          docker run --detach --rm \
+            --name "$container" \
+            --publish 127.0.0.1:4180:8080 \
+            cord-playground-compiler:local >/dev/null
+
+          ready=false
+          for _ in $(seq 1 600); do
+            if curl --fail --silent http://127.0.0.1:4180/healthz >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 0.1
+          done
+          if test "$ready" != true; then
+            docker logs "$container"
+            exit 1
+          fi
+
+          compile() {
+            jq -Rs "{source: .}" "$1" | \
+              curl --fail --silent --show-error \
+                --header "Content-Type: application/json" \
+                --data-binary @- \
+                --output "$response" \
+                http://127.0.0.1:4180/compile
+            test -s "$response"
+          }
+
+          compile playground/examples/linear.go.txt
+
+          cat >"$standard_library_source" <<"EOF"
+        package main
+
+        import (
+          "archive/zip"
+          "crypto/sha256"
+          "encoding/json"
+          "html/template"
+          "image/png"
+          "net/http"
+        )
+
+        func main() {
+          _, _, _, _, _, _ = zip.Store, sha256.Size, json.Valid, template.HTMLEscapeString, png.DefaultCompression, http.MethodGet
+        }
+        EOF
+          compile "$standard_library_source"
+        '
 
   playground-serve:
     desc: Serve the built playground locally
@@ -48,13 +116,36 @@ tasks:
       - go run ./playground/cmd/serve -dir dist/playground
 
   playground-dev:
-    desc: Run the compiler and live-reload the playground with Air
+    desc: Run the compiler container and live-reload the playground with Air
     cmds:
+      - task: playground-compiler-image
       - |
         sh -c '
-          go run ./playground/cmd/compiler -addr 127.0.0.1:4180 -allowed-origin http://127.0.0.1:4173,http://127.0.0.1:4174 &
-          compiler=$!
-          trap "kill $compiler 2>/dev/null || true" EXIT INT TERM
+          container=cord-playground-compiler-dev
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT INT TERM
+          cleanup
+          docker run --detach --rm \
+            --name "$container" \
+            --publish 127.0.0.1:4180:8080 \
+            cord-playground-compiler:local \
+            -allowed-origin http://127.0.0.1:4173,http://127.0.0.1:4174,http://localhost:4173,http://localhost:4174 >/dev/null
+
+          ready=false
+          for _ in $(seq 1 300); do
+            if curl --fail --silent http://127.0.0.1:4180/healthz >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 0.1
+          done
+          if test "$ready" != true; then
+            docker logs "$container"
+            exit 1
+          fi
+
           go tool air -c .air.playground.toml
         '
 
