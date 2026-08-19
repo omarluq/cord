@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -16,10 +17,13 @@ import (
 const (
 	defaultMaxRequestBytes = 1 << 20
 	defaultMaxSourceBytes  = 512 << 10
+	defaultMaxWASMBytes    = 32 << 20
+	defaultMaxDiagnostics  = 64 << 10
 	defaultTimeout         = 2 * time.Minute
 	defaultConcurrency     = 2
-	defaultCacheCapacity   = 8
+	defaultCacheCapacity   = 2
 	defaultCacheTTL        = 15 * time.Minute
+	defaultAddress         = "127.0.0.1:8080"
 	serverHeaderTimeout    = 5 * time.Second
 	serverIdleTimeout      = 30 * time.Second
 	serverShutdownTimeout  = 5 * time.Second
@@ -31,6 +35,8 @@ type config struct {
 	cordDirectory   string
 	maxRequestBytes int64
 	maxSourceBytes  int
+	maxWASMBytes    int64
+	maxDiagnostics  int
 	compileTimeout  time.Duration
 	maxConcurrency  int
 	cacheCapacity   int
@@ -53,19 +59,16 @@ func run(arguments []string) error {
 		return err
 	}
 
-	compiler, err := newWASMCompiler(cfg.cordDirectory)
+	compiler, err := newWASMCompiler(
+		cfg.cordDirectory,
+		cfg.maxWASMBytes,
+		cfg.maxDiagnostics,
+	)
 	if err != nil {
 		return err
 	}
 
-	server := &http.Server{
-		Addr:              cfg.address,
-		Handler:           newHandler(&cfg, compiler),
-		ReadHeaderTimeout: serverHeaderTimeout,
-		ReadTimeout:       serverHeaderTimeout,
-		WriteTimeout:      cfg.compileTimeout + serverShutdownTimeout,
-		IdleTimeout:       serverIdleTimeout,
-	}
+	server := newHTTPServer(&cfg, newHandler(&cfg, compiler))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -94,10 +97,29 @@ func run(arguments []string) error {
 	}
 }
 
+func newHTTPServer(cfg *config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              cfg.address,
+		Handler:           handler,
+		ReadHeaderTimeout: serverHeaderTimeout,
+		ReadTimeout:       serverHeaderTimeout,
+		// The response deadline is set after compilation. An http.Server
+		// WriteTimeout starts when the request headers are read, so a slow
+		// compilation would consume the time reserved for sending the WASM.
+		WriteTimeout: 0,
+		IdleTimeout:  serverIdleTimeout,
+	}
+}
+
 func parseConfig(arguments []string) (config, error) {
+	address, err := addressFromEnvironment()
+	if err != nil {
+		return config{}, err
+	}
+
 	flags := flag.NewFlagSet("playground-compiler", flag.ContinueOnError)
 	cfg := config{}
-	flags.StringVar(&cfg.address, "addr", "127.0.0.1:8080", "listen address")
+	flags.StringVar(&cfg.address, "addr", address, "listen address")
 	flags.StringVar(
 		&cfg.allowedOrigin,
 		"allowed-origin",
@@ -107,6 +129,13 @@ func parseConfig(arguments []string) (config, error) {
 	flags.StringVar(&cfg.cordDirectory, "cord-dir", ".", "Cord module directory")
 	flags.Int64Var(&cfg.maxRequestBytes, "max-request-bytes", defaultMaxRequestBytes, "maximum JSON request size")
 	flags.IntVar(&cfg.maxSourceBytes, "max-source-bytes", defaultMaxSourceBytes, "maximum source size")
+	flags.Int64Var(&cfg.maxWASMBytes, "max-wasm-bytes", defaultMaxWASMBytes, "maximum compiled WebAssembly size")
+	flags.IntVar(
+		&cfg.maxDiagnostics,
+		"max-diagnostics-bytes",
+		defaultMaxDiagnostics,
+		"maximum compiler diagnostics size",
+	)
 	flags.DurationVar(&cfg.compileTimeout, "timeout", defaultTimeout, "compilation timeout")
 	flags.IntVar(
 		&cfg.maxConcurrency,
@@ -131,14 +160,40 @@ func parseConfig(arguments []string) (config, error) {
 		return config{}, fmt.Errorf("parse flags: %w", err)
 	}
 
-	if cfg.maxRequestBytes < 1 ||
-		cfg.maxSourceBytes < 1 ||
-		cfg.compileTimeout <= 0 ||
-		cfg.maxConcurrency < 1 ||
-		cfg.cacheCapacity < 1 ||
-		cfg.cacheTTL <= 0 {
-		return config{}, errors.New("request limits, timeout, and concurrency must be positive")
+	if err := validateConfig(&cfg); err != nil {
+		return config{}, err
 	}
 
 	return cfg, nil
+}
+
+func validateConfig(cfg *config) error {
+	if cfg.maxRequestBytes < 1 || cfg.maxSourceBytes < 1 ||
+		cfg.maxWASMBytes < 1 || cfg.maxDiagnostics < 1 {
+		return errors.New("size limits must be positive")
+	}
+
+	if cfg.compileTimeout <= 0 || cfg.maxConcurrency < 1 {
+		return errors.New("timeout and concurrency must be positive")
+	}
+
+	if cfg.cacheCapacity < 1 || cfg.cacheTTL <= 0 {
+		return errors.New("cache settings must be positive")
+	}
+
+	return nil
+}
+
+func addressFromEnvironment() (string, error) {
+	port := os.Getenv("PORT")
+	if port == "" {
+		return defaultAddress, nil
+	}
+
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
+		return "", fmt.Errorf("invalid PORT %q", port)
+	}
+
+	return fmt.Sprintf("0.0.0.0:%d", value), nil
 }

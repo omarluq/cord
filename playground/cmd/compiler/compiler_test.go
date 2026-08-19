@@ -20,6 +20,30 @@ import (
 
 const helperModeEnv = "CORD_COMPILER_HELPER_MODE"
 
+func TestLimitedBuffer(t *testing.T) {
+	t.Parallel()
+
+	buffer := newLimitedBuffer(4)
+	written, err := buffer.Write([]byte("abcdef"))
+	require.NoError(t, err)
+	require.Equal(t, 6, written)
+	require.Equal(t, "abcd\n[compiler diagnostics truncated]", buffer.String())
+}
+
+func TestReadWASMRejectsOversizedArtifact(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	require.NoError(t, os.WriteFile(directory+"/app.wasm", []byte("wasm"), 0o600))
+
+	_, err := readWASM(directory, 3)
+	require.EqualError(t, err, "WebAssembly exceeds 3-byte limit")
+
+	wasm, err := readWASM(directory, 4)
+	require.NoError(t, err)
+	require.Equal(t, []byte("wasm"), wasm)
+}
+
 func TestRunCommandTerminatesProcessGroup(t *testing.T) {
 	runCompilerHelper(t)
 	t.Parallel()
