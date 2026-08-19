@@ -10,6 +10,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,7 +134,12 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	}
 
 	if err := writeArtifact(response, artifact.graph, artifact.wasm); err != nil {
-		slog.Error("write compilation response", "error", err)
+		slog.Error(
+			"write compilation response",
+			"error", err,
+			"request_error", request.Context().Err(),
+			"wasm_bytes", len(artifact.wasm),
+		)
 	}
 }
 
@@ -197,10 +203,44 @@ func writeArtifact(
 	graph protocol.Graph,
 	wasm []byte,
 ) error {
-	writer := multipart.NewWriter(response)
-	response.Header().Set(contentTypeHeader, writer.FormDataContentType())
+	boundary := multipart.NewWriter(io.Discard).Boundary()
+	counter := &byteCounter{}
+
+	if err := writeArtifactBody(counter, boundary, graph, wasm); err != nil {
+		return fmt.Errorf("measure compilation response: %w", err)
+	}
+
+	response.Header().Set(
+		contentTypeHeader,
+		"multipart/form-data; boundary="+boundary,
+	)
+	response.Header().Set("Content-Length", strconv.FormatInt(counter.bytes, 10))
 	response.Header().Set("Content-Disposition", `attachment; filename="cord-workflow"`)
 	response.WriteHeader(http.StatusOK)
+
+	return writeArtifactBody(response, boundary, graph, wasm)
+}
+
+type byteCounter struct {
+	bytes int64
+}
+
+func (counter *byteCounter) Write(content []byte) (int, error) {
+	counter.bytes += int64(len(content))
+
+	return len(content), nil
+}
+
+func writeArtifactBody(
+	output io.Writer,
+	boundary string,
+	graph protocol.Graph,
+	wasm []byte,
+) error {
+	writer := multipart.NewWriter(output)
+	if err := writer.SetBoundary(boundary); err != nil {
+		return fmt.Errorf("set response boundary: %w", err)
+	}
 
 	graphPart, err := writer.CreateFormField("graph")
 	if err != nil {

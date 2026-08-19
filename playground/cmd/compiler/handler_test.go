@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/omarluq/cord/playground/internal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,11 +32,22 @@ func testConfig() config {
 		cordDirectory:   "",
 		maxRequestBytes: 128,
 		maxSourceBytes:  32,
+		maxWASMBytes:    defaultMaxWASMBytes,
+		maxDiagnostics:  defaultMaxDiagnostics,
 		compileTimeout:  time.Second,
 		maxConcurrency:  1,
 		cacheCapacity:   8,
 		cacheTTL:        time.Minute,
 	}
+}
+
+func TestWriteArtifactSetsContentLength(t *testing.T) {
+	t.Parallel()
+
+	response := httptest.NewRecorder()
+	require.NoError(t, writeArtifact(response, protocol.Graph{}, []byte("wasm")))
+	require.Equal(t, strconv.Itoa(response.Body.Len()), response.Header().Get("Content-Length"))
+	require.Contains(t, response.Body.String(), "wasm")
 }
 
 func testConfigPointer() *config {
