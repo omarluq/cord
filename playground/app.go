@@ -16,6 +16,9 @@ const (
 	graphID            = "workflow-graph"
 )
 
+// configuredCompilerURL is set at build time for cross-origin deployments.
+var configuredCompilerURL string
+
 type appStatus string
 
 const (
@@ -58,6 +61,7 @@ func (app *App) OnMount(ctx goapp.Context) {
 	if endpoint, ok := compilerEndpoint(
 		pageURL,
 		pageURL.Query().Get("compiler"),
+		configuredCompilerURL,
 	); ok {
 		app.compilerURL = endpoint
 	}
@@ -209,19 +213,23 @@ func (app *App) fail(err error) {
 	app.output = err.Error()
 }
 
-func compilerEndpoint(pageURL *url.URL, endpoint string) (string, bool) {
+func compilerEndpoint(pageURL *url.URL, endpoint, configuredEndpoint string) (string, bool) {
 	if endpoint == "" {
-		return "", false
+		endpoint = configuredEndpoint
 	}
 
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.User != nil {
+	parsed, ok := parseCompilerEndpoint(endpoint)
+	if !ok {
 		return "", false
 	}
 
 	resolved := pageURL.ResolveReference(parsed)
-	if resolved.Scheme == pageURL.Scheme && resolved.Host == pageURL.Host {
+	if sameOrigin(pageURL, resolved) {
 		return resolved.String(), true
+	}
+
+	if endpoint == configuredEndpoint && parsed.IsAbs() && parsed.Scheme == "https" {
+		return parsed.String(), true
 	}
 
 	// Local development serves the static app and compiler on separate ports.
@@ -230,6 +238,20 @@ func compilerEndpoint(pageURL *url.URL, endpoint string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func parseCompilerEndpoint(endpoint string) (*url.URL, bool) {
+	if endpoint == "" {
+		return nil, false
+	}
+
+	parsed, err := url.Parse(endpoint)
+
+	return parsed, err == nil && parsed.User == nil
+}
+
+func sameOrigin(first, second *url.URL) bool {
+	return first.Scheme == second.Scheme && first.Host == second.Host
 }
 
 func isLoopbackHost(host string) bool {

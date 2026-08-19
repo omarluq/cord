@@ -54,7 +54,7 @@ func TestCompilerEndpoint(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, allowed := compilerEndpoint(pageURL, test.endpoint)
+			got, allowed := compilerEndpoint(pageURL, test.endpoint, "")
 			assert.Equal(t, test.allowed, allowed)
 			assert.Equal(t, test.want, got)
 		})
@@ -67,9 +67,47 @@ func TestCompilerEndpointAllowsDevelopmentCompiler(t *testing.T) {
 	pageURL, err := url.Parse("http://127.0.0.1:4173/")
 	require.NoError(t, err)
 
-	endpoint, allowed := compilerEndpoint(pageURL, defaultCompilerURL)
+	endpoint, allowed := compilerEndpoint(pageURL, defaultCompilerURL, "")
 	require.True(t, allowed)
 	assert.Equal(t, defaultCompilerURL, endpoint)
+}
+
+func TestCompilerEndpointAllowsConfiguredHTTPSCompiler(t *testing.T) {
+	t.Parallel()
+
+	pageURL, err := url.Parse("https://omarluq.github.io/cord/")
+	require.NoError(t, err)
+
+	const configured = "https://cord-compiler.run.app/compile"
+
+	tests := []struct {
+		name       string
+		endpoint   string
+		configured string
+		want       string
+		allowed    bool
+	}{
+		{name: "configured default", endpoint: "", configured: configured, want: configured, allowed: true},
+		{name: "configured query", endpoint: configured, configured: configured, want: configured, allowed: true},
+		{
+			name: "arbitrary query", endpoint: "https://evil.example/compile",
+			configured: configured, want: "", allowed: false,
+		},
+		{
+			name: "insecure configured", endpoint: "",
+			configured: "http://compiler.example/compile", want: "", allowed: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, allowed := compilerEndpoint(pageURL, test.endpoint, test.configured)
+			assert.Equal(t, test.allowed, allowed)
+			assert.Equal(t, test.want, got)
+		})
+	}
 }
 
 func TestAppendOutput(t *testing.T) {

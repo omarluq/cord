@@ -9,6 +9,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestValidateCompilerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "empty", value: "", wantErr: false},
+		{name: "Cloud Run", value: "https://compiler-123.run.app/compile", wantErr: false},
+		{name: "HTTP", value: "http://compiler.example/compile", wantErr: true},
+		{name: "wrong path", value: "https://compiler.example/other", wantErr: true},
+		{name: "credentials", value: "https://user@compiler.example/compile", wantErr: true},
+		{name: "query", value: "https://compiler.example/compile?x=1", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateCompilerURL(test.value)
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestRunGeneratesStaticWebsite(t *testing.T) {
 	t.Parallel()
 
