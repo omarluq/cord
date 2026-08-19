@@ -14,6 +14,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  container:
+    name: Compiler container
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.0-rc.2'
+          check-latest: false
+          cache: false
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@v3.52.0
+
+      - name: Build compiler image
+        run: task playground-compiler-image
+
+      - name: Smoke-test compiler image
+        run: task playground-compiler-image-test
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+        with:
+          image: cord-playground-compiler:local
+          format: spdx-json
+          output-file: compiler-image.spdx.json
+          upload-artifact: false
+
+      - name: Scan compiler image
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          image-ref: cord-playground-compiler:local
+          scanners: vuln
+          vuln-type: os,library
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Upload image security artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: compiler-image-security
+          path: compiler-image.spdx.json
+          if-no-files-found: error
+
   govulncheck:
     name: Govulncheck
     runs-on: ubuntu-latest
