@@ -26,13 +26,18 @@ type compiler interface {
 }
 
 type wasmCompiler struct {
-	cordDirectory string
-	goBinary      string
-	goRoot        string
-	goCache       string
+	cordDirectory  string
+	goBinary       string
+	goRoot         string
+	maxWASMBytes   int64
+	maxDiagnostics int
 }
 
-func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
+func newWASMCompiler(
+	cordDirectory string,
+	maxWASMBytes int64,
+	maxDiagnostics int,
+) (*wasmCompiler, error) {
 	if !processGroupsSupported {
 		return nil, fmt.Errorf("compiler service does not support %s", runtime.GOOS)
 	}
@@ -52,16 +57,17 @@ func newWASMCompiler(cordDirectory string) (*wasmCompiler, error) {
 		return nil, fmt.Errorf("resolve Go compiler: %w", err)
 	}
 
-	goRoot, goCache, err := goEnvironment(goBinary)
+	goRoot, err := goEnvironment(goBinary)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Go environment: %w", err)
 	}
 
 	return &wasmCompiler{
-		cordDirectory: cordPath,
-		goBinary:      goBinary,
-		goRoot:        goRoot,
-		goCache:       goCache,
+		cordDirectory:  cordPath,
+		goBinary:       goBinary,
+		goRoot:         goRoot,
+		maxWASMBytes:   maxWASMBytes,
+		maxDiagnostics: maxDiagnostics,
 	}, nil
 }
 
@@ -96,16 +102,16 @@ func (compiler *wasmCompiler) Compile(ctx context.Context, source string) ([]byt
 		"CGO_ENABLED=0",
 		"GOROOT="+compiler.goRoot,
 		"GOTOOLCHAIN=local",
-		"GOCACHE="+compiler.goCache,
+		"GOCACHE="+filepath.Join(directory, "go-build-cache"),
 		"GOPROXY=off",
 		"GOSUMDB=off",
 	)
 
-	var diagnostics bytes.Buffer
+	diagnostics := newLimitedBuffer(compiler.maxDiagnostics)
 
-	command.Stdout = &diagnostics
+	command.Stdout = diagnostics
+	command.Stderr = diagnostics
 
-	command.Stderr = &diagnostics
 	if err := runCommand(ctx, command); err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("compile context: %w", ctx.Err())
@@ -114,7 +120,7 @@ func (compiler *wasmCompiler) Compile(ctx context.Context, source string) ([]byt
 		return nil, fmt.Errorf("compile source: %w: %s", err, diagnostics.String())
 	}
 
-	return readWASM(directory)
+	return readWASM(directory, compiler.maxWASMBytes)
 }
 
 func moduleSource(cordDirectory string) string {
@@ -128,7 +134,7 @@ replace %s => %s
 `, cordModule, cordModule, strconv.Quote(filepath.ToSlash(cordDirectory)))
 }
 
-func readWASM(directory string) ([]byte, error) {
+func readWASM(directory string, maxBytes int64) ([]byte, error) {
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return nil, fmt.Errorf("open compilation directory: %w", err)
@@ -150,12 +156,55 @@ func readWASM(directory string) ([]byte, error) {
 		}
 	}()
 
-	wasm, err := io.ReadAll(outputFile)
+	wasm, err := io.ReadAll(io.LimitReader(outputFile, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read WebAssembly: %w", err)
 	}
 
+	if int64(len(wasm)) > maxBytes {
+		return nil, fmt.Errorf("WebAssembly exceeds %d-byte limit", maxBytes)
+	}
+
 	return wasm, nil
+}
+
+type limitedBuffer struct {
+	buffer    bytes.Buffer
+	remaining int
+	truncated bool
+}
+
+func newLimitedBuffer(limit int) *limitedBuffer {
+	return &limitedBuffer{
+		buffer:    bytes.Buffer{},
+		remaining: limit,
+		truncated: false,
+	}
+}
+
+func (buffer *limitedBuffer) Write(value []byte) (int, error) {
+	length := len(value)
+	if length > buffer.remaining {
+		value = value[:buffer.remaining]
+		buffer.truncated = true
+	}
+
+	written, err := buffer.buffer.Write(value)
+	if err != nil {
+		return written, fmt.Errorf("buffer diagnostics: %w", err)
+	}
+
+	buffer.remaining -= written
+
+	return length, nil
+}
+
+func (buffer *limitedBuffer) String() string {
+	if buffer.truncated {
+		return buffer.buffer.String() + "\n[compiler diagnostics truncated]"
+	}
+
+	return buffer.buffer.String()
 }
 
 func (compiler *wasmCompiler) buildCommand(_ context.Context) *exec.Cmd {
@@ -198,27 +247,23 @@ func runCommand(ctx context.Context, command *exec.Cmd) error {
 	}
 }
 
-func goEnvironment(goBinary string) (
-	goRoot string,
-	goCache string,
-	err error,
-) {
+func goEnvironment(goBinary string) (string, error) {
 	command := &exec.Cmd{
 		Path: goBinary,
-		Args: []string{goBinary, "env", "GOROOT", "GOCACHE"},
+		Args: []string{goBinary, "env", "GOROOT"},
 	}
 
 	output, err := command.Output()
 	if err != nil {
-		return "", "", fmt.Errorf("run go env: %w", err)
+		return "", fmt.Errorf("run go env: %w", err)
 	}
 
-	values := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(values) != 2 || values[0] == "" || values[1] == "" {
-		return "", "", errors.New("go env returned invalid GOROOT or GOCACHE")
+	goRoot := strings.TrimSpace(string(output))
+	if goRoot == "" {
+		return "", errors.New("go env returned an invalid GOROOT")
 	}
 
-	return values[0], values[1], nil
+	return goRoot, nil
 }
 
 func environmentWithoutPath() []string {
