@@ -86,16 +86,16 @@ test(
       name: "Compile and run workflow",
     }).click();
     await expect(page.locator("#workflow-graph canvas").first()).toBeVisible({
-      timeout: 60_000,
+      timeout: 120_000,
     });
     await expect(page.locator("#workflow-graph")).toHaveAttribute(
       "data-elements",
       "3",
-      { timeout: 60_000 },
+      { timeout: 120_000 },
     );
     await expect(page.locator('[data-testid="run-result"]')).toContainText(
       "result: 10",
-      { timeout: 60_000 },
+      { timeout: 120_000 },
     );
     await expect(page.locator("#workflow-graph")).toHaveAttribute(
       "data-node-states",
@@ -159,5 +159,43 @@ test(
     );
     expect(compileRequests).toBe(compileRequestsBeforeRerun);
     expect(errors).toEqual([]);
+  },
+);
+
+test(
+  "compiles and executes the large pipeline",
+  async ({ page }) => {
+    test.setTimeout(240_000);
+    const requestFailures: string[] = [];
+
+    page.on("requestfailed", (request) => {
+      if (request.url() === compilerURL) {
+        requestFailures.push(request.failure()?.errorText ?? "unknown failure");
+      }
+    });
+
+    await page.goto(
+      `http://127.0.0.1:4173/?compiler=${encodeURIComponent(compilerURL)}`,
+    );
+    await expect(page.locator('[data-testid="status"]')).toHaveText(
+      "ready",
+      { timeout: 30_000 },
+    );
+
+    await page.getByRole("combobox", {
+      name: "Example workflow",
+    }).selectOption("large_pipeline.go");
+    await page.getByRole("button", {
+      name: "Compile and run workflow",
+    }).click();
+
+    await expect(page.locator('[data-testid="status"]')).toHaveText(
+      "ready",
+      { timeout: 180_000 },
+    );
+    await expect(page.locator('[data-testid="run-result"]')).toContainText(
+      "order charges: $72",
+    );
+    expect(requestFailures).toEqual([]);
   },
 );

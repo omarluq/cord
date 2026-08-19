@@ -1,7 +1,6 @@
 package playground
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -63,24 +62,7 @@ func compile(
 		)
 	}
 
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		endpoint,
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return compilationArtifact{}, fmt.Errorf(
-			"create compilation request: %w",
-			err,
-		)
-	}
-
-	request.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: compilationRequestTimeout}
-
-	response, err := client.Do(request)
+	response, err := performCompilationRequest(ctx, endpoint, body)
 	if err != nil {
 		return compilationArtifact{}, fmt.Errorf(
 			"compile workflow: %w",
