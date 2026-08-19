@@ -7,7 +7,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/ncruces/go-sqlite3 v0.35.3
 	github.com/pressly/goose/v3 v3.27.3
-	github.com/stretchr/testify v1.12.0
+	github.com/stretchr/testify v1.12.1
 	go.uber.org/goleak v1.3.0
 	modernc.org/sqlite v1.56.0
 )
