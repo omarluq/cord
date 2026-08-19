@@ -27,7 +27,7 @@ func performCompilationRequest(
 	options.Set("headers", headers)
 
 	requestBody := js.Global().Get("Uint8Array").New(len(body))
-	if copied := js.CopyBytesToJS(requestBody, body); copied != len(body) {
+	if js.CopyBytesToJS(requestBody, body) != len(body) {
 		return nil, errors.New("copy compilation request to JavaScript")
 	}
 	options.Set("body", requestBody)
@@ -59,7 +59,7 @@ func performCompilationRequest(
 
 	responseBody := js.Global().Get("Uint8Array").New(arrayBuffer)
 	content := make([]byte, responseBody.Get("byteLength").Int())
-	if copied := js.CopyBytesToGo(content, responseBody); copied != len(content) {
+	if js.CopyBytesToGo(content, responseBody) != len(content) {
 		return nil, errors.New("copy compilation response from JavaScript")
 	}
 
