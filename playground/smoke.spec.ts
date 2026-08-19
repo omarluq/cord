@@ -189,13 +189,11 @@ test(
       name: "Compile and run workflow",
     }).click();
 
-    await expect(page.locator('[data-testid="status"]')).toHaveText(
-      "ready",
-      { timeout: 180_000 },
-    );
     await expect(page.locator('[data-testid="run-result"]')).toContainText(
       "order charges: $72",
+      { timeout: 180_000 },
     );
+    await expect(page.locator('[data-testid="status"]')).toHaveText("ready");
     expect(requestFailures).toEqual([]);
   },
 );
