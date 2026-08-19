@@ -2,8 +2,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/omarluq/cord/playground"
@@ -28,8 +30,27 @@ func run(arguments []string) error {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
+	if err := validateCompilerURL(os.Getenv("CORD_COMPILER_URL")); err != nil {
+		return err
+	}
+
 	if err := playground.GenerateStatic(*output, *prefix); err != nil {
 		return fmt.Errorf("generate playground: %w", err)
+	}
+
+	return nil
+}
+
+func validateCompilerURL(value string) error {
+	if value == "" {
+		return nil
+	}
+
+	compilerURL, err := url.Parse(value)
+	if err != nil || compilerURL.Scheme != "https" || compilerURL.Host == "" ||
+		compilerURL.User != nil || compilerURL.Path != "/compile" ||
+		compilerURL.RawQuery != "" || compilerURL.Fragment != "" {
+		return errors.New("CORD_COMPILER_URL must be an HTTPS URL ending in /compile")
 	}
 
 	return nil

@@ -103,7 +103,7 @@ linters:
         path: "examples/"
       # Embedded scripts and their immutable catalog must be package variables.
       - linters: [gochecknoglobals]
-        path: "playground/examples.go"
+        path: "playground/(app|examples)\\.go"
       # go-app requires interface-returning render methods and value callback contexts.
       - linters: [ireturn]
         path: "playground/app_view.go"
