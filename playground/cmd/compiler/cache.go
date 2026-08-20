@@ -4,14 +4,23 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/omarluq/cord/playground/internal/protocol"
 	"github.com/samber/hot"
 )
 
 type compilationArtifact struct {
-	graph protocol.Graph
-	wasm  []byte
+	compression *compressedRepresentation
+	boundary    string
+	wasm        []byte
+	graph       protocol.Graph
+}
+
+type compressedRepresentation struct {
+	err  error
+	body []byte
+	once sync.Once
 }
 
 type compilationCache struct {

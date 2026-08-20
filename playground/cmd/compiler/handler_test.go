@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -44,10 +46,76 @@ func testConfig() config {
 func TestWriteArtifactSetsContentLength(t *testing.T) {
 	t.Parallel()
 
+	artifact, err := newCompilationArtifact(protocol.Graph{}, []byte("wasm"))
+	require.NoError(t, err)
+
 	response := httptest.NewRecorder()
-	require.NoError(t, writeArtifact(response, protocol.Graph{}, []byte("wasm")))
+	require.NoError(t, writeArtifact(response, &artifact, identityEncoding))
 	require.Equal(t, strconv.Itoa(response.Body.Len()), response.Header().Get("Content-Length"))
+	require.Empty(t, response.Header().Get("Content-Encoding"))
 	require.Contains(t, response.Body.String(), "wasm")
+}
+
+func TestWriteArtifactGzip(t *testing.T) {
+	t.Parallel()
+
+	artifact, err := newCompilationArtifact(protocol.Graph{}, []byte(strings.Repeat("wasm", 1_000)))
+	require.NoError(t, err)
+
+	response := httptest.NewRecorder()
+	require.NoError(t, writeArtifact(response, &artifact, gzipEncoding))
+	require.Equal(t, "gzip", response.Header().Get("Content-Encoding"))
+	require.Equal(t, strconv.Itoa(response.Body.Len()), response.Header().Get("Content-Length"))
+
+	reader, err := gzip.NewReader(response.Body)
+	require.NoError(t, err)
+	decoded, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Contains(t, string(decoded), strings.Repeat("wasm", 1_000))
+}
+
+func TestNegotiateEncoding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		header     string
+		encoding   string
+		acceptable bool
+	}{
+		{name: "absent", header: "", encoding: identityEncoding, acceptable: true},
+		{name: gzipEncoding, header: gzipEncoding, encoding: gzipEncoding, acceptable: true},
+		{name: "case insensitive", header: "GZip", encoding: gzipEncoding, acceptable: true},
+		{
+			name: "gzip tied with identity", header: "gzip, identity",
+			encoding: gzipEncoding, acceptable: true,
+		},
+		{name: "identity preferred", header: "gzip;q=0.5", encoding: identityEncoding, acceptable: true},
+		{
+			name: "gzip preferred", header: "gzip;q=0.8, identity;q=0.2",
+			encoding: gzipEncoding, acceptable: true,
+		},
+		{name: "wildcard", header: "*", encoding: gzipEncoding, acceptable: true},
+		{
+			name: "explicit gzip exclusion beats wildcard", header: "gzip;q=0, *;q=1",
+			encoding: identityEncoding, acceptable: true,
+		},
+		{name: "unknown encoding", header: "br", encoding: identityEncoding, acceptable: true},
+		{name: "identity only", header: "gzip;q=0", encoding: identityEncoding, acceptable: true},
+		{name: "none acceptable", header: "gzip;q=0, identity;q=0", encoding: "", acceptable: false},
+		{name: "wildcard excludes identity", header: "*;q=0", encoding: "", acceptable: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			encoding, acceptable := negotiateEncoding(test.header)
+			require.Equal(t, test.encoding, encoding)
+			require.Equal(t, test.acceptable, acceptable)
+		})
+	}
 }
 
 func testConfigPointer() *config {
@@ -121,6 +189,97 @@ func TestHandlerRoutesAndHeaders(t *testing.T) {
 				require.Contains(t, response.Body.String(), "wasm")
 				require.Contains(t, response.Body.String(), `"nodes":[]`)
 			}
+		})
+	}
+}
+
+func TestHandlerNegotiatesGzip(t *testing.T) {
+	t.Parallel()
+
+	handler := newHandler(
+		testConfigPointer(),
+		compilerFunc(func(context.Context, string) ([]byte, error) {
+			return []byte(strings.Repeat("wasm", 1_000)), nil
+		}),
+	)
+	request := compileRequestForTest(t.Context())
+	request.Header.Set("Accept-Encoding", "gzip")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, "gzip", response.Header().Get("Content-Encoding"))
+	require.Equal(t, strconv.Itoa(response.Body.Len()), response.Header().Get("Content-Length"))
+	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	require.ElementsMatch(t, []string{"Origin", "Accept-Encoding"}, response.Header().Values("Vary"))
+
+	reader, err := gzip.NewReader(response.Body)
+	require.NoError(t, err)
+	decoded, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Contains(t, string(decoded), strings.Repeat("wasm", 1_000))
+}
+
+func TestHandlerRejectsUnacceptableEncodingWithoutCompiling(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+
+	handler := newHandler(
+		testConfigPointer(),
+		compilerFunc(func(context.Context, string) ([]byte, error) {
+			calls.Add(1)
+
+			return []byte("wasm"), nil
+		}),
+	)
+	request := compileRequestForTest(t.Context())
+	request.Header.Set("Accept-Encoding", "gzip;q=0, identity;q=0")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusNotAcceptable, response.Code)
+	require.Empty(t, response.Header().Get("Content-Encoding"))
+	require.Equal(t, int32(0), calls.Load())
+	require.JSONEq(t, `{"error":"no acceptable response encoding"}`, response.Body.String())
+}
+
+func TestHandlerDoesNotCompressHealthOrErrors(t *testing.T) {
+	t.Parallel()
+
+	handler := newHandler(
+		testConfigPointer(),
+		compilerFunc(func(context.Context, string) ([]byte, error) {
+			return nil, errors.New("unexpected compilation")
+		}),
+	)
+
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		body        string
+		contentType string
+	}{
+		{name: "health", method: http.MethodGet, path: "/healthz", body: "", contentType: ""},
+		{name: "error", method: http.MethodPost, path: compilePath, body: `{}`, contentType: "text/plain"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequestWithContext(
+				t.Context(), test.method, test.path, strings.NewReader(test.body),
+			)
+			request.Header.Set("Content-Type", test.contentType)
+			request.Header.Set("Accept-Encoding", "gzip")
+
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.Empty(t, response.Header().Get("Content-Encoding"))
 		})
 	}
 }

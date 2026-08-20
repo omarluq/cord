@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +22,8 @@ import (
 const (
 	compilePath       = "/compile"
 	contentTypeHeader = "Content-Type"
+	gzipEncoding      = "gzip"
+	identityEncoding  = "identity"
 	jsonMediaType     = "application/json"
 )
 
@@ -91,6 +95,8 @@ func (service *service) options(response http.ResponseWriter, request *http.Requ
 }
 
 func (service *service) compile(response http.ResponseWriter, request *http.Request) {
+	appendVary(response.Header(), "Accept-Encoding")
+
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get(contentTypeHeader))
 	if err != nil || mediaType != jsonMediaType {
 		writeJSONError(
@@ -110,6 +116,13 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	}
 
 	if !service.validSource(response, input.Source) {
+		return
+	}
+
+	encoding, acceptable := negotiateEncoding(request.Header.Get("Accept-Encoding"))
+	if !acceptable {
+		writeJSONError(response, "no acceptable response encoding", http.StatusNotAcceptable)
+
 		return
 	}
 
@@ -133,7 +146,7 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	if err := writeArtifact(response, artifact.graph, artifact.wasm); err != nil {
+	if err := writeArtifact(response, &artifact, encoding); err != nil {
 		slog.Error(
 			"write compilation response",
 			"error", err,
@@ -162,7 +175,7 @@ func (service *service) compileSource(
 		return compilationArtifact{}, fmt.Errorf("compile workflow: %w", err)
 	}
 
-	return compilationArtifact{graph: graph, wasm: wasm}, nil
+	return newCompilationArtifact(graph, wasm)
 }
 
 func (service *service) writeCompileError(response http.ResponseWriter, err error) {
@@ -198,27 +211,91 @@ func (service *service) readRequest(
 	return input, 0, nil
 }
 
-func writeArtifact(
-	response http.ResponseWriter,
+func newCompilationArtifact(
 	graph protocol.Graph,
 	wasm []byte,
-) error {
-	boundary := multipart.NewWriter(io.Discard).Boundary()
-	counter := &byteCounter{}
+) (compilationArtifact, error) {
+	return compilationArtifact{
+		graph:       graph,
+		wasm:        wasm,
+		boundary:    multipart.NewWriter(io.Discard).Boundary(),
+		compression: &compressedRepresentation{},
+	}, nil
+}
 
-	if err := writeArtifactBody(counter, boundary, graph, wasm); err != nil {
-		return fmt.Errorf("measure compilation response: %w", err)
+func (artifact *compilationArtifact) gzipBody() ([]byte, error) {
+	artifact.compression.once.Do(func() {
+		var compressed bytes.Buffer
+
+		compressor, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+		if err != nil {
+			artifact.compression.err = fmt.Errorf("create gzip response: %w", err)
+
+			return
+		}
+
+		if err := writeArtifactBody(compressor, artifact.boundary, artifact.graph, artifact.wasm); err != nil {
+			artifact.compression.err = fmt.Errorf("compress compilation response: %w", err)
+
+			return
+		}
+
+		if err := compressor.Close(); err != nil {
+			artifact.compression.err = fmt.Errorf("finish gzip response: %w", err)
+
+			return
+		}
+
+		artifact.compression.body = compressed.Bytes()
+	})
+
+	return artifact.compression.body, artifact.compression.err
+}
+
+func writeArtifact(
+	response http.ResponseWriter,
+	artifact *compilationArtifact,
+	encoding string,
+) error {
+	var gzipBody []byte
+
+	if encoding == gzipEncoding {
+		var err error
+
+		gzipBody, err = artifact.gzipBody()
+		if err != nil {
+			return err
+		}
 	}
 
 	response.Header().Set(
 		contentTypeHeader,
-		"multipart/form-data; boundary="+boundary,
+		"multipart/form-data; boundary="+artifact.boundary,
 	)
-	response.Header().Set("Content-Length", strconv.FormatInt(counter.bytes, 10))
 	response.Header().Set("Content-Disposition", `attachment; filename="cord-workflow"`)
+
+	if encoding == gzipEncoding {
+		response.Header().Set("Content-Encoding", encoding)
+		response.Header().Set("Content-Length", strconv.Itoa(len(gzipBody)))
+		response.WriteHeader(http.StatusOK)
+
+		_, err := response.Write(gzipBody)
+		if err != nil {
+			return fmt.Errorf("write gzip compilation response: %w", err)
+		}
+
+		return nil
+	}
+
+	counter := &byteCounter{}
+	if err := writeArtifactBody(counter, artifact.boundary, artifact.graph, artifact.wasm); err != nil {
+		return fmt.Errorf("measure compilation response: %w", err)
+	}
+
+	response.Header().Set("Content-Length", strconv.FormatInt(counter.bytes, 10))
 	response.WriteHeader(http.StatusOK)
 
-	return writeArtifactBody(response, boundary, graph, wasm)
+	return writeArtifactBody(response, artifact.boundary, artifact.graph, artifact.wasm)
 }
 
 type byteCounter struct {
@@ -340,8 +417,104 @@ func (service *service) setHeaders(
 		response.Header().Set("Access-Control-Allow-Origin", origin)
 		response.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		response.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		response.Header().Set("Vary", "Origin")
+		appendVary(response.Header(), "Origin")
 	}
+}
+
+func appendVary(header http.Header, field string) {
+	for value := range strings.SplitSeq(header.Get("Vary"), ",") {
+		if strings.EqualFold(strings.TrimSpace(value), field) {
+			return
+		}
+	}
+
+	header.Add("Vary", field)
+}
+
+func negotiateEncoding(value string) (string, bool) {
+	if strings.TrimSpace(value) == "" {
+		return identityEncoding, true
+	}
+
+	qualities := encodingQualities(value)
+	gzipQuality := qualityFor(qualities, gzipEncoding, 0)
+	identityQuality := identityQuality(qualities)
+
+	if gzipQuality > 0 && gzipQuality >= identityQuality {
+		return gzipEncoding, true
+	}
+
+	if identityQuality > 0 {
+		return identityEncoding, true
+	}
+
+	return "", false
+}
+
+func encodingQualities(value string) map[string]float64 {
+	qualities := make(map[string]float64)
+
+	for item := range strings.SplitSeq(value, ",") {
+		coding, quality, valid := parseEncoding(strings.TrimSpace(item))
+		current, present := qualities[coding]
+
+		if valid && (!present || quality > current) {
+			qualities[coding] = quality
+		}
+	}
+
+	return qualities
+}
+
+func identityQuality(qualities map[string]float64) float64 {
+	if quality, present := qualities[identityEncoding]; present {
+		return quality
+	}
+
+	if wildcard, present := qualities["*"]; present && wildcard == 0 {
+		return 0
+	}
+
+	return 1
+}
+
+func qualityFor(qualities map[string]float64, coding string, defaultQuality float64) float64 {
+	if quality, present := qualities[coding]; present {
+		return quality
+	}
+
+	if quality, present := qualities["*"]; present {
+		return quality
+	}
+
+	return defaultQuality
+}
+
+func parseEncoding(value string) (coding string, quality float64, valid bool) {
+	parts := strings.Split(value, ";")
+	coding = strings.ToLower(strings.TrimSpace(parts[0]))
+
+	if coding == "" {
+		return "", 0, false
+	}
+
+	quality = 1
+
+	for _, parameter := range parts[1:] {
+		name, raw, found := strings.Cut(strings.TrimSpace(parameter), "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(name), "q") {
+			return "", 0, false
+		}
+
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil || parsed < 0 || parsed > 1 {
+			return "", 0, false
+		}
+
+		quality = parsed
+	}
+
+	return coding, quality, true
 }
 
 func parseAllowedOrigins(value string) map[string]struct{} {
