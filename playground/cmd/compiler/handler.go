@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -507,7 +508,7 @@ func parseEncoding(value string) (coding string, quality float64, valid bool) {
 		}
 
 		parsed, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-		if err != nil || parsed < 0 || parsed > 1 {
+		if err != nil || math.IsNaN(parsed) || parsed < 0 || parsed > 1 {
 			return "", 0, false
 		}
 

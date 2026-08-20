@@ -105,6 +105,7 @@ func TestNegotiateEncoding(t *testing.T) {
 		{name: "identity only", header: "gzip;q=0", encoding: identityEncoding, acceptable: true},
 		{name: "none acceptable", header: "gzip;q=0, identity;q=0", encoding: "", acceptable: false},
 		{name: "wildcard excludes identity", header: "*;q=0", encoding: "", acceptable: false},
+		{name: "NaN quality", header: "gzip;q=NaN", encoding: identityEncoding, acceptable: true},
 	}
 
 	for _, test := range tests {
@@ -265,7 +266,10 @@ func TestHandlerDoesNotCompressHealthOrErrors(t *testing.T) {
 		contentType string
 	}{
 		{name: "health", method: http.MethodGet, path: "/healthz", body: "", contentType: ""},
-		{name: "error", method: http.MethodPost, path: compilePath, body: `{}`, contentType: "text/plain"},
+		{
+			name: "compiler error", method: http.MethodPost, path: compilePath,
+			body: `{"source":"package main"}`, contentType: jsonMediaType,
+		},
 	}
 
 	for _, test := range tests {
