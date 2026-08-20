@@ -37,13 +37,44 @@ func (event *workerEvent) stringValue(key string) string {
 }
 
 func loadBridge(done func(browserBridge, error)) {
-	module := js.Global().Get("CordPlayground")
-	if module.IsUndefined() || module.IsNull() {
-		done(browserBridge{}, fmt.Errorf("load browser modules: CordPlayground is unavailable"))
-		return
-	}
+	const (
+		bridgeLoadIntervalMilliseconds = 10
+		bridgeLoadAttempts             = 3_000
+	)
 
-	done(browserBridge{module: module}, nil)
+	attempts := 0
+	intervalID := 0
+	var load js.Func
+	load = js.FuncOf(func(js.Value, []js.Value) any {
+		module := js.Global().Get("CordPlayground")
+		if !module.IsUndefined() && !module.IsNull() {
+			js.Global().Call("clearInterval", intervalID)
+			defer load.Release()
+			done(browserBridge{module: module}, nil)
+
+			return nil
+		}
+
+		attempts++
+		if attempts >= bridgeLoadAttempts {
+			js.Global().Call("clearInterval", intervalID)
+			defer load.Release()
+			done(browserBridge{}, fmt.Errorf("load browser modules: CordPlayground is unavailable"))
+		}
+
+		return nil
+	})
+
+	// go-app starts loading WebAssembly before later deferred scripts execute.
+	// Retry until the browser module has finished loading.
+	load.Invoke()
+	if attempts != 0 {
+		intervalID = js.Global().Call(
+			"setInterval",
+			load,
+			bridgeLoadIntervalMilliseconds,
+		).Int()
+	}
 }
 
 func (bridge browserBridge) mountEditor(elementID, source string) {
