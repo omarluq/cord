@@ -16,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// TestLockerRejectsInvalidRenewalIntervals verifies invalid renewal intervals do not acquire a lease.
 func TestLockerRejectsInvalidRenewalIntervals(t *testing.T) {
 	t.Parallel()
 
@@ -25,8 +26,8 @@ func TestLockerRejectsInvalidRenewalIntervals(t *testing.T) {
 	}{
 		{name: "zero", interval: 0},
 		{name: "negative", interval: -time.Second},
-		{name: "boundary", interval: 20 * time.Second},
-		{name: "above boundary", interval: 21 * time.Second},
+		{name: "boundary", interval: 19 * time.Second},
+		{name: "above boundary", interval: 19*time.Second + time.Nanosecond},
 	}
 
 	for _, test := range tests {
@@ -44,6 +45,7 @@ func TestLockerRejectsInvalidRenewalIntervals(t *testing.T) {
 	}
 }
 
+// TestLockerAcquiresAndReleases verifies a lease can be acquired and released.
 func TestLockerAcquiresAndReleases(t *testing.T) {
 	t.Parallel()
 
@@ -57,6 +59,7 @@ func TestLockerAcquiresAndReleases(t *testing.T) {
 	assert.Equal(t, 0, lockRows(t, database))
 }
 
+// TestLockerContentionHonorsCancellation verifies waiting lease acquisition observes cancellation.
 func TestLockerContentionHonorsCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +79,7 @@ func TestLockerContentionHonorsCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+// TestLockerTakesOverAbandonedLease verifies an expired lease can be replaced.
 func TestLockerTakesOverAbandonedLease(t *testing.T) {
 	t.Parallel()
 
@@ -95,6 +99,7 @@ func TestLockerTakesOverAbandonedLease(t *testing.T) {
 	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
 }
 
+// TestLockerRenewsLease verifies an acquired lease is renewed repeatedly.
 func TestLockerRenewsLease(t *testing.T) {
 	t.Parallel()
 
@@ -120,6 +125,7 @@ func TestLockerRenewsLease(t *testing.T) {
 	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
 }
 
+// TestLockerReportsRenewalOwnershipLoss verifies ownership loss cancels the migration.
 func TestLockerReportsRenewalOwnershipLoss(t *testing.T) {
 	t.Parallel()
 
@@ -146,6 +152,7 @@ func TestLockerReportsRenewalOwnershipLoss(t *testing.T) {
 	assert.Contains(t, err.Error(), "remote migration lock ownership lost")
 }
 
+// TestLockerReportsOwnershipLossOnUnlock verifies release reports a replaced lease.
 func TestLockerReportsOwnershipLossOnUnlock(t *testing.T) {
 	t.Parallel()
 
@@ -159,6 +166,7 @@ func TestLockerReportsOwnershipLossOnUnlock(t *testing.T) {
 	require.EqualError(t, err, "remote migration lock ownership lost")
 }
 
+// TestLockerUnlockWithoutLockIsNoOp verifies releasing an unacquired lease succeeds.
 func TestLockerUnlockWithoutLockIsNoOp(t *testing.T) {
 	t.Parallel()
 
@@ -167,6 +175,7 @@ func TestLockerUnlockWithoutLockIsNoOp(t *testing.T) {
 	require.NoError(t, remotelock.New(database, nil).SessionUnlock(t.Context(), connection))
 }
 
+// TestLockerReturnsClosedConnectionErrors verifies connection failures are returned.
 func TestLockerReturnsClosedConnectionErrors(t *testing.T) {
 	t.Parallel()
 
@@ -212,6 +221,7 @@ func TestLockerReturnsClosedConnectionErrors(t *testing.T) {
 	}
 }
 
+// TestLockerReturnsClosedDatabaseRenewalError verifies renewal reports database closure.
 func TestLockerReturnsClosedDatabaseRenewalError(t *testing.T) {
 	t.Parallel()
 

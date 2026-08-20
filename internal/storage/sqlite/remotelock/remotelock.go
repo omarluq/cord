@@ -119,11 +119,12 @@ func acquire(ctx context.Context, connection *sql.Conn, owner string) error {
 }
 
 func validateRenewalInterval(interval time.Duration) error {
-	if interval <= 0 || interval >= leaseDuration-renewalTimeout {
+	maximumInterval := leaseDuration - renewalTimeout - time.Second
+	if interval <= 0 || interval >= maximumInterval {
 		return fmt.Errorf(
 			"invalid remote migration lock renewal interval %s: must be greater than zero and less than %s",
 			interval,
-			leaseDuration-renewalTimeout,
+			maximumInterval,
 		)
 	}
 
