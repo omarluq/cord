@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/pressly/goose/v3"
@@ -73,20 +74,36 @@ func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 }
 
 func newProvider(database *sql.DB) (*goose.Provider, error) {
-	provider, err := goose.NewProvider(
-		goose.DialectSQLite3,
-		database,
-		nil,
+	options := []goose.ProviderOption{
 		goose.WithDisableGlobalRegistry(true),
 		goose.WithGoMigrations(migrations()...),
-		goose.WithSessionLocker(sessionLocker{}),
 		goose.WithTableName(schemaVersionTable),
-	)
+	}
+	if isRemoteSQLiteDriver(database.Driver()) {
+		options = append(options, goose.WithSessionLocker(&remoteMigrationLocker{}))
+	} else {
+		options = append(options, goose.WithSessionLocker(sessionLocker{}))
+	}
+
+	provider, err := goose.NewProvider(goose.DialectSQLite3, database, nil, options...)
 	if err != nil {
 		return nil, fmt.Errorf("configure goose: %w", err)
 	}
 
 	return provider, nil
+}
+
+func isRemoteSQLiteDriver(driver any) bool {
+	typeOf := reflect.TypeOf(driver)
+	if typeOf == nil {
+		return false
+	}
+
+	for typeOf.Kind() == reflect.Pointer {
+		typeOf = typeOf.Elem()
+	}
+
+	return typeOf.PkgPath() == "github.com/tursodatabase/go-libsql"
 }
 
 func schemaVersion(ctx context.Context, database *sql.DB) (current int64, exists bool, err error) {
