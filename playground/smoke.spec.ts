@@ -47,6 +47,10 @@ test(
         errors.push(error.message);
       }
     });
+    await page.route("**/web/playground.js", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await route.continue();
+    });
 
     await page.goto(
       `http://127.0.0.1:4173/?compiler=${encodeURIComponent(compilerURL)}`,
