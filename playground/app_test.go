@@ -72,6 +72,7 @@ func TestCompilerEndpointAllowsDevelopmentCompiler(t *testing.T) {
 	assert.Equal(t, defaultCompilerURL, endpoint)
 }
 
+// TestCompilerEndpointAllowsConfiguredHTTPSCompiler verifies configured endpoint selection.
 func TestCompilerEndpointAllowsConfiguredHTTPSCompiler(t *testing.T) {
 	t.Parallel()
 
