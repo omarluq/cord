@@ -1,4 +1,5 @@
-package sqlite
+// Package remotelock provides lease-based migration locking for remote SQLite databases.
+package remotelock
 
 import (
 	"context"
@@ -11,12 +12,14 @@ import (
 )
 
 const (
-	remoteMigrationLockLease        = 30 * time.Second
-	remoteMigrationLockPollInterval = 50 * time.Millisecond
-	remoteMigrationLockRenewal      = 10 * time.Second
+	leaseDuration   = 30 * time.Second
+	pollInterval    = 50 * time.Millisecond
+	renewalInterval = 10 * time.Second
+	renewalTimeout  = 10 * time.Second
 )
 
-type remoteMigrationLocker struct {
+// Locker implements Goose session locking with a renewable lease stored in SQLite.
+type Locker struct {
 	cancel          context.CancelFunc
 	cancelMigration context.CancelCauseFunc
 	database        *sql.DB
@@ -24,13 +27,26 @@ type remoteMigrationLocker struct {
 	owner           string
 }
 
-func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection *sql.Conn) error {
+// New creates a Locker backed by database. If lease renewal fails,
+// cancelMigration is called with the renewal error when it is non-nil.
+func New(database *sql.DB, cancelMigration context.CancelCauseFunc) *Locker {
+	return &Locker{
+		cancel:          nil,
+		cancelMigration: cancelMigration,
+		database:        database,
+		renewalDone:     nil,
+		owner:           "",
+	}
+}
+
+// SessionLock acquires the remote SQLite migration lease.
+func (locker *Locker) SessionLock(ctx context.Context, connection *sql.Conn) error {
 	owner, err := uuid.NewV4()
 	if err != nil {
 		return fmt.Errorf("create remote migration lock owner: %w", err)
 	}
 
-	if err := createRemoteMigrationLockTable(ctx, connection); err != nil {
+	if err := createTable(ctx, connection); err != nil {
 		return err
 	}
 
@@ -43,7 +59,7 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 				expires_at = excluded.expires_at
 			WHERE cord_migration_lock.expires_at <= unixepoch()`,
 			owner.String(),
-			int64(remoteMigrationLockLease/time.Second),
+			int64(leaseDuration/time.Second),
 		)
 		if execErr != nil {
 			return fmt.Errorf("acquire remote migration lock: %w", execErr)
@@ -60,7 +76,7 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 			return nil
 		}
 
-		timer := time.NewTimer(remoteMigrationLockPollInterval)
+		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -73,7 +89,7 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 	}
 }
 
-func createRemoteMigrationLockTable(ctx context.Context, connection *sql.Conn) error {
+func createTable(ctx context.Context, connection *sql.Conn) error {
 	_, err := connection.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cord_migration_lock (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		owner TEXT NOT NULL,
@@ -86,7 +102,7 @@ func createRemoteMigrationLockTable(ctx context.Context, connection *sql.Conn) e
 	return nil
 }
 
-func (locker *remoteMigrationLocker) startRenewal(owner string) {
+func (locker *Locker) startRenewal(owner string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 
@@ -95,7 +111,7 @@ func (locker *remoteMigrationLocker) startRenewal(owner string) {
 	locker.renewalDone = done
 
 	go func() {
-		err := renewRemoteMigrationLock(ctx, locker.database, owner)
+		err := renew(ctx, locker.database, owner)
 		if err != nil && locker.cancelMigration != nil {
 			locker.cancelMigration(err)
 		}
@@ -106,21 +122,23 @@ func (locker *remoteMigrationLocker) startRenewal(owner string) {
 	}()
 }
 
-func renewRemoteMigrationLock(ctx context.Context, database *sql.DB, owner string) error {
-	ticker := time.NewTicker(remoteMigrationLockRenewal)
+func renew(ctx context.Context, database *sql.DB, owner string) error {
+	ticker := time.NewTicker(renewalInterval)
 	defer ticker.Stop()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-
-		result, err := database.ExecContext(ctx, `UPDATE cord_migration_lock
+		renewalCtx, cancel := context.WithTimeout(ctx, renewalTimeout)
+		result, err := database.ExecContext(renewalCtx, `UPDATE cord_migration_lock
 			SET expires_at = unixepoch() + ? WHERE id = 1 AND owner = ?`,
-			int64(remoteMigrationLockLease/time.Second), owner)
+			int64(leaseDuration/time.Second), owner)
+
+		cancel()
+
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+
 			return fmt.Errorf("renew remote migration lock: %w", err)
 		}
 
@@ -132,16 +150,29 @@ func renewRemoteMigrationLock(ctx context.Context, database *sql.DB, owner strin
 		if rows == 0 {
 			return errors.New("remote migration lock ownership lost")
 		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
 	}
 }
 
-func (locker *remoteMigrationLocker) SessionUnlock(ctx context.Context, connection *sql.Conn) error {
+// SessionUnlock stops lease renewal and releases the remote SQLite migration lease.
+func (locker *Locker) SessionUnlock(ctx context.Context, connection *sql.Conn) error {
 	if locker.owner == "" {
 		return nil
 	}
 
 	locker.cancel()
-	renewErr := <-locker.renewalDone
+
+	var renewErr error
+	select {
+	case renewErr = <-locker.renewalDone:
+	case <-time.After(renewalTimeout):
+		renewErr = errors.New("wait for remote migration lock renewal to stop: timeout")
+	}
 
 	result, err := connection.ExecContext(
 		ctx,

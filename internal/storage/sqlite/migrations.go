@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite/remotelock"
 	"github.com/pressly/goose/v3"
 )
 
@@ -87,13 +88,7 @@ func newProvider(database *sql.DB, cancelMigration context.CancelCauseFunc) (*go
 		goose.WithTableName(schemaVersionTable),
 	}
 	if isRemoteSQLiteDriver(database.Driver()) {
-		options = append(options, goose.WithSessionLocker(&remoteMigrationLocker{
-			cancel:          nil,
-			cancelMigration: cancelMigration,
-			database:        database,
-			renewalDone:     nil,
-			owner:           "",
-		}))
+		options = append(options, goose.WithSessionLocker(remotelock.New(database, cancelMigration)))
 	} else {
 		options = append(options, goose.WithSessionLocker(sessionLocker{}))
 	}
