@@ -205,6 +205,63 @@ func TestJSONCodec_Errors(t *testing.T) {
 	require.ErrorAs(t, err, new(*json.SyntaxError))
 }
 
+func FuzzJSONCodec_StringRoundTrip(f *testing.F) {
+	for _, seed := range []string{"", "cord", "workflow-世界", "\x00\n\t"} {
+		f.Add(seed)
+	}
+
+	codec, err := serialization.NewJSONCodec[string]()
+	if err != nil {
+		f.Fatalf("construct codec: %v", err)
+	}
+
+	f.Fuzz(func(t *testing.T, input string) {
+		payload, encodeErr := codec.Encode(input)
+		if encodeErr != nil {
+			t.Fatalf("encode %q: %v", input, encodeErr)
+		}
+
+		output, decodeErr := codec.Decode(payload)
+		if decodeErr != nil {
+			t.Fatalf("decode encoded payload %q: %v", payload, decodeErr)
+		}
+
+		if output != input {
+			t.Fatalf("round trip = %q, want %q", output, input)
+		}
+	})
+}
+
+func FuzzJSONCodec_MalformedPayloadNeverPanics(f *testing.F) {
+	for _, seed := range [][]byte{
+		nil,
+		[]byte("null"),
+		[]byte(`{"name":"cord","count":1}`),
+		[]byte(`{"name":`),
+		[]byte{0xff, 0xfe, 0xfd},
+	} {
+		f.Add(seed)
+	}
+
+	codec, err := serialization.NewJSONCodec[codecRecord]()
+	if err != nil {
+		f.Fatalf("construct codec: %v", err)
+	}
+
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		// Decode errors are expected for arbitrary bytes; the invariant is that
+		// malformed durable payloads are rejected without panicking.
+		value, decodeErr := codec.Decode(payload)
+		if decodeErr != nil {
+			return
+		}
+
+		if _, encodeErr := codec.Encode(value); encodeErr != nil {
+			t.Fatalf("re-encode decoded value: %v", encodeErr)
+		}
+	})
+}
+
 func newJSONCodec[T any](t *testing.T) serialization.JSONCodec[T] {
 	t.Helper()
 

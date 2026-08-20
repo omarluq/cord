@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/omarluq/cord"
 	"github.com/omarluq/cord/internal/exampledb"
@@ -18,6 +19,10 @@ func exampleOrder(_ context.Context, orderID int) (int, error)         { return 
 func exampleItems(_ context.Context, _ int) (int, error)               { return 3, nil }
 func exampleShipping(_ context.Context, _ int) (int, error)            { return 5, nil }
 func exampleTotal(_ context.Context, items, shipping int) (int, error) { return items + shipping, nil }
+
+func examplePermanent(_ context.Context, value int) (int, error) {
+	return value, fmt.Errorf("invalid input: %w", cord.Permanent(errors.New("terminal")))
+}
 
 func closeExample(runtime *cord.Cord, database *sql.DB) error {
 	return errors.Join(runtime.Close(), database.Close())
@@ -42,6 +47,68 @@ func ExampleCord_From() {
 
 	fmt.Println(result)
 	// Output: result: 42
+}
+
+func ExamplePermanent() {
+	database := exampledb.DB()
+
+	runtime, err := cord.New(context.Background(), database, cord.Options{
+		MaxAttempts:    3,
+		RetryBaseDelay: time.Millisecond,
+		RetryMaxDelay:  time.Millisecond,
+	})
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	_, runErr := runtime.From("permanent-error", examplePermanent).Run(context.Background(), 1)
+	if err := closeExample(runtime, database); err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	fmt.Println(runErr)
+	// Output: invalid input: terminal
+}
+
+func ExampleOptions() {
+	database := exampledb.DB()
+
+	runtime, err := cord.New(context.Background(), database, cord.Options{
+		Concurrency:       4,
+		PollInterval:      100 * time.Millisecond,
+		LeaseTTL:          30 * time.Second,
+		HeartbeatInterval: 10 * time.Second,
+		OnSchedulerError:  func(err error) { fmt.Println("scheduler:", err) },
+	})
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	if err := runtime.Close(); err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	// The caller still owns the database after the Cord runtime closes.
+	if err := database.PingContext(context.Background()); err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	fmt.Println("database remains open")
+
+	if err := database.Close(); err != nil {
+		fmt.Println(err)
+	}
+	// Output: database remains open
 }
 
 func ExampleJoin() {

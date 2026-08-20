@@ -7,7 +7,7 @@ import (
 )
 
 func incompatibleJoinSignature() {
-	runtime, _ := cord.New(nil)
+	runtime, _ := cord.New(context.Background(), nil)
 	left := runtime.From("test-workflow", func(_ context.Context, value int) (string, error) {
 		return string(rune(value)), nil
 	})

@@ -12,11 +12,13 @@ func TestIncompatibleSignaturesFailToCompile(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		run  func(*testing.T) ([]byte, error)
-		name string
+		run      func(*testing.T) ([]byte, error)
+		name     string
+		expected []string
 	}{
 		{
-			name: "Then",
+			name:     "Then",
+			expected: []string{"signature.go:15", "value string", "does not match func(context.Context, int)"},
 			run: func(t *testing.T) ([]byte, error) {
 				t.Helper()
 
@@ -24,7 +26,8 @@ func TestIncompatibleSignaturesFailToCompile(t *testing.T) {
 			},
 		},
 		{
-			name: "Join",
+			name:     "Join",
+			expected: []string{"signature.go:18", "leftValue int", "does not match func(context.Context, string, int)"},
 			run: func(t *testing.T) ([]byte, error) {
 				t.Helper()
 
@@ -39,7 +42,15 @@ func TestIncompatibleSignaturesFailToCompile(t *testing.T) {
 
 			output, err := test.run(t)
 			require.Error(t, err, "incompatible signature unexpectedly compiled:\n%s", output)
-			assert.Contains(t, string(output), "signature.go")
+
+			diagnostic := string(output)
+			for _, expected := range test.expected {
+				assert.Contains(t, diagnostic, expected)
+			}
+
+			assert.NotContains(t, diagnostic, "not enough arguments in call to cord.New")
+			assert.NotContains(t, diagnostic, "no such file or directory")
+			assert.NotContains(t, diagnostic, "cannot find package")
 		})
 	}
 }
