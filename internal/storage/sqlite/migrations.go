@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"reflect"
+	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/omarluq/cord/internal/storage/sqlite/remotelock"
@@ -33,19 +33,23 @@ func Verify(ctx context.Context, database *sql.DB) error {
 		return fmt.Errorf("%w: current=%d required=%d", storage.ErrSchemaNewer, current, requiredVersion)
 	}
 
+	if err := verifySchemaStructure(ctx, database); err != nil {
+		return fmt.Errorf("inspect sqlite schema structure: %w", err)
+	}
+
 	return nil
 }
 
 // Migrate applies all pending SQLite migrations.
 func Migrate(ctx context.Context, database *sql.DB) error {
-	return retry(ctx, "wait for concurrent migration", func(err error) bool {
-		return errors.Is(err, storage.ErrSchemaOutdated)
-	}, func() error {
-		if err := migrateWithRetry(ctx, database); err != nil {
+	return retry(ctx, "wait for concurrent migration", time.Time{}, func(err error) bool {
+		return errors.Is(err, storage.ErrSchemaOutdated) || isBusy(err)
+	}, func(operationCtx context.Context) error {
+		if err := migrateWithRetry(operationCtx, database); err != nil {
 			return err
 		}
 
-		if err := Verify(ctx, database); err != nil {
+		if err := Verify(operationCtx, database); err != nil {
 			return fmt.Errorf("verify migrated schema: %w", err)
 		}
 
@@ -62,8 +66,8 @@ func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 		return fmt.Errorf("create migration provider: %w", err)
 	}
 
-	err = retryContention(migrationCtx, "wait to retry migration", func() error {
-		_, upErr := provider.Up(migrationCtx)
+	err = retryContention(migrationCtx, "wait to retry migration", func(operationCtx context.Context) error {
+		_, upErr := provider.Up(operationCtx)
 
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
@@ -92,7 +96,7 @@ func newProvider(database *sql.DB, cancelMigration context.CancelCauseFunc) (*go
 		goose.WithGoMigrations(migrations()...),
 		goose.WithTableName(schemaVersionTable),
 	}
-	if isRemoteSQLiteDriver(database.Driver()) {
+	if migrationPolicy(database.Driver()) == migrationLockRemote {
 		options = append(options, goose.WithSessionLocker(remotelock.New(database, cancelMigration)))
 	} else {
 		options = append(options, goose.WithSessionLocker(sessionLocker{}))
@@ -104,19 +108,6 @@ func newProvider(database *sql.DB, cancelMigration context.CancelCauseFunc) (*go
 	}
 
 	return provider, nil
-}
-
-func isRemoteSQLiteDriver(driver any) bool {
-	typeOf := reflect.TypeOf(driver)
-	if typeOf == nil {
-		return false
-	}
-
-	for typeOf.Kind() == reflect.Pointer {
-		typeOf = typeOf.Elem()
-	}
-
-	return typeOf.PkgPath() == "github.com/tursodatabase/go-libsql"
 }
 
 func schemaVersion(ctx context.Context, database *sql.DB) (current int64, exists bool, err error) {
