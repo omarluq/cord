@@ -30,18 +30,36 @@ func TestLimitedBuffer(t *testing.T) {
 	require.Equal(t, "abcd\n[compiler diagnostics truncated]", buffer.String())
 }
 
-func TestReadWASMRejectsOversizedArtifact(t *testing.T) {
+func TestReadWASMArtifactSizeBoundary(t *testing.T) {
 	t.Parallel()
 
 	directory := t.TempDir()
 	require.NoError(t, os.WriteFile(directory+"/app.wasm", []byte("wasm"), 0o600))
 
-	_, err := readWASM(directory, 3)
-	require.EqualError(t, err, "WebAssembly exceeds 3-byte limit")
+	tests := []struct {
+		name      string
+		wantError string
+		limit     int64
+	}{
+		{name: "oversized", wantError: "WebAssembly exceeds 3-byte limit", limit: 3},
+		{name: "exact limit", wantError: "", limit: 4},
+	}
 
-	wasm, err := readWASM(directory, 4)
-	require.NoError(t, err)
-	require.Equal(t, []byte("wasm"), wasm)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			wasm, err := readWASM(directory, test.limit)
+			if test.wantError != "" {
+				require.EqualError(t, err, test.wantError)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, []byte("wasm"), wasm)
+		})
+	}
 }
 
 func TestRunCommandTerminatesProcessGroup(t *testing.T) {
