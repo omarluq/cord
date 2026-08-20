@@ -243,4 +243,4 @@ tool (
 	golang.org/x/tools/cmd/deadcode
 )
 
-replace honnef.co/go/tools => honnef.co/go/tools v0.8.0-rc.1
+replace honnef.co/go/tools => honnef.co/go/tools v0.8.0
