@@ -11,6 +11,24 @@ tasks:
     cmds:
       - go build ./... ./playground/...
 
+  build-library:
+    desc: Build the Cord library without CGO
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - go build ./...
+
+  playground-install:
+    desc: Install pinned playground dependencies
+    sources:
+      - playground/package.json
+      - playground/bun.lock
+    generates:
+      - playground/node_modules/.bin/tsc
+      - playground/node_modules/.bin/playwright
+    cmds:
+      - bun install --cwd "{{.ROOT_DIR}}/playground" --frozen-lockfile --ignore-scripts
+
   playground-assets:
     desc: Build the playground JavaScript and stylesheet assets with Bun
     sources:
@@ -25,6 +43,7 @@ tasks:
       - dist/playground/web/playground.js
       - dist/playground/web/worker.js
       - dist/playground/web/playground.css
+    deps: [playground-install]
     cmds:
       - bun run --cwd "{{.ROOT_DIR}}/playground" assets
       - bun run --cwd "{{.ROOT_DIR}}/playground" css
@@ -149,8 +168,15 @@ tasks:
           go tool air -c .air.playground.toml
         '
 
+  playground-browser-install:
+    desc: Install the pinned Playwright Chromium browser
+    deps: [playground-install]
+    cmds:
+      - playground/node_modules/.bin/playwright install chromium
+
   playground-test:
     desc: Compile and exercise a user-authored Cord workflow in Chromium
+    deps: [playground-browser-install]
     cmds:
       - task: playground-build
       - mkdir -p .tmp
@@ -218,11 +244,12 @@ tasks:
       - go tool golangci-lint fmt --diff ./... ./playground/...
 
   ci:
-    desc: Run all checks
+    desc: Run all checks (requires Docker; installs pinned browser dependencies)
     cmds:
       - task: fmt-check
       - task: lint
       - task: deadcode
       - task: test
+      - task: build-library
       - task: build
       - task: playground-build
