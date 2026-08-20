@@ -45,6 +45,19 @@ func TestLockerRejectsInvalidRenewalIntervals(t *testing.T) {
 	}
 }
 
+// TestLockerRejectsSingleConnectionPool verifies renewal cannot self-block behind Goose's connection.
+func TestLockerRejectsSingleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	database, connection := openDatabase(t)
+	database.SetMaxOpenConns(1)
+
+	err := remotelock.New(database, nil).SessionLock(t.Context(), connection)
+	require.ErrorIs(t, err, remotelock.ErrInsufficientPoolCapacity)
+	database.SetMaxOpenConns(4)
+	assert.Equal(t, 0, lockRowsIfTableExists(t, database))
+}
+
 // TestLockerAcquiresAndReleases verifies a lease can be acquired and released.
 func TestLockerAcquiresAndReleases(t *testing.T) {
 	t.Parallel()
@@ -163,7 +176,14 @@ func TestLockerReportsOwnershipLossOnUnlock(t *testing.T) {
 	require.NoError(t, err)
 
 	err = locker.SessionUnlock(t.Context(), connection)
-	require.EqualError(t, err, "remote migration lock ownership lost")
+	require.ErrorIs(t, err, remotelock.ErrLockOwnershipLost)
+
+	// Failed release still finalizes the lifecycle, so reuse is deterministic.
+	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
+	_, err = database.ExecContext(t.Context(), "UPDATE cord_migration_lock SET expires_at = 0")
+	require.NoError(t, err)
+	require.NoError(t, locker.SessionLock(t.Context(), connection))
+	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
 }
 
 // TestLockerUnlockWithoutLockIsNoOp verifies releasing an unacquired lease succeeds.
@@ -221,40 +241,33 @@ func TestLockerReturnsClosedConnectionErrors(t *testing.T) {
 	}
 }
 
-// TestLockerReturnsClosedDatabaseRenewalError verifies renewal reports database closure.
-func TestLockerReturnsClosedDatabaseRenewalError(t *testing.T) {
+// TestLockerUnlockJoinsRenewalAndReleaseErrors verifies cleanup preserves both failures.
+func TestLockerUnlockJoinsRenewalAndReleaseErrors(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "remote-lock.db")
-	lockerDatabase := openPath(t, path)
-	connectionDatabase := openPath(t, path)
-	connection, err := connectionDatabase.Conn(t.Context())
+	database, connection := openDatabase(t)
+	createLockTable(t, database)
+	_, err := database.ExecContext(t.Context(), `CREATE TRIGGER reject_renewal_and_release
+		BEFORE UPDATE ON cord_migration_lock
+		BEGIN SELECT RAISE(IGNORE); END`)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		closeErr := connection.Close()
-		if closeErr != nil && !errors.Is(closeErr, sql.ErrConnDone) {
-			require.NoError(t, closeErr)
-		}
-	})
-	require.NoError(t, lockerDatabase.Close())
 
 	migrationCtx, cancelMigration := context.WithCancelCause(t.Context())
-	locker := remotelock.New(lockerDatabase, cancelMigration)
+	locker := remotelock.New(database, cancelMigration, remotelock.WithRenewalInterval(10*time.Millisecond))
 	require.NoError(t, locker.SessionLock(t.Context(), connection))
 
 	select {
 	case <-migrationCtx.Done():
-		cause := context.Cause(migrationCtx)
-		require.Error(t, cause)
-		assert.Contains(t, cause.Error(), "renew remote migration lock")
-		assert.True(t, errors.Is(cause, sql.ErrConnDone) || cause.Error() != "")
+		require.ErrorIs(t, context.Cause(migrationCtx), remotelock.ErrLockOwnershipLost)
 	case <-time.After(time.Second):
-		t.Fatal("renewal did not report the closed database")
+		t.Fatal("renewal did not report ownership loss")
 	}
 
+	require.NoError(t, connection.Close())
 	err = locker.SessionUnlock(t.Context(), connection)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "renew remote migration lock")
+	require.ErrorIs(t, err, remotelock.ErrLockOwnershipLost)
+	require.ErrorIs(t, err, sql.ErrConnDone)
+	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
 }
 
 func openDatabase(t *testing.T) (*sql.DB, *sql.Conn) {
