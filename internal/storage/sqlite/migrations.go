@@ -64,7 +64,12 @@ func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 
 	err = retryContention(migrationCtx, "wait to retry migration", func() error {
 		_, upErr := provider.Up(migrationCtx)
-		if cause := context.Cause(migrationCtx); cause != nil && !errors.Is(cause, ctx.Err()) {
+
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+
+		if cause := context.Cause(migrationCtx); cause != nil {
 			return fmt.Errorf("migration lock renewal failed: %w", cause)
 		}
 
