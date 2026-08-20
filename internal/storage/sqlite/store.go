@@ -33,8 +33,8 @@ func (s *Store) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
 		return fmt.Errorf("create run: %w", err)
 	}
 
-	return retryContention(ctx, "retry run plan", func() error {
-		return s.createRunOnce(ctx, plan)
+	return retryContention(ctx, "retry run plan", func(attemptCtx context.Context) error {
+		return s.createRunOnce(attemptCtx, plan)
 	})
 }
 

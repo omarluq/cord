@@ -11,19 +11,19 @@ type sessionLocker struct{}
 
 // SessionLock acquires an exclusive SQLite lock for Goose migrations.
 func (sessionLocker) SessionLock(ctx context.Context, connection *sql.Conn) error {
-	return retryContention(ctx, "wait for sqlite migration lock", func() error {
-		if err := initializeLocking(ctx, connection); err != nil {
+	return retryContention(ctx, "wait for sqlite migration lock", func(operationCtx context.Context) error {
+		if err := initializeLocking(operationCtx, connection); err != nil {
 			return err
 		}
 
-		if _, err := connection.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
+		if _, err := connection.ExecContext(operationCtx, "BEGIN EXCLUSIVE"); err != nil {
 			return errors.Join(
 				fmt.Errorf("acquire exclusive sqlite lock: %w", err),
 				restoreNormalLocking(context.WithoutCancel(ctx), connection),
 			)
 		}
 
-		if _, err := connection.ExecContext(ctx, "COMMIT"); err != nil {
+		if _, err := connection.ExecContext(operationCtx, "COMMIT"); err != nil {
 			_, rollbackErr := connection.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 
 			return errors.Join(

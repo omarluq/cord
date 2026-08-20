@@ -66,8 +66,9 @@ func (s *Store) CompleteNode(
 	lease storage.Lease,
 	output storage.EncodedPayload,
 ) (bool, error) {
-	return s.fencedTerminalTransition(ctx, func(transaction *sql.Tx) error {
-		result, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
+	return s.fencedTerminalTransition(
+		ctx, lease.ExpiresAt, func(attemptCtx context.Context, transaction *sql.Tx) error {
+			result, err := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET status = ?, output_payload = ?, error_payload = NULL,
 				lease_owner = NULL, lease_expires_at = NULL,
 				completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -75,22 +76,22 @@ func (s *Store) CompleteNode(
 				AND lease_owner = ? AND lease_generation = ?
 				AND julianday(lease_expires_at) > julianday('now')
 				AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`,
-			storage.NodeCompleted, nullPayload(output), runID, nodeID, storage.NodeRunning,
-			lease.Owner, lease.Generation, runID, storage.RunRunning)
-		if err != nil {
-			return fmt.Errorf("complete node %q for run %q: %w", nodeID, runID, err)
-		}
+				storage.NodeCompleted, nullPayload(output), runID, nodeID, storage.NodeRunning,
+				lease.Owner, lease.Generation, runID, storage.RunRunning)
+			if err != nil {
+				return fmt.Errorf("complete node %q for run %q: %w", nodeID, runID, err)
+			}
 
-		accepted, err := affectedOne(result)
-		if err != nil {
-			return fmt.Errorf("inspect node completion: %w", err)
-		}
+			accepted, err := affectedOne(result)
+			if err != nil {
+				return fmt.Errorf("inspect node completion: %w", err)
+			}
 
-		if !accepted {
-			return errFenceRejected
-		}
+			if !accepted {
+				return errFenceRejected
+			}
 
-		_, err = transaction.ExecContext(ctx, `UPDATE cord_nodes
+			_, err = transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET remaining_deps = remaining_deps - 1,
 				status = CASE WHEN remaining_deps = 1 THEN ? ELSE status END,
 				available_at = CASE WHEN remaining_deps = 1
@@ -98,23 +99,24 @@ func (s *Store) CompleteNode(
 			WHERE run_id = ? AND status = ? AND remaining_deps > 0
 				AND node_id IN (SELECT child_node_id FROM cord_edges
 					WHERE run_id = ? AND parent_node_id = ?)`,
-			storage.NodeReady, runID, storage.NodePending, runID, nodeID)
-		if err != nil {
-			return fmt.Errorf("release children of node %q for run %q: %w", nodeID, runID, err)
-		}
+				storage.NodeReady, runID, storage.NodePending, runID, nodeID)
+			if err != nil {
+				return fmt.Errorf("release children of node %q for run %q: %w", nodeID, runID, err)
+			}
 
-		_, err = transaction.ExecContext(ctx, `UPDATE cord_runs
+			_, err = transaction.ExecContext(attemptCtx, `UPDATE cord_runs
 			SET status = ?, output_payload = ?, error_payload = NULL,
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 				completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 			WHERE id = ? AND status = ? AND terminal_node_id = ?`,
-			storage.RunCompleted, nullPayload(output), runID, storage.RunRunning, nodeID)
-		if err != nil {
-			return fmt.Errorf("complete run %q: %w", runID, err)
-		}
+				storage.RunCompleted, nullPayload(output), runID, storage.RunRunning, nodeID)
+			if err != nil {
+				return fmt.Errorf("complete run %q: %w", runID, err)
+			}
 
-		return nil
-	})
+			return nil
+		},
+	)
 }
 
 // GetRunResult reads one run's current status and persistent result payloads.

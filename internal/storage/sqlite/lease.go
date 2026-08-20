@@ -38,19 +38,34 @@ func (s *Store) HeartbeatNode(
 
 	var millis int64
 
-	err := s.database.QueryRowContext(ctx, `UPDATE cord_nodes
-		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
-		WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
-		AND julianday(lease_expires_at) > julianday('now')
-		AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)
-		RETURNING CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)`, modifier,
-		runID, nodeID, storage.NodeRunning, lease.Owner, lease.Generation, runID, storage.RunRunning).Scan(&millis)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, time.Time{}, nil
+	accepted := false
+
+	err := retryFencedContention(ctx, "retry node heartbeat", lease.ExpiresAt, func(attemptCtx context.Context) error {
+		scanErr := s.database.QueryRowContext(attemptCtx, `UPDATE cord_nodes
+			SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+			WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
+			AND julianday(lease_expires_at) > julianday('now')
+			AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)
+			RETURNING CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER)`, modifier,
+			runID, nodeID, storage.NodeRunning, lease.Owner, lease.Generation, runID, storage.RunRunning).Scan(&millis)
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return nil
+		}
+
+		if scanErr != nil {
+			return fmt.Errorf("heartbeat node lease: %w", scanErr)
+		}
+
+		accepted = true
+
+		return nil
+	})
+	if err != nil {
+		return false, time.Time{}, err
 	}
 
-	if err != nil {
-		return false, time.Time{}, fmt.Errorf("heartbeat node lease: %w", err)
+	if !accepted {
+		return false, time.Time{}, nil
 	}
 
 	return true, time.UnixMilli(millis).UTC(), nil
