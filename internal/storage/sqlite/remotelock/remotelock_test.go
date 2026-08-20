@@ -12,6 +12,7 @@ import (
 	"github.com/omarluq/cord/internal/storage/sqlite/remotelock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	// Register the SQLite driver used by sql.Open in the test helpers.
 	_ "modernc.org/sqlite"
 )
 
@@ -78,7 +79,7 @@ func TestLockerRenewsLease(t *testing.T) {
 		BEGIN INSERT INTO renewal_events VALUES (unixepoch()); END`)
 	require.NoError(t, err)
 
-	locker := remotelock.New(database, nil)
+	locker := remotelock.New(database, nil, remotelock.WithRenewalInterval(10*time.Millisecond))
 	require.NoError(t, locker.SessionLock(t.Context(), connection))
 
 	require.Eventually(t, func() bool {
@@ -86,7 +87,7 @@ func TestLockerRenewsLease(t *testing.T) {
 
 		queryErr := database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM renewal_events").Scan(&count)
 
-		return queryErr == nil && count > 0
+		return queryErr == nil && count >= 2
 	}, time.Second, 10*time.Millisecond)
 	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
 }
@@ -141,29 +142,46 @@ func TestLockerUnlockWithoutLockIsNoOp(t *testing.T) {
 func TestLockerReturnsClosedConnectionErrors(t *testing.T) {
 	t.Parallel()
 
-	t.Run("acquire", func(t *testing.T) {
-		t.Parallel()
+	tests := []struct {
+		name      string
+		operation func(*testing.T, *sql.DB, *sql.Conn) error
+		wantError string
+	}{
+		{
+			name: "acquire",
+			operation: func(t *testing.T, database *sql.DB, connection *sql.Conn) error {
+				t.Helper()
+				require.NoError(t, connection.Close())
 
-		database, connection := openDatabase(t)
-		require.NoError(t, connection.Close())
+				return remotelock.New(database, nil).SessionLock(t.Context(), connection)
+			},
+			wantError: "create remote migration lock table",
+		},
+		{
+			name: "release",
+			operation: func(t *testing.T, database *sql.DB, connection *sql.Conn) error {
+				t.Helper()
 
-		err := remotelock.New(database, nil).SessionLock(t.Context(), connection)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "create remote migration lock table")
-	})
+				locker := remotelock.New(database, nil)
+				require.NoError(t, locker.SessionLock(t.Context(), connection))
+				require.NoError(t, connection.Close())
 
-	t.Run("release", func(t *testing.T) {
-		t.Parallel()
+				return locker.SessionUnlock(t.Context(), connection)
+			},
+			wantError: "release remote migration lock",
+		},
+	}
 
-		database, connection := openDatabase(t)
-		locker := remotelock.New(database, nil)
-		require.NoError(t, locker.SessionLock(t.Context(), connection))
-		require.NoError(t, connection.Close())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-		err := locker.SessionUnlock(t.Context(), connection)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "release remote migration lock")
-	})
+			database, connection := openDatabase(t)
+			err := test.operation(t, database, connection)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.wantError)
+		})
+	}
 }
 
 func TestLockerReturnsClosedDatabaseRenewalError(t *testing.T) {
