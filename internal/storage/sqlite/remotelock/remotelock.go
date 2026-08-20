@@ -18,25 +18,42 @@ const (
 	renewalTimeout  = 10 * time.Second
 )
 
+// Option configures a Locker.
+type Option func(*Locker)
+
+// WithRenewalInterval configures how often the migration lease is renewed.
+func WithRenewalInterval(interval time.Duration) Option {
+	return func(locker *Locker) {
+		locker.renewalInterval = interval
+	}
+}
+
 // Locker implements Goose session locking with a renewable lease stored in SQLite.
 type Locker struct {
 	cancel          context.CancelFunc
 	cancelMigration context.CancelCauseFunc
-	database        *sql.DB
 	renewalDone     <-chan error
+	database        *sql.DB
 	owner           string
+	renewalInterval time.Duration
 }
 
 // New creates a Locker backed by database. If lease renewal fails,
 // cancelMigration is called with the renewal error when it is non-nil.
-func New(database *sql.DB, cancelMigration context.CancelCauseFunc) *Locker {
-	return &Locker{
+func New(database *sql.DB, cancelMigration context.CancelCauseFunc, options ...Option) *Locker {
+	locker := &Locker{
 		cancel:          nil,
 		cancelMigration: cancelMigration,
 		database:        database,
 		renewalDone:     nil,
+		renewalInterval: renewalInterval,
 		owner:           "",
 	}
+	for _, option := range options {
+		option(locker)
+	}
+
+	return locker
 }
 
 // SessionLock acquires the remote SQLite migration lease.
@@ -111,7 +128,7 @@ func (locker *Locker) startRenewal(owner string) {
 	locker.renewalDone = done
 
 	go func() {
-		err := renew(ctx, locker.database, owner)
+		err := renew(ctx, locker.database, owner, locker.renewalInterval)
 		if err != nil && locker.cancelMigration != nil {
 			locker.cancelMigration(err)
 		}
@@ -122,8 +139,8 @@ func (locker *Locker) startRenewal(owner string) {
 	}()
 }
 
-func renew(ctx context.Context, database *sql.DB, owner string) error {
-	ticker := time.NewTicker(renewalInterval)
+func renew(ctx context.Context, database *sql.DB, owner string, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
