@@ -35,7 +35,7 @@ jobs:
       - name: Install Task
         uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
         with:
-          version: 3.52.0
+          version: 3.53.1
 
       - name: Build compiler image
         run: task playground-compiler-image
@@ -72,8 +72,16 @@ jobs:
           if-no-files-found: error
 
   govulncheck:
-    name: Govulncheck
+    name: Govulncheck (${{ matrix.module.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - name: cord
+            work-dir: .
+          - name: playground
+            work-dir: playground
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -86,6 +94,7 @@ jobs:
           go-version-input: '1.27.0'
           check-latest: false
           go-package: ./...
+          work-dir: ${{ matrix.module.work-dir }}
           repo-checkout: false
 
   test:
@@ -122,7 +131,7 @@ jobs:
       - name: Install Task
         uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
         with:
-          version: 3.52.0
+          version: 3.53.1
 
       - name: Test
         run: task test-coverage
@@ -135,10 +144,14 @@ jobs:
         with:
           bun-version: '1.4.0'
 
-      - name: Install browser test dependencies
-        run: |
-          bun install --cwd playground --frozen-lockfile --ignore-scripts
-          playground/node_modules/.bin/playwright install --with-deps chromium
+      - name: Install browser package dependencies
+        run: task playground-install
+
+      - name: Install browser test system dependencies
+        run: playground/node_modules/.bin/playwright install-deps chromium
+
+      - name: Audit browser dependencies
+        run: bun audit --cwd playground
 
       - name: Test WebAssembly playground
         run: task playground-test
