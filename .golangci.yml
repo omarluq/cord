@@ -102,6 +102,8 @@ linters:
       - linters: [forbidigo, mnd, wrapcheck]
         path: "examples/"
       # Embedded scripts and their immutable catalog must be package variables.
+      # app.go also holds configuredCompilerURL at package scope for -ldflags -X;
+      # evaluate any other globals carefully because this exclusion covers both files.
       - linters: [gochecknoglobals]
         path: "playground/(app|examples)\\.go"
       # go-app requires interface-returning render methods and value callback contexts.
