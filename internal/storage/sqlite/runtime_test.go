@@ -22,13 +22,15 @@ func TestStore_ClaimReadyNodeForFunctionsMatchesExactRegistration(t *testing.T) 
 	assert.False(t, claimed)
 	assert.Nil(t, claim)
 
-	wrongRegistration := []byte(`{"` + plan.Nodes[0].FunctionKey + `":"wrong-signature"}`)
+	wrongRegistration := []storage.FunctionRegistration{{Key: plan.Nodes[0].FunctionKey, Signature: "wrong-signature"}}
 	claim, claimed, err = store.ClaimReadyNodeForFunctions(t.Context(), "worker", time.Minute, wrongRegistration)
 	require.NoError(t, err)
 	assert.False(t, claimed)
 	assert.Nil(t, claim)
 
-	registration := []byte(`{"` + plan.Nodes[0].FunctionKey + `":"` + plan.Nodes[0].SignatureHash + `"}`)
+	registration := []storage.FunctionRegistration{
+		{Key: plan.Nodes[0].FunctionKey, Signature: plan.Nodes[0].SignatureHash},
+	}
 	claim, claimed, err = store.ClaimReadyNodeForFunctions(t.Context(), "worker", time.Minute, registration)
 	require.NoError(t, err)
 	require.True(t, claimed)
