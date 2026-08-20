@@ -16,6 +16,34 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestLockerRejectsInvalidRenewalIntervals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		interval time.Duration
+	}{
+		{name: "zero", interval: 0},
+		{name: "negative", interval: -time.Second},
+		{name: "boundary", interval: 20 * time.Second},
+		{name: "above boundary", interval: 21 * time.Second},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			database, connection := openDatabase(t)
+			locker := remotelock.New(database, nil, remotelock.WithRenewalInterval(test.interval))
+
+			err := locker.SessionLock(t.Context(), connection)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid remote migration lock renewal interval")
+			assert.Equal(t, 0, lockRowsIfTableExists(t, database))
+		})
+	}
+}
+
 func TestLockerAcquiresAndReleases(t *testing.T) {
 	t.Parallel()
 
@@ -259,6 +287,16 @@ func createLockTable(t *testing.T, database *sql.DB) {
 		expires_at INTEGER NOT NULL
 	)`)
 	require.NoError(t, err)
+}
+
+func lockRowsIfTableExists(t *testing.T, database *sql.DB) int {
+	t.Helper()
+
+	var count int
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_schema
+		WHERE type = 'table' AND name = 'cord_migration_lock'`).Scan(&count))
+
+	return count
 }
 
 func lockRows(t *testing.T, database *sql.DB) int {

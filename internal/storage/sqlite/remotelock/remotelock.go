@@ -58,6 +58,10 @@ func New(database *sql.DB, cancelMigration context.CancelCauseFunc, options ...O
 
 // SessionLock acquires the remote SQLite migration lease.
 func (locker *Locker) SessionLock(ctx context.Context, connection *sql.Conn) error {
+	if err := validateRenewalInterval(locker.renewalInterval); err != nil {
+		return err
+	}
+
 	owner, err := uuid.NewV4()
 	if err != nil {
 		return fmt.Errorf("create remote migration lock owner: %w", err)
@@ -67,29 +71,37 @@ func (locker *Locker) SessionLock(ctx context.Context, connection *sql.Conn) err
 		return err
 	}
 
+	if err := acquire(ctx, connection, owner.String()); err != nil {
+		return err
+	}
+
+	locker.startRenewal(owner.String())
+
+	return nil
+}
+
+func acquire(ctx context.Context, connection *sql.Conn, owner string) error {
 	for {
-		result, execErr := connection.ExecContext(
+		result, err := connection.ExecContext(
 			ctx,
 			`INSERT INTO cord_migration_lock (id, owner, expires_at)
 			VALUES (1, ?, unixepoch() + ?) ON CONFLICT(id) DO UPDATE SET
 				owner = excluded.owner,
 				expires_at = excluded.expires_at
 			WHERE cord_migration_lock.expires_at <= unixepoch()`,
-			owner.String(),
+			owner,
 			int64(leaseDuration/time.Second),
 		)
-		if execErr != nil {
-			return fmt.Errorf("acquire remote migration lock: %w", execErr)
+		if err != nil {
+			return fmt.Errorf("acquire remote migration lock: %w", err)
 		}
 
-		rows, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			return fmt.Errorf("inspect remote migration lock acquisition: %w", rowsErr)
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("inspect remote migration lock acquisition: %w", err)
 		}
 
 		if rows > 0 {
-			locker.startRenewal(owner.String())
-
 			return nil
 		}
 
@@ -104,6 +116,18 @@ func (locker *Locker) SessionLock(ctx context.Context, connection *sql.Conn) err
 		case <-timer.C:
 		}
 	}
+}
+
+func validateRenewalInterval(interval time.Duration) error {
+	if interval <= 0 || interval >= leaseDuration-renewalTimeout {
+		return fmt.Errorf(
+			"invalid remote migration lock renewal interval %s: must be greater than zero and less than %s",
+			interval,
+			leaseDuration-renewalTimeout,
+		)
+	}
+
+	return nil
 }
 
 func createTable(ctx context.Context, connection *sql.Conn) error {
