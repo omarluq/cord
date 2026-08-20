@@ -1,4 +1,4 @@
 [tools]
-go = "1.27rc2"
+go = "1.27.0"
 task = "3.53.1"
 lefthook = "2.1.10"

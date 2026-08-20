@@ -1,6 +1,6 @@
 module github.com/omarluq/cord
 
-go 1.27rc2
+go 1.27.0
 
 require (
 	github.com/gofrs/uuid/v5 v5.5.1

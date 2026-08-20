@@ -1,6 +1,6 @@
 module github.com/omarluq/cord/playground
 
-go 1.27rc2
+go 1.27.0
 
 require (
 	github.com/maxence-charriere/go-app/v11 v11.0.5

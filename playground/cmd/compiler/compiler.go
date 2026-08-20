@@ -126,7 +126,7 @@ func (compiler *wasmCompiler) Compile(ctx context.Context, source string) ([]byt
 func moduleSource(cordDirectory string) string {
 	return fmt.Sprintf(`module playground.user
 
-go 1.27rc2
+go 1.27.0
 
 require %s v0.0.0
 
