@@ -1,7 +1,6 @@
 package cord
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,10 +9,7 @@ import (
 
 type nodeID uint64
 
-type invocation func(context.Context, []any) (any, error)
-
 type node struct {
-	invoke     invocation
 	definition *nodeDefinition
 	parents    []nodeID
 	id         nodeID
@@ -35,7 +31,7 @@ func newGraph(name string) *graph {
 	}
 }
 
-func (g *graph) appendNode(parents []nodeID, invoke invocation, definition nodeDefinition) nodeID {
+func (g *graph) appendNode(parents []nodeID, definition nodeDefinition) nodeID {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -69,7 +65,6 @@ func (g *graph) appendNode(parents []nodeID, invoke invocation, definition nodeD
 	g.nodes[nodeIdentifier] = node{
 		id:         nodeIdentifier,
 		parents:    append([]nodeID{}, parents...),
-		invoke:     invoke,
 		definition: &definition,
 	}
 
@@ -114,7 +109,6 @@ func (g *graph) compile(tail nodeID) ([]node, error) {
 		plan = append(plan, node{
 			id:         current.id,
 			parents:    append([]nodeID{}, current.parents...),
-			invoke:     current.invoke,
 			definition: current.definition,
 		})
 
@@ -157,66 +151,4 @@ func compiledOccurrence(plan []node, index int) int {
 	}
 
 	return occurrence
-}
-
-type typedValue[T any] struct {
-	value T
-}
-
-func adaptStep[I, O any](step func(context.Context, I) (O, error)) invocation {
-	return func(ctx context.Context, inputs []any) (any, error) {
-		if len(inputs) != 1 {
-			return nil, errors.New("cord: invalid workflow node input")
-		}
-
-		input, ok := inputAs[I](inputs[0])
-		if !ok {
-			return nil, errors.New("cord: invalid workflow node input")
-		}
-
-		output, err := step(ctx, input)
-
-		return typedValue[O]{value: output}, err
-	}
-}
-
-func adaptJoin[A, B, O any](step func(context.Context, A, B) (O, error)) invocation {
-	const inputCount = 2
-
-	return func(ctx context.Context, inputs []any) (any, error) {
-		if len(inputs) != inputCount {
-			return nil, errors.New("cord: invalid joined workflow node input")
-		}
-
-		left, leftOK := inputAs[A](inputs[0])
-		right, rightOK := inputAs[B](inputs[1])
-
-		if !leftOK || !rightOK {
-			return nil, errors.New("cord: invalid joined workflow node input")
-		}
-
-		output, err := step(ctx, left, right)
-
-		return typedValue[O]{value: output}, err
-	}
-}
-
-func inputAs[T any](value any) (T, bool) {
-	if wrapped, ok := value.(typedValue[T]); ok {
-		return wrapped.value, true
-	}
-
-	var zero T
-
-	if value == nil {
-		kind := reflect.TypeFor[T]().Kind()
-		nilable := kind == reflect.Chan || kind == reflect.Func || kind == reflect.Interface ||
-			kind == reflect.Map || kind == reflect.Pointer || kind == reflect.Slice
-
-		return zero, nilable
-	}
-
-	typed, ok := value.(T)
-
-	return typed, ok
 }

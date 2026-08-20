@@ -2,7 +2,7 @@ package cord
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -10,6 +10,13 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	firstFunction   = "first"
+	secondFunction  = "second"
+	firstSignature  = "signature-1"
+	secondSignature = "signature-2"
 )
 
 func TestCord_RegisteredFunctionsCachesUntilRegistrationChanges(t *testing.T) {
@@ -20,24 +27,27 @@ func TestCord_RegisteredFunctionsCachesUntilRegistrationChanges(t *testing.T) {
 		return nil, nil
 	}
 
-	require.NoError(t, runtime.register(nodeDefinition{functionKey: "first", signature: "signature-1"}, invoke))
-	first, err := runtime.registeredFunctions()
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"first":"signature-1"}`, string(first))
+	require.NoError(t, runtime.register(nodeDefinition{functionKey: firstFunction, signature: firstSignature}, invoke))
+	first := runtime.registeredFunctions()
+	assert.Equal(t, []storage.FunctionRegistration{{Key: firstFunction, Signature: firstSignature}}, first)
 
-	cachedFirst, err := runtime.registeredFunctions()
-	require.NoError(t, err)
+	cachedFirst := runtime.registeredFunctions()
 	assert.Same(t, &first[0], &cachedFirst[0])
 
-	require.NoError(t, runtime.register(nodeDefinition{functionKey: "second", signature: "signature-2"}, invoke))
-	second, err := runtime.registeredFunctions()
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"first":"signature-1","second":"signature-2"}`, string(second))
+	require.NoError(t, runtime.register(
+		nodeDefinition{functionKey: secondFunction, signature: secondSignature}, invoke,
+	))
+	second := runtime.registeredFunctions()
+	assert.Equal(t, []storage.FunctionRegistration{
+		{Key: firstFunction, Signature: firstSignature},
+		{Key: secondFunction, Signature: secondSignature},
+	}, second)
 	assert.NotSame(t, &first[0], &second[0])
 
-	require.NoError(t, runtime.register(nodeDefinition{functionKey: "second", signature: "signature-2"}, invoke))
-	cachedSecond, err := runtime.registeredFunctions()
-	require.NoError(t, err)
+	require.NoError(t, runtime.register(
+		nodeDefinition{functionKey: secondFunction, signature: secondSignature}, invoke,
+	))
+	cachedSecond := runtime.registeredFunctions()
 	assert.Same(t, &second[0], &cachedSecond[0])
 }
 
@@ -55,14 +65,14 @@ func TestCord_RegisteredFunctionsSupportsConcurrentRegistration(t *testing.T) {
 	)
 
 	start := make(chan struct{})
-	errors := make(chan error, readerCount)
+	readErrors := make(chan error, readerCount)
 
 	var readers sync.WaitGroup
 
 	readers.Add(readerCount)
 
 	for range readerCount {
-		go readRegisteredFunctions(start, errors, &readers, runtime, registrationCount)
+		go readRegisteredFunctions(start, readErrors, &readers, runtime, registrationCount)
 	}
 
 	close(start)
@@ -75,23 +85,21 @@ func TestCord_RegisteredFunctionsSupportsConcurrentRegistration(t *testing.T) {
 	}
 
 	readers.Wait()
-	close(errors)
+	close(readErrors)
 
-	for err := range errors {
+	for err := range readErrors {
 		require.NoError(t, err)
 	}
 
-	snapshot, err := runtime.registeredFunctions()
-	require.NoError(t, err)
+	snapshot := runtime.registeredFunctions()
 
-	var registrations map[string]string
-	require.NoError(t, json.Unmarshal(snapshot, &registrations))
-	assert.Len(t, registrations, registrationCount)
+	assert.Len(t, snapshot, registrationCount)
+	assert.IsIncreasing(t, registrationKeys(snapshot))
 }
 
 func readRegisteredFunctions(
 	start <-chan struct{},
-	errors chan<- error,
+	errs chan<- error,
 	readers *sync.WaitGroup,
 	runtime *Cord,
 	readCount int,
@@ -101,24 +109,29 @@ func readRegisteredFunctions(
 	<-start
 
 	for range readCount {
-		snapshot, err := runtime.registeredFunctions()
-		if err != nil {
-			errors <- err
-
-			return
-		}
+		snapshot := runtime.registeredFunctions()
 
 		if len(snapshot) == 0 {
 			continue
 		}
 
-		var registrations map[string]string
-		if err := json.Unmarshal(snapshot, &registrations); err != nil {
-			errors <- err
+		for _, registration := range snapshot {
+			if registration.Key == "" || registration.Signature == "" {
+				errs <- errors.New("incomplete registration")
 
-			return
+				return
+			}
 		}
 	}
+}
+
+func registrationKeys(registrations []storage.FunctionRegistration) []string {
+	keys := make([]string, 0, len(registrations))
+	for _, registration := range registrations {
+		keys = append(keys, registration.Key)
+	}
+
+	return keys
 }
 
 func BenchmarkCord_RegisteredFunctions(b *testing.B) {
@@ -136,17 +149,13 @@ func BenchmarkCord_RegisteredFunctions(b *testing.B) {
 		require.NoError(b, err)
 	}
 
-	_, err := runtime.registeredFunctions()
-	require.NoError(b, err)
+	_ = runtime.registeredFunctions()
 
 	b.Run("cached", func(b *testing.B) {
 		b.ReportAllocs()
 
 		for b.Loop() {
-			_, err := runtime.registeredFunctions()
-			if err != nil {
-				b.Fatal(err)
-			}
+			_ = runtime.registeredFunctions()
 		}
 	})
 
@@ -154,15 +163,11 @@ func BenchmarkCord_RegisteredFunctions(b *testing.B) {
 		b.ReportAllocs()
 
 		for b.Loop() {
-			registrations := make(map[string]string, registrySize)
-			for key, entry := range runtime.registry {
-				registrations[key] = entry.signature
-			}
+			runtime.mu.Lock()
+			runtime.registrations = nil
+			runtime.mu.Unlock()
 
-			_, err := json.Marshal(registrations)
-			if err != nil {
-				b.Fatal(err)
-			}
+			_ = runtime.registeredFunctions()
 		}
 	})
 }

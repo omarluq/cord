@@ -2,8 +2,6 @@ package cord
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/omarluq/cord/internal/hashframe"
 	"github.com/omarluq/cord/internal/serialization"
 	"github.com/omarluq/cord/internal/storage"
 )
@@ -108,7 +107,7 @@ func assignLogicalID(definition nodeDefinition, parents []node, occurrence int) 
 		parts = append(parts, string(parent.definition.logicalID))
 	}
 
-	definition.logicalID = storage.NodeID(hashParts(parts...))
+	definition.logicalID = storage.NodeID(hashframe.SHA256(parts...))
 
 	return definition
 }
@@ -263,20 +262,7 @@ func definitionHash(
 		parts = append(parts, currentParents...)
 	}
 
-	return hashParts(parts...)
-}
-
-func hashParts(parts ...string) string {
-	var framed strings.Builder
-	for _, part := range parts {
-		framed.WriteString(strconv.Itoa(len(part)))
-		framed.WriteByte(':')
-		framed.WriteString(part)
-	}
-
-	digest := sha256.Sum256([]byte(framed.String()))
-
-	return hex.EncodeToString(digest[:])
+	return hashframe.SHA256(parts...)
 }
 
 func generateRunID() (storage.RunID, error) {

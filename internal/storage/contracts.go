@@ -12,7 +12,7 @@ type Backend interface {
 	// CreateRun atomically persists a validated run plan.
 	CreateRun(context.Context, *RunPlan) error
 	// ClaimReadyNodeForFunctions claims one eligible node matching a registered function signature.
-	ClaimReadyNodeForFunctions(context.Context, string, time.Duration, []byte) (*Claim, bool, error)
+	ClaimReadyNodeForFunctions(context.Context, string, time.Duration, []FunctionRegistration) (*Claim, bool, error)
 	// LoadNodeInputs loads the ordered inputs for a claimed node.
 	LoadNodeInputs(context.Context, RunID, NodeID) ([]EncodedPayload, error)
 	// CompleteNode records a successful result when the lease still owns the node.
@@ -29,6 +29,12 @@ type Backend interface {
 	HeartbeatNode(context.Context, RunID, NodeID, Lease, time.Duration) (bool, time.Time, error)
 	// GetRunResult returns the persisted state and payloads for a run.
 	GetRunResult(context.Context, RunID) (RunResult, error)
+}
+
+// FunctionRegistration identifies one function signature executable by a runtime.
+type FunctionRegistration struct {
+	Key       string
+	Signature string
 }
 
 // RunPlan is the complete normalized storage plan for one run.

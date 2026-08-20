@@ -22,6 +22,8 @@ func double(_ context.Context, value int) (int, error) {
 	return value * 2, nil
 }
 
+const heartbeatIntervalError = "heartbeat interval"
+
 func TestNew_OptionsValidatesSchedulerSettings(t *testing.T) {
 	t.Parallel()
 
@@ -32,10 +34,14 @@ func TestNew_OptionsValidatesSchedulerSettings(t *testing.T) {
 		{name: "negative concurrency", options: cord.Options{Concurrency: -1}, error: "concurrency"},
 		{name: "negative poll interval", options: cord.Options{PollInterval: -1}, error: "poll interval"},
 		{name: "negative lease TTL", options: cord.Options{LeaseTTL: -1}, error: "lease TTL"},
-		{name: "negative heartbeat", options: cord.Options{HeartbeatInterval: -1}, error: "heartbeat interval"},
+		{name: "sub-millisecond lease TTL", options: cord.Options{LeaseTTL: time.Millisecond - 1}, error: "lease TTL"},
+		{name: "negative heartbeat", options: cord.Options{HeartbeatInterval: -1}, error: heartbeatIntervalError},
+		{name: "sub-millisecond heartbeat", options: cord.Options{
+			LeaseTTL: time.Second, HeartbeatInterval: time.Millisecond - 1,
+		}, error: heartbeatIntervalError},
 		{name: "heartbeat equals lease", options: cord.Options{
 			LeaseTTL: time.Second, HeartbeatInterval: time.Second,
-		}, error: "heartbeat interval"},
+		}, error: heartbeatIntervalError},
 		{name: "negative max attempts", options: cord.Options{MaxAttempts: -1}, error: "maximum attempts"},
 		{name: "retry settings must be complete", options: cord.Options{MaxAttempts: 3}, error: "base delay"},
 		{name: "retry maximum precedes base", options: cord.Options{
@@ -66,12 +72,28 @@ func TestNew_OptionsValidatesBeforeMigration(t *testing.T) {
 	assert.False(t, sqliteTableExists(t, database, "cord_schema_migrations"))
 }
 
-func TestNew_OptionsShortLeaseUsesDerivedHeartbeat(t *testing.T) {
+func TestNew_OptionsLeasePrecisionBoundary(t *testing.T) {
 	t.Parallel()
 
-	runtime, err := cord.New(t.Context(), openSQLite(t), cord.Options{LeaseTTL: 30 * time.Millisecond})
-	require.NoError(t, err)
-	require.NoError(t, runtime.Close())
+	tests := []struct {
+		name    string
+		options cord.Options
+	}{
+		{name: "derived heartbeat", options: cord.Options{LeaseTTL: 30 * time.Millisecond}},
+		{name: "one millisecond heartbeat", options: cord.Options{
+			LeaseTTL: 2 * time.Millisecond, HeartbeatInterval: time.Millisecond,
+		}},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime, err := cord.New(t.Context(), openSQLite(t), testCase.options)
+			require.NoError(t, err)
+			require.NoError(t, runtime.Close())
+		})
+	}
 }
 
 func TestNew_CanceledMigrationContext(t *testing.T) {

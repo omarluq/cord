@@ -9,6 +9,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testFunctionKey = "function"
+
+func TestStore_ClaimReadyNodeForFunctionsValidatesRegistrations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		errorContains string
+		registrations []storage.FunctionRegistration
+	}{
+		{
+			name:          "empty key",
+			registrations: []storage.FunctionRegistration{{Key: "", Signature: "signature"}},
+			errorContains: "registration is incomplete",
+		},
+		{
+			name:          "empty signature",
+			registrations: []storage.FunctionRegistration{{Key: testFunctionKey, Signature: ""}},
+			errorContains: "registration is incomplete",
+		},
+		{
+			name: "duplicate key",
+			registrations: []storage.FunctionRegistration{
+				{Key: testFunctionKey, Signature: "first"},
+				{Key: testFunctionKey, Signature: "second"},
+			},
+			errorContains: "duplicate function registration",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, store := newStore(t, true)
+			claim, claimed, err := store.ClaimReadyNodeForFunctions(
+				t.Context(), "worker", time.Minute, test.registrations,
+			)
+			require.ErrorContains(t, err, test.errorContains)
+			assert.False(t, claimed)
+			assert.Nil(t, claim)
+		})
+	}
+}
+
 func TestStore_ClaimReadyNodeForFunctionsValidatesLease(t *testing.T) {
 	t.Parallel()
 
@@ -34,7 +79,9 @@ func TestStore_ClaimReadyNodeForFunctionsValidatesLease(t *testing.T) {
 				storage.RunID("registered-claim-validation-"+testCase.name),
 			)
 			require.NoError(t, store.CreateRun(t.Context(), &plan))
-			registered := []byte(`{"` + plan.Nodes[0].FunctionKey + `":"` + plan.Nodes[0].SignatureHash + `"}`)
+			registered := []storage.FunctionRegistration{
+				{Key: plan.Nodes[0].FunctionKey, Signature: plan.Nodes[0].SignatureHash},
+			}
 
 			claim, claimed, err := store.ClaimReadyNodeForFunctions(
 				t.Context(),

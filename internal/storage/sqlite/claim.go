@@ -3,10 +3,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/omarluq/cord/internal/storage"
 	"time"
+
+	"github.com/omarluq/cord/internal/storage"
 )
 
 const (
@@ -54,19 +56,20 @@ func (s *Store) ClaimReadyNode(
 }
 
 // ClaimReadyNodeForFunctions claims work only when its exact function signature is registered.
-// It reports no claim when registeredJSON is empty because no signature can match.
+// It reports no claim when registrations is empty because no signature can match.
 func (s *Store) ClaimReadyNodeForFunctions(
 	ctx context.Context,
 	owner string,
 	leaseTTL time.Duration,
-	registeredJSON []byte,
+	registrations []storage.FunctionRegistration,
 ) (*storage.Claim, bool, error) {
 	if err := validateClaimLease(owner, leaseTTL); err != nil {
 		return nil, false, err
 	}
 
-	if len(registeredJSON) == 0 {
-		return nil, false, nil
+	registeredJSON, err := encodeRegistrations(registrations)
+	if err != nil || len(registeredJSON) == 0 {
+		return nil, false, err
 	}
 
 	return s.claimReadyNode(ctx, owner, leaseTTL, registeredJSON)
@@ -78,8 +81,8 @@ func (s *Store) claimReadyNode(
 	leaseTTL time.Duration,
 	registeredJSON []byte,
 ) (claim *storage.Claim, claimed bool, err error) {
-	err = retryContention(ctx, "retry ready-node claim", func() error {
-		claim, claimed, err = s.claimReadyNodeOnce(ctx, owner, leaseTTL, registeredJSON)
+	err = retryContention(ctx, "retry ready-node claim", func(attemptCtx context.Context) error {
+		claim, claimed, err = s.claimReadyNodeOnce(attemptCtx, owner, leaseTTL, registeredJSON)
 
 		return err
 	})
@@ -146,6 +149,32 @@ func scanClaim(row *sql.Row, owner string) (*storage.Claim, error) {
 	claim.RetryMaxDelay = time.Duration(retryMaxDelayNS)
 
 	return claim, nil
+}
+
+func encodeRegistrations(registrations []storage.FunctionRegistration) ([]byte, error) {
+	if len(registrations) == 0 {
+		return nil, nil
+	}
+
+	values := make(map[string]string, len(registrations))
+	for _, registration := range registrations {
+		if registration.Key == "" || registration.Signature == "" {
+			return nil, errors.New("claim ready node: function registration is incomplete")
+		}
+
+		if _, exists := values[registration.Key]; exists {
+			return nil, fmt.Errorf("claim ready node: duplicate function registration %q", registration.Key)
+		}
+
+		values[registration.Key] = registration.Signature
+	}
+
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return nil, fmt.Errorf("claim ready node: encode function registrations: %w", err)
+	}
+
+	return encoded, nil
 }
 
 func validateClaimLease(owner string, leaseTTL time.Duration) error {

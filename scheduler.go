@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/omarluq/cord/internal/serialization"
@@ -125,7 +126,7 @@ func (c *Cord) register(definition nodeDefinition, invoke encodedInvocation) err
 	}
 
 	c.registry[definition.functionKey] = registeredInvocation{invoke: invoke, signature: definition.signature}
-	c.registryJSON = nil
+	c.registrations = nil
 
 	return nil
 }
@@ -138,7 +139,7 @@ func (c *Cord) signalScheduler() {
 }
 
 func (c *Cord) scheduler() {
-	defer c.workers.Done()
+	defer c.goroutineDone()
 
 	pollTimer := time.NewTimer(c.pollInterval)
 	defer pollTimer.Stop()
@@ -190,13 +191,7 @@ func (c *Cord) trySchedule() bool {
 		return false
 	}
 
-	registeredFunctions, err := c.registeredFunctions()
-	if err != nil {
-		<-c.slots
-		c.reportSchedulerError(err)
-
-		return false
-	}
+	registeredFunctions := c.registeredFunctions()
 
 	claim, ok, err := c.store.ClaimReadyNodeForFunctions(c.ctx, c.owner, c.leaseTTL, registeredFunctions)
 	if err != nil || !ok {
@@ -209,37 +204,34 @@ func (c *Cord) trySchedule() bool {
 		return false
 	}
 
-	c.workers.Add(1)
+	c.addGoroutine()
 	go c.executeClaim(claim)
 
 	return true
 }
 
-func (c *Cord) registeredFunctions() ([]byte, error) {
+func (c *Cord) registeredFunctions() []storage.FunctionRegistration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.registry) == 0 || c.registryJSON != nil {
-		return c.registryJSON, nil
+	if len(c.registry) == 0 || c.registrations != nil {
+		return c.registrations
 	}
 
-	registrations := make(map[string]string, len(c.registry))
+	registrations := make([]storage.FunctionRegistration, 0, len(c.registry))
 	for key, entry := range c.registry {
-		registrations[key] = entry.signature
+		registrations = append(registrations, storage.FunctionRegistration{Key: key, Signature: entry.signature})
 	}
 
-	registryJSON, err := json.Marshal(registrations)
-	if err != nil {
-		return nil, fmt.Errorf("cord: encode function registry: %w", err)
-	}
+	sort.Slice(registrations, func(left, right int) bool { return registrations[left].Key < registrations[right].Key })
 
-	c.registryJSON = registryJSON
+	c.registrations = registrations
 
-	return c.registryJSON, nil
+	return c.registrations
 }
 
 func (c *Cord) executeClaim(claim *storage.Claim) {
-	defer c.workers.Done()
+	defer c.goroutineDone()
 	defer func() { <-c.slots; c.signalScheduler() }()
 
 	c.mu.RLock()
@@ -346,34 +338,69 @@ func encodeFailure(claim *storage.Claim, err error) storage.EncodedPayload {
 
 func (c *Cord) heartbeat(ctx context.Context, claim *storage.Claim, cancel context.CancelFunc, done chan<- bool) {
 	held := true
-	defer func() { done <- held }()
+	expires := claim.Lease.ExpiresAt
+
+	defer func() {
+		claim.Lease.ExpiresAt = expires
+
+		done <- held
+	}()
 
 	ticker := time.NewTicker(c.heartbeatInterval)
 	defer ticker.Stop()
 
-	expires := claim.Lease.ExpiresAt
+	// SQLite supplies absolute lease timestamps, which are not safe to compare
+	// with a potentially skewed host clock. Use monotonic elapsed time and leave
+	// one heartbeat interval as a safety margin for the database round trip.
+	leaseTimer := time.NewTimer(c.leaseTTL - c.heartbeatInterval)
+	defer leaseTimer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-leaseTimer.C:
+			held = false
+
+			cancel()
+
+			return
 		case <-ticker.C:
-			accepted, newExpiry, err := c.store.HeartbeatNode(ctx, claim.RunID, claim.NodeID, claim.Lease, c.leaseTTL)
-			if err == nil && accepted {
+			accepted, newExpiry := c.heartbeatOnce(ctx, claim)
+			if accepted {
 				expires = newExpiry
+
+				leaseTimer.Reset(c.leaseTTL - c.heartbeatInterval)
 
 				continue
 			}
 
-			if (err == nil && !accepted) || !time.Now().Before(expires) {
-				held = false
-
-				cancel()
-
-				return
+			if !newExpiry.IsZero() {
+				continue
 			}
+
+			held = false
+
+			cancel()
+
+			return
 		}
 	}
+}
+
+// heartbeatOnce returns a nonzero expiry for accepted heartbeats and for
+// retryable storage errors. A zero expiry means the database rejected ownership.
+func (c *Cord) heartbeatOnce(ctx context.Context, claim *storage.Claim) (bool, time.Time) {
+	accepted, expiry, err := c.store.HeartbeatNode(ctx, claim.RunID, claim.NodeID, claim.Lease, c.leaseTTL)
+	if err != nil {
+		if ctx.Err() == nil {
+			c.reportSchedulerError(fmt.Errorf("cord: heartbeat node: %w", err))
+		}
+
+		return false, claim.Lease.ExpiresAt
+	}
+
+	return accepted, expiry
 }
 
 func (c *Cord) releaseClaim(claim *storage.Claim, cause error) {

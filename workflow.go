@@ -46,7 +46,7 @@ func (w Workflow[I, O]) Then[N any](
 
 	definition := stepDefinition(step)
 	registrationErr := w.runtime.register(definition, encodedStep(step))
-	tail := w.graph.appendNode([]nodeID{w.tail}, adaptStep(step), definition)
+	tail := w.graph.appendNode([]nodeID{w.tail}, definition)
 
 	return Workflow[I, N]{
 		runtime: w.runtime,
