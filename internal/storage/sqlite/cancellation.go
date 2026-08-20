@@ -5,12 +5,23 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
 	"github.com/omarluq/cord/internal/storage"
 )
 
 // CancelRun durably cancels a running or canceling run and all unfinished nodes.
 // It returns false when the run is absent or already terminal.
 func (s *Store) CancelRun(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
+	err = retryContention(ctx, "retry run cancellation", func(attemptCtx context.Context) error {
+		accepted, err = s.cancelRunOnce(attemptCtx, runID)
+
+		return err
+	})
+
+	return accepted, err
+}
+
+func (s *Store) cancelRunOnce(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
 	transaction, err := s.database.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin run cancellation: %w", err)

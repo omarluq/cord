@@ -5,13 +5,28 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var errFenceRejected = errors.New("lease fence rejected")
 
 func (s *Store) fencedTerminalTransition(
 	ctx context.Context,
-	transition func(*sql.Tx) error,
+	leaseExpiresAt time.Time,
+	transition func(context.Context, *sql.Tx) error,
+) (accepted bool, err error) {
+	err = retryFencedContention(ctx, "retry fenced transition", leaseExpiresAt, func(attemptCtx context.Context) error {
+		accepted, err = s.fencedTerminalTransitionOnce(attemptCtx, transition)
+
+		return err
+	})
+
+	return accepted, err
+}
+
+func (s *Store) fencedTerminalTransitionOnce(
+	ctx context.Context,
+	transition func(context.Context, *sql.Tx) error,
 ) (accepted bool, err error) {
 	transaction, err := s.database.BeginTx(ctx, nil)
 	if err != nil {
@@ -24,7 +39,7 @@ func (s *Store) fencedTerminalTransition(
 		}
 	}()
 
-	transitionErr := transition(transaction)
+	transitionErr := transition(ctx, transaction)
 	if errors.Is(transitionErr, errFenceRejected) {
 		return false, nil
 	}
@@ -40,18 +55,22 @@ func (s *Store) fencedTerminalTransition(
 	return true, nil
 }
 
-func (s *Store) updateNodes(ctx context.Context, query, operation string, arguments ...any) (int64, error) {
-	result, err := s.database.ExecContext(ctx, query, arguments...)
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", operation, err)
-	}
+func (s *Store) updateNodes(ctx context.Context, query, operation string, arguments ...any) (count int64, err error) {
+	err = retryContention(ctx, "retry "+operation, func(attemptCtx context.Context) error {
+		result, execErr := s.database.ExecContext(attemptCtx, query, arguments...)
+		if execErr != nil {
+			return fmt.Errorf("%s: %w", operation, execErr)
+		}
 
-	count, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("inspect %s: %w", operation, err)
-	}
+		count, execErr = result.RowsAffected()
+		if execErr != nil {
+			return fmt.Errorf("inspect %s: %w", operation, execErr)
+		}
 
-	return count, nil
+		return nil
+	})
+
+	return count, err
 }
 
 func affectedOne(result sql.Result) (bool, error) {
