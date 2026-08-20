@@ -35,6 +35,18 @@ func TestDriverConformance(t *testing.T) {
 	})
 }
 
+// TestRemoteMigrationRejectsSingleConnectionPool verifies remote locking fails before it can self-block.
+func TestRemoteMigrationRejectsSingleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	database := openLibSQL(t, startLibSQL(t))
+	database.SetMaxOpenConns(1)
+
+	err := sqlite.Migrate(t.Context(), database)
+	require.ErrorContains(t, err, "requires at least two database connections")
+	require.Zero(t, database.Stats().WaitCount)
+}
+
 // TestConcurrentMigrations verifies remote libSQL serializes concurrent migrations.
 func TestConcurrentMigrations(t *testing.T) {
 	t.Parallel()
@@ -134,7 +146,7 @@ func openLibSQL(tb testing.TB, databaseURL string) *sql.DB {
 
 	database, err := sql.Open("libsql", databaseURL)
 	require.NoError(tb, err)
-	database.SetMaxOpenConns(1)
+	database.SetMaxOpenConns(2)
 	require.NoError(tb, database.PingContext(tb.Context()))
 	require.NoError(tb, enableForeignKeys(tb, database))
 	tb.Cleanup(func() { require.NoError(tb, database.Close()) })

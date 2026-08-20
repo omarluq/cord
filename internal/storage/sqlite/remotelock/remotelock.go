@@ -9,13 +9,23 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/omarluq/cord/internal/backoff"
 )
 
 const (
-	leaseDuration   = 30 * time.Second
-	pollInterval    = 50 * time.Millisecond
-	renewalInterval = 10 * time.Second
-	renewalTimeout  = 10 * time.Second
+	leaseDuration       = 30 * time.Second
+	initialPollInterval = 50 * time.Millisecond
+	maximumPollInterval = 2 * time.Second
+	renewalInterval     = 10 * time.Second
+	renewalTimeout      = 10 * time.Second
+)
+
+var (
+	// ErrInsufficientPoolCapacity indicates that remote migration locking cannot
+	// reserve the connection needed to renew its lease.
+	ErrInsufficientPoolCapacity = errors.New("remote migration locking requires at least two database connections")
+	// ErrLockOwnershipLost indicates that another migrator replaced the lease.
+	ErrLockOwnershipLost = errors.New("remote migration lock ownership lost")
 )
 
 // Option configures a Locker.
@@ -30,24 +40,26 @@ func WithRenewalInterval(interval time.Duration) Option {
 
 // Locker implements Goose session locking with a renewable lease stored in SQLite.
 type Locker struct {
-	cancel          context.CancelFunc
-	cancelMigration context.CancelCauseFunc
-	renewalDone     <-chan error
-	database        *sql.DB
-	owner           string
-	renewalInterval time.Duration
+	cancel            context.CancelFunc
+	cancelMigration   context.CancelCauseFunc
+	database          *sql.DB
+	renewalConnection *sql.Conn
+	renewalDone       <-chan error
+	owner             string
+	renewalInterval   time.Duration
 }
 
 // New creates a Locker backed by database. If lease renewal fails,
 // cancelMigration is called with the renewal error when it is non-nil.
 func New(database *sql.DB, cancelMigration context.CancelCauseFunc, options ...Option) *Locker {
 	locker := &Locker{
-		cancel:          nil,
-		cancelMigration: cancelMigration,
-		database:        database,
-		renewalDone:     nil,
-		renewalInterval: renewalInterval,
-		owner:           "",
+		cancel:            nil,
+		cancelMigration:   cancelMigration,
+		database:          database,
+		owner:             "",
+		renewalConnection: nil,
+		renewalDone:       nil,
+		renewalInterval:   renewalInterval,
 	}
 	for _, option := range options {
 		option(locker)
@@ -62,26 +74,38 @@ func (locker *Locker) SessionLock(ctx context.Context, connection *sql.Conn) err
 		return err
 	}
 
+	if locker.database.Stats().MaxOpenConnections == 1 {
+		return ErrInsufficientPoolCapacity
+	}
+
+	renewalConnection, err := locker.database.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve remote migration lock renewal connection: %w", err)
+	}
+
 	owner, err := uuid.NewV4()
 	if err != nil {
-		return fmt.Errorf("create remote migration lock owner: %w", err)
+		return errors.Join(
+			fmt.Errorf("create remote migration lock owner: %w", err),
+			closeRenewalConnection(renewalConnection),
+		)
 	}
 
 	if err := createTable(ctx, connection); err != nil {
-		return err
+		return errors.Join(err, closeRenewalConnection(renewalConnection))
 	}
 
 	if err := acquire(ctx, connection, owner.String()); err != nil {
-		return err
+		return errors.Join(err, closeRenewalConnection(renewalConnection))
 	}
 
-	locker.startRenewal(owner.String())
+	locker.startRenewal(owner.String(), renewalConnection)
 
 	return nil
 }
 
 func acquire(ctx context.Context, connection *sql.Conn, owner string) error {
-	for {
+	for attempt := 1; ; attempt++ {
 		result, err := connection.ExecContext(
 			ctx,
 			`INSERT INTO cord_migration_lock (id, owner, expires_at)
@@ -105,7 +129,9 @@ func acquire(ctx context.Context, connection *sql.Conn, owner string) error {
 			return nil
 		}
 
-		timer := time.NewTimer(pollInterval)
+		delay := backoff.FullJitter(initialPollInterval, maximumPollInterval, attempt)
+
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -144,16 +170,17 @@ func createTable(ctx context.Context, connection *sql.Conn) error {
 	return nil
 }
 
-func (locker *Locker) startRenewal(owner string) {
+func (locker *Locker) startRenewal(owner string, connection *sql.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 
 	locker.owner = owner
 	locker.cancel = cancel
+	locker.renewalConnection = connection
 	locker.renewalDone = done
 
 	go func() {
-		err := renew(ctx, locker.database, owner, locker.renewalInterval)
+		err := renew(ctx, connection, owner, locker.renewalInterval)
 		if err != nil && locker.cancelMigration != nil {
 			locker.cancelMigration(err)
 		}
@@ -164,13 +191,13 @@ func (locker *Locker) startRenewal(owner string) {
 	}()
 }
 
-func renew(ctx context.Context, database *sql.DB, owner string, interval time.Duration) error {
+func renew(ctx context.Context, connection *sql.Conn, owner string, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		renewalCtx, cancel := context.WithTimeout(ctx, renewalTimeout)
-		result, err := database.ExecContext(renewalCtx, `UPDATE cord_migration_lock
+		result, err := connection.ExecContext(renewalCtx, `UPDATE cord_migration_lock
 			SET expires_at = unixepoch() + ? WHERE id = 1 AND owner = ?`,
 			int64(leaseDuration/time.Second), owner)
 
@@ -190,7 +217,7 @@ func renew(ctx context.Context, database *sql.DB, owner string, interval time.Du
 		}
 
 		if rows == 0 {
-			return errors.New("remote migration lock ownership lost")
+			return ErrLockOwnershipLost
 		}
 
 		select {
@@ -207,36 +234,55 @@ func (locker *Locker) SessionUnlock(ctx context.Context, connection *sql.Conn) e
 		return nil
 	}
 
-	locker.cancel()
-
-	var renewErr error
-	select {
-	case renewErr = <-locker.renewalDone:
-	case <-time.After(renewalTimeout):
-		renewErr = errors.New("wait for remote migration lock renewal to stop: timeout")
-	}
-
-	result, err := connection.ExecContext(
-		ctx,
-		"DELETE FROM cord_migration_lock WHERE id = 1 AND owner = ?",
-		locker.owner,
-	)
-	if err != nil {
-		return fmt.Errorf("release remote migration lock: %w", err)
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("inspect remote migration lock release: %w", err)
-	}
-
-	if rows == 0 {
-		return errors.New("remote migration lock ownership lost")
-	}
+	owner := locker.owner
+	cancel := locker.cancel
+	renewalDone := locker.renewalDone
+	renewalConnection := locker.renewalConnection
 
 	locker.owner = ""
 	locker.cancel = nil
 	locker.renewalDone = nil
+	locker.renewalConnection = nil
 
-	return renewErr
+	cancel()
+
+	renewErr := waitForRenewal(renewalDone)
+
+	result, releaseErr := connection.ExecContext(
+		ctx,
+		"DELETE FROM cord_migration_lock WHERE id = 1 AND owner = ?",
+		owner,
+	)
+	if releaseErr != nil {
+		releaseErr = fmt.Errorf("release remote migration lock: %w", releaseErr)
+	} else {
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			releaseErr = fmt.Errorf("inspect remote migration lock release: %w", rowsErr)
+		} else if rows == 0 {
+			releaseErr = ErrLockOwnershipLost
+		}
+	}
+
+	return errors.Join(renewErr, releaseErr, closeRenewalConnection(renewalConnection))
+}
+
+func waitForRenewal(done <-chan error) error {
+	timer := time.NewTimer(renewalTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return errors.New("wait for remote migration lock renewal to stop: timeout")
+	}
+}
+
+func closeRenewalConnection(connection *sql.Conn) error {
+	if err := connection.Close(); err != nil {
+		return fmt.Errorf("close remote migration lock renewal connection: %w", err)
+	}
+
+	return nil
 }
