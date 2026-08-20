@@ -120,7 +120,7 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	encoding, acceptable := negotiateEncoding(request.Header.Get("Accept-Encoding"))
+	encoding, acceptable := negotiateEncoding(strings.Join(request.Header.Values("Accept-Encoding"), ","))
 	if !acceptable {
 		writeJSONError(response, "no acceptable response encoding", http.StatusNotAcceptable)
 

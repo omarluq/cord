@@ -223,6 +223,26 @@ func TestHandlerNegotiatesGzip(t *testing.T) {
 	require.Contains(t, string(decoded), strings.Repeat("wasm", 1_000))
 }
 
+func TestHandlerNegotiatesRepeatedAcceptEncodingHeaders(t *testing.T) {
+	t.Parallel()
+
+	handler := newHandler(
+		testConfigPointer(),
+		compilerFunc(func(context.Context, string) ([]byte, error) {
+			return []byte("wasm"), nil
+		}),
+	)
+	request := compileRequestForTest(t.Context())
+	request.Header.Add("Accept-Encoding", "identity;q=0")
+	request.Header.Add("Accept-Encoding", "gzip")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, gzipEncoding, response.Header().Get("Content-Encoding"))
+}
+
 func TestHandlerRejectsUnacceptableEncodingWithoutCompiling(t *testing.T) {
 	t.Parallel()
 
