@@ -3,16 +3,23 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
 )
 
-const remoteMigrationLockPollInterval = 50 * time.Millisecond
+const (
+	remoteMigrationLockLease        = 30 * time.Second
+	remoteMigrationLockPollInterval = 50 * time.Millisecond
+	remoteMigrationLockRenewal      = 10 * time.Second
+)
 
 type remoteMigrationLocker struct {
-	owner string
+	cancel      context.CancelFunc
+	renewalDone <-chan error
+	owner       string
 }
 
 func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection *sql.Conn) error {
@@ -26,8 +33,16 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 	}
 
 	for {
-		result, execErr := connection.ExecContext(ctx, `INSERT INTO cord_migration_lock (id, owner)
-			VALUES (1, ?) ON CONFLICT(id) DO NOTHING`, owner.String())
+		result, execErr := connection.ExecContext(
+			ctx,
+			`INSERT INTO cord_migration_lock (id, owner, expires_at)
+			VALUES (1, ?, unixepoch() + ?) ON CONFLICT(id) DO UPDATE SET
+				owner = excluded.owner,
+				expires_at = excluded.expires_at
+			WHERE cord_migration_lock.expires_at <= unixepoch()`,
+			owner.String(),
+			int64(remoteMigrationLockLease/time.Second),
+		)
 		if execErr != nil {
 			return fmt.Errorf("acquire remote migration lock: %w", execErr)
 		}
@@ -38,7 +53,7 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 		}
 
 		if rows > 0 {
-			locker.owner = owner.String()
+			locker.startRenewal(connection, owner.String())
 
 			return nil
 		}
@@ -59,7 +74,8 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 func createRemoteMigrationLockTable(ctx context.Context, connection *sql.Conn) error {
 	_, err := connection.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cord_migration_lock (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
-		owner TEXT NOT NULL
+		owner TEXT NOT NULL,
+		expires_at INTEGER NOT NULL
 	)`)
 	if err != nil {
 		return fmt.Errorf("create remote migration lock table: %w", err)
@@ -68,20 +84,87 @@ func createRemoteMigrationLockTable(ctx context.Context, connection *sql.Conn) e
 	return nil
 }
 
+func (locker *remoteMigrationLocker) startRenewal(connection *sql.Conn, owner string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	locker.owner = owner
+	locker.cancel = cancel
+	locker.renewalDone = done
+
+	go renewRemoteMigrationLock(ctx, connection, owner, done)
+}
+
+func renewRemoteMigrationLock(
+	ctx context.Context,
+	connection *sql.Conn,
+	owner string,
+	done chan<- error,
+) {
+	defer close(done)
+
+	ticker := time.NewTicker(remoteMigrationLockRenewal)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			done <- nil
+
+			return
+		case <-ticker.C:
+			result, err := connection.ExecContext(ctx, `UPDATE cord_migration_lock
+				SET expires_at = unixepoch() + ? WHERE id = 1 AND owner = ?`,
+				int64(remoteMigrationLockLease/time.Second), owner)
+			if err != nil {
+				continue
+			}
+
+			rows, err := result.RowsAffected()
+			if err != nil {
+				done <- fmt.Errorf("inspect remote migration lock renewal: %w", err)
+
+				return
+			}
+
+			if rows == 0 {
+				done <- errors.New("remote migration lock ownership lost")
+
+				return
+			}
+		}
+	}
+}
+
 func (locker *remoteMigrationLocker) SessionUnlock(ctx context.Context, connection *sql.Conn) error {
 	if locker.owner == "" {
 		return nil
 	}
 
-	if _, err := connection.ExecContext(
+	locker.cancel()
+	renewErr := <-locker.renewalDone
+
+	result, err := connection.ExecContext(
 		ctx,
 		"DELETE FROM cord_migration_lock WHERE id = 1 AND owner = ?",
 		locker.owner,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("release remote migration lock: %w", err)
 	}
 
-	locker.owner = ""
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect remote migration lock release: %w", err)
+	}
 
-	return nil
+	if rows == 0 {
+		return errors.New("remote migration lock ownership lost")
+	}
+
+	locker.owner = ""
+	locker.cancel = nil
+	locker.renewalDone = nil
+
+	return renewErr
 }

@@ -21,6 +21,7 @@ const (
 	libSQLPort  = "8080/tcp"
 )
 
+// TestDriverConformance verifies Cord's storage behavior against remote libSQL.
 func TestDriverConformance(t *testing.T) {
 	t.Parallel()
 
@@ -34,6 +35,7 @@ func TestDriverConformance(t *testing.T) {
 	})
 }
 
+// TestConcurrentMigrations verifies remote libSQL serializes concurrent migrations.
 func TestConcurrentMigrations(t *testing.T) {
 	t.Parallel()
 
@@ -70,6 +72,29 @@ func TestConcurrentMigrations(t *testing.T) {
 
 	require.NoError(t, rows.Err())
 	require.Equal(t, []int64{1, 2}, versions)
+}
+
+// TestAbandonedMigrationLock verifies an expired remote lock can be recovered.
+func TestAbandonedMigrationLock(t *testing.T) {
+	t.Parallel()
+
+	database := openLibSQL(t, startLibSQL(t))
+	_, err := database.ExecContext(t.Context(), `CREATE TABLE cord_migration_lock (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		owner TEXT NOT NULL,
+		expires_at INTEGER NOT NULL
+	)`)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(),
+		"INSERT INTO cord_migration_lock (id, owner, expires_at) VALUES (1, 'abandoned', unixepoch() - 1)")
+	require.NoError(t, err)
+
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+
+	var locks int
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		"SELECT COUNT(*) FROM cord_migration_lock").Scan(&locks))
+	require.Zero(t, locks)
 }
 
 func startLibSQL(t *testing.T) string {
