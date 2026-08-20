@@ -7,7 +7,7 @@ import (
 )
 
 func incompatibleThenSignature() {
-	runtime, _ := cord.New(nil)
+	runtime, _ := cord.New(context.Background(), nil)
 	flow := runtime.From("test-workflow", func(_ context.Context, value int) (int, error) {
 		return value, nil
 	})
