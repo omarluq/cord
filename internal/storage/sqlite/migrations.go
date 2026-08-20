@@ -53,13 +53,20 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 }
 
 func migrateWithRetry(ctx context.Context, database *sql.DB) error {
-	provider, err := newProvider(database)
+	migrationCtx, cancelMigration := context.WithCancelCause(ctx)
+	defer cancelMigration(nil)
+
+	provider, err := newProvider(database, cancelMigration)
 	if err != nil {
 		return fmt.Errorf("create migration provider: %w", err)
 	}
 
-	err = retryContention(ctx, "wait to retry migration", func() error {
-		_, upErr := provider.Up(ctx)
+	err = retryContention(migrationCtx, "wait to retry migration", func() error {
+		_, upErr := provider.Up(migrationCtx)
+		if cause := context.Cause(migrationCtx); cause != nil && !errors.Is(cause, ctx.Err()) {
+			return fmt.Errorf("migration lock renewal failed: %w", cause)
+		}
+
 		if upErr != nil {
 			return fmt.Errorf("run migration provider: %w", upErr)
 		}
@@ -73,14 +80,20 @@ func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 	return nil
 }
 
-func newProvider(database *sql.DB) (*goose.Provider, error) {
+func newProvider(database *sql.DB, cancelMigration context.CancelCauseFunc) (*goose.Provider, error) {
 	options := []goose.ProviderOption{
 		goose.WithDisableGlobalRegistry(true),
 		goose.WithGoMigrations(migrations()...),
 		goose.WithTableName(schemaVersionTable),
 	}
 	if isRemoteSQLiteDriver(database.Driver()) {
-		options = append(options, goose.WithSessionLocker(&remoteMigrationLocker{}))
+		options = append(options, goose.WithSessionLocker(&remoteMigrationLocker{
+			cancel:          nil,
+			cancelMigration: cancelMigration,
+			database:        database,
+			renewalDone:     nil,
+			owner:           "",
+		}))
 	} else {
 		options = append(options, goose.WithSessionLocker(sessionLocker{}))
 	}
