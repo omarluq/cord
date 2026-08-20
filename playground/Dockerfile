@@ -36,7 +36,7 @@ RUN CGO_ENABLED=0 go build \
     cp playground/examples/linear.go.txt /tmp/prewarm/main.go && \
     printf '%s\n' \
         'module playground.prewarm' \
-        'go 1.27rc2' \
+        'go 1.27.0' \
         'require github.com/omarluq/cord v0.0.0' \
         'replace github.com/omarluq/cord => /out/cord' \
         > /tmp/prewarm/go.mod && \
