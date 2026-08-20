@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"net/http"
 	"testing"
 
@@ -17,6 +18,15 @@ func TestHTTPServerSetsResponseDeadlineAfterCompilation(t *testing.T) {
 	require.Equal(t, serverHeaderTimeout, server.ReadHeaderTimeout)
 	require.Equal(t, serverHeaderTimeout, server.ReadTimeout)
 	require.Equal(t, serverIdleTimeout, server.IdleTimeout)
+}
+
+func TestValidateConfigRejectsMaximumWASMSizeOverflow(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.maxWASMBytes = math.MaxInt64
+
+	require.EqualError(t, validateConfig(&cfg), "maximum WebAssembly size is too large")
 }
 
 func TestAddressFromEnvironment(t *testing.T) {

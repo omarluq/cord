@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -171,6 +172,10 @@ func validateConfig(cfg *config) error {
 	if cfg.maxRequestBytes < 1 || cfg.maxSourceBytes < 1 ||
 		cfg.maxWASMBytes < 1 || cfg.maxDiagnostics < 1 {
 		return errors.New("size limits must be positive")
+	}
+
+	if cfg.maxWASMBytes == math.MaxInt64 {
+		return errors.New("maximum WebAssembly size is too large")
 	}
 
 	if cfg.compileTimeout <= 0 || cfg.maxConcurrency < 1 {
