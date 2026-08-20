@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	migrationTimeout   = 30 * time.Second
-	heartbeatsPerLease = 3
+	migrationTimeout      = 30 * time.Second
+	heartbeatsPerLease    = 3
+	minimumLeasePrecision = time.Millisecond
 )
 
 var (
@@ -29,9 +30,12 @@ var (
 )
 
 // Options configures scheduler behavior. Zero-valued fields use Cord's
-// defaults. HeartbeatInterval must be shorter than LeaseTTL.
+// defaults. LeaseTTL and HeartbeatInterval must be at least one millisecond,
+// and HeartbeatInterval must be shorter than LeaseTTL.
 type Options struct {
-	// OnSchedulerError reports scheduler storage errors. The callback must return promptly.
+	// OnSchedulerError reports scheduler storage errors. Reporting uses a bounded
+	// queue: when the callback is busy, later errors may be coalesced. The callback
+	// must return promptly so Close can finish; Shutdown can bound the caller's wait.
 	OnSchedulerError func(error)
 	// Concurrency limits the number of nodes executing across all workflows.
 	Concurrency int
@@ -148,12 +152,12 @@ func validateSchedulerSettings(
 		return errors.New("cord: poll interval must be positive")
 	}
 
-	if leaseTTL <= 0 {
-		return errors.New("cord: lease TTL must be positive")
+	if leaseTTL < minimumLeasePrecision {
+		return errors.New("cord: lease TTL must be at least one millisecond")
 	}
 
-	if heartbeatInterval <= 0 || heartbeatInterval >= leaseTTL {
-		return errors.New("cord: heartbeat interval must be positive and shorter than lease TTL")
+	if heartbeatInterval < minimumLeasePrecision || heartbeatInterval >= leaseTTL {
+		return errors.New("cord: heartbeat interval must be at least one millisecond and shorter than lease TTL")
 	}
 
 	return nil

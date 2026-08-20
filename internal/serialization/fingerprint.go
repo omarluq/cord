@@ -1,13 +1,13 @@
 package serialization
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/omarluq/cord/internal/hashframe"
 )
 
 const (
@@ -27,7 +27,7 @@ func TypeFingerprint(valueType reflect.Type, codecVersion string) (string, error
 
 	packagePath, typeName := typeIdentity(valueType)
 
-	return hashParts(
+	return hashframe.SHA256(
 		fingerprintVersion,
 		"type",
 		codecVersion,
@@ -44,18 +44,7 @@ func SignatureFingerprint(inputFingerprints []string, outputFingerprint string) 
 	parts = append(parts, inputFingerprints...)
 	parts = append(parts, outputFingerprint)
 
-	return hashParts(parts...)
-}
-
-func hashParts(parts ...string) string {
-	var framed strings.Builder
-	for _, part := range parts {
-		writePart(&framed, part)
-	}
-
-	digest := sha256.Sum256([]byte(framed.String()))
-
-	return hex.EncodeToString(digest[:])
+	return hashframe.SHA256(parts...)
 }
 
 func writePart(destination *strings.Builder, part string) {

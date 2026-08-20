@@ -4,6 +4,7 @@ package cord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -12,39 +13,95 @@ import (
 
 // Cord is a persistent workflow runtime. Its concurrency limit is shared by all workflows.
 type Cord struct {
-	ctx               context.Context
-	cancel            context.CancelFunc
 	store             storage.Backend
+	ctx               context.Context
+	shutdownDone      chan struct{}
+	cancel            context.CancelFunc
 	registry          map[string]registeredInvocation
 	onSchedulerError  func(error)
 	wake              chan struct{}
 	slots             chan struct{}
+	errorReports      chan error
 	owner             string
-	registryJSON      []byte
-	workers           sync.WaitGroup
-	mu                sync.RWMutex
-	closeOnce         sync.Once
+	registrations     []storage.FunctionRegistration
 	retry             retryPolicy
+	activeGoroutines  int
 	pollInterval      time.Duration
 	leaseTTL          time.Duration
 	heartbeatInterval time.Duration
+	mu                sync.RWMutex
+	closeOnce         sync.Once
+	lifecycleMu       sync.Mutex
 }
 
-// Close releases resources owned by the runtime. It never closes a caller-owned database.
+// Close releases resources owned by the runtime. It waits for executing steps
+// and scheduler error callbacks to return, and never closes a caller-owned database.
+// Steps must observe their context and callbacks must return promptly. Call
+// Shutdown when the caller needs a bounded wait.
 func (c *Cord) Close() error {
+	return c.Shutdown(context.Background())
+}
+
+// Shutdown requests runtime cancellation and waits until its goroutines exit or
+// ctx is done. It does not close the caller-owned database. A step that ignores
+// cancellation, or a scheduler error callback that blocks, can outlive the wait.
+func (c *Cord) Shutdown(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
 
-	c.closeOnce.Do(c.cancel)
-	c.workers.Wait()
+	if ctx == nil {
+		return errors.New("cord: shutdown context is nil")
+	}
 
-	return nil
+	c.closeOnce.Do(c.cancel)
+
+	select {
+	case <-c.shutdownDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("cord: wait for shutdown: %w", ctx.Err())
+	}
 }
 
 func (c *Cord) reportSchedulerError(err error) {
-	if c.onSchedulerError != nil && err != nil {
-		c.onSchedulerError(err)
+	if c.onSchedulerError == nil || err == nil {
+		return
+	}
+
+	select {
+	case c.errorReports <- err:
+	default:
+	}
+}
+
+func (c *Cord) runErrorReporter() {
+	defer c.goroutineDone()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case err := <-c.errorReports:
+			c.onSchedulerError(err)
+		}
+	}
+}
+
+func (c *Cord) addGoroutine() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
+	c.activeGoroutines++
+}
+
+func (c *Cord) goroutineDone() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
+	c.activeGoroutines--
+	if c.activeGoroutines == 0 {
+		close(c.shutdownDone)
 	}
 }
 
@@ -67,14 +124,23 @@ func newCordWithSettings(store storage.Backend, owner string, settings scheduler
 		ctx: ctx, cancel: cancel, heartbeatInterval: settings.heartbeatInterval,
 		leaseTTL: settings.leaseTTL, pollInterval: settings.pollInterval,
 		onSchedulerError: settings.onSchedulerError,
-		mu:               sync.RWMutex{}, workers: sync.WaitGroup{}, registry: make(map[string]registeredInvocation),
-		registryJSON: nil, retry: settings.retry,
-		slots: make(chan struct{}, settings.concurrency), store: store,
+		mu:               sync.RWMutex{}, registry: make(map[string]registeredInvocation), registrations: nil,
+		retry: settings.retry, slots: make(chan struct{}, settings.concurrency), store: store,
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
+		lifecycleMu: sync.Mutex{}, shutdownDone: make(chan struct{}), errorReports: make(chan error, 1),
 	}
 
-	cordRuntime.workers.Add(1)
+	cordRuntime.addGoroutine()
+
+	if cordRuntime.onSchedulerError != nil {
+		cordRuntime.addGoroutine()
+	}
+
 	go cordRuntime.scheduler()
+
+	if cordRuntime.onSchedulerError != nil {
+		go cordRuntime.runErrorReporter()
+	}
 
 	return cordRuntime
 }
@@ -94,7 +160,7 @@ func (c *Cord) From[I, O any](name string, step func(context.Context, I) (O, err
 
 	definition := stepDefinition(step)
 	registrationErr := c.register(definition, encodedStep(step))
-	tail := graph.appendNode([]nodeID{}, adaptStep(step), definition)
+	tail := graph.appendNode([]nodeID{}, definition)
 
 	return Workflow[I, O]{runtime: c, graph: graph, tail: tail, err: registrationErr}
 }

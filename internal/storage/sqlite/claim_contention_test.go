@@ -30,12 +30,14 @@ func TestStore_ConcurrentClaimantsMakeProgressWithoutDuplicateClaims(t *testing.
 
 	tests := []struct {
 		name       string
-		registered []byte
+		registered []storage.FunctionRegistration
 	}{
 		{name: "all functions", registered: nil},
 		{
-			name:       "registered functions",
-			registered: []byte(`{"example.com/workflow.Compile":"compile-signature"}`),
+			name: "registered functions",
+			registered: []storage.FunctionRegistration{
+				{Key: "example.com/workflow.Compile", Signature: "compile-signature"},
+			},
 		},
 	}
 
@@ -151,7 +153,9 @@ func claimRegisteredReadyNodeAsync(ctx context.Context, store *sqlite.Store) <-c
 	result := make(chan claimResult, 1)
 
 	go func() {
-		registered := []byte(`{"example.com/workflow.Compile":"compile-signature"}`)
+		registered := []storage.FunctionRegistration{
+			{Key: "example.com/workflow.Compile", Signature: "compile-signature"},
+		}
 
 		claim, claimed, err := store.ClaimReadyNodeForFunctions(
 			ctx,
@@ -192,7 +196,7 @@ func claimQuotaConcurrently(
 	ctx context.Context,
 	stores []*sqlite.Store,
 	quota int,
-	registered []byte,
+	registered []storage.FunctionRegistration,
 ) ([]*storage.Claim, []int64, []error) {
 	claims := make(chan *storage.Claim, len(stores)*quota)
 	errs := make(chan error, len(stores))
@@ -233,7 +237,7 @@ type quotaWorker struct {
 	progress   *atomic.Int64
 	claims     chan<- *storage.Claim
 	errs       chan<- error
-	registered []byte
+	registered []storage.FunctionRegistration
 	index      int
 	quota      int
 }
@@ -264,7 +268,7 @@ func claimReadyNode(
 	ctx context.Context,
 	store *sqlite.Store,
 	owner string,
-	registered []byte,
+	registered []storage.FunctionRegistration,
 ) (*storage.Claim, bool, error) {
 	if len(registered) > 0 {
 		claim, claimed, err := store.ClaimReadyNodeForFunctions(ctx, owner, claimLeaseTTL, registered)

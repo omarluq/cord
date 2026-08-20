@@ -131,6 +131,46 @@ func TestCord_CloseWaitsForExecutingNodes(t *testing.T) {
 	require.ErrorContains(t, <-runDone, "runtime closed")
 }
 
+func TestCord_ShutdownBoundsNonCooperativeStep(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := cord.New(t.Context(), openSQLite(t), cord.Options{
+		PollInterval: time.Hour,
+	})
+	require.NoError(t, err)
+
+	directory := t.TempDir()
+	flow := runtime.From("bounded-shutdown", closeBlockingStep)
+	runDone := make(chan error, 1)
+
+	go func() {
+		_, runErr := flow.Run(t.Context(), directory)
+		runDone <- runErr
+	}()
+
+	waitMarker(t, directory, "started")
+
+	shutdownCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.ErrorIs(t, runtime.Shutdown(shutdownCtx), context.Canceled)
+	waitMarker(t, directory, "canceled")
+
+	require.NoError(t, writeMarker(directory, "release"))
+	require.NoError(t, runtime.Close())
+	require.ErrorContains(t, <-runDone, "runtime closed")
+}
+
+func TestCord_ShutdownRejectsNilContext(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := cord.New(t.Context(), openSQLite(t))
+	require.NoError(t, err)
+
+	var shutdownContext context.Context
+	require.ErrorContains(t, runtime.Shutdown(shutdownContext), "context is nil")
+	require.NoError(t, runtime.Close())
+}
+
 func TestCord_CloseDoesNotAffectOtherRuntimes(t *testing.T) {
 	t.Parallel()
 
