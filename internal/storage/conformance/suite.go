@@ -19,8 +19,14 @@ import (
 
 // Driver configures a database/sql driver for the conformance suite.
 type Driver struct {
+	// DataSource builds a driver data source from a temporary path and busy timeout.
 	DataSource func(string, time.Duration) string
-	Name       string
+	// Open optionally opens the database and takes precedence over Name and DataSource.
+	Open func(testing.TB) *sql.DB
+	// Name identifies the registered database/sql driver.
+	Name string
+	// SkipWriteContention skips the local-file write-contention test.
+	SkipWriteContention bool
 }
 
 // RepeatedPragmaDataSource builds a data source for drivers that accept repeated _pragma parameters.
@@ -50,9 +56,16 @@ func Run(t *testing.T, driver Driver) {
 	open := func(tb testing.TB, path string, timeout time.Duration) *sql.DB {
 		tb.Helper()
 
-		database, err := sql.Open(driver.Name, driver.DataSource(path, timeout))
-		if err != nil {
-			tb.Fatal(err)
+		var database *sql.DB
+		if driver.Open != nil {
+			database = driver.Open(tb)
+		} else {
+			var err error
+
+			database, err = sql.Open(driver.Name, driver.DataSource(path, timeout))
+			if err != nil {
+				tb.Fatal(err)
+			}
 		}
 
 		tb.Cleanup(func() {
@@ -65,7 +78,10 @@ func Run(t *testing.T, driver Driver) {
 	}
 
 	t.Run("workflow", func(t *testing.T) { runWorkflow(t, open) })
-	t.Run("write contention", func(t *testing.T) { runContention(t, open) })
+
+	if !driver.SkipWriteContention {
+		t.Run("write contention", func(t *testing.T) { runContention(t, open) })
+	}
 }
 
 // Open opens a backend-specific test database.
@@ -145,9 +161,12 @@ func verifyRetryWhileLocked(t *testing.T, store *sqlite.Store, transaction *sql.
 
 	const lockObservationDelay = 20 * time.Millisecond
 
+	now := time.Now().UTC()
+	runID := storage.RunID(fmt.Sprintf("sqlite-driver-contention-%d", now.UnixNano()))
+
 	result := make(chan error, 1)
 	go func() {
-		result <- store.CreateRun(t.Context(), contentionPlan(time.Now().UTC()))
+		result <- store.CreateRun(t.Context(), contentionPlan(runID, now))
 	}()
 
 	select {
@@ -171,9 +190,7 @@ func timesTwo(_ context.Context, input int) (int, error) {
 	return input * multiplier, nil
 }
 
-func contentionPlan(now time.Time) *storage.RunPlan {
-	const runID = storage.RunID("sqlite-driver-contention")
-
+func contentionPlan(runID storage.RunID, now time.Time) *storage.RunPlan {
 	return &storage.RunPlan{
 		Edges: nil,
 		Run: storage.Run{

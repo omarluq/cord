@@ -11,7 +11,9 @@ import (
 func TestDriverConformance(t *testing.T) {
 	t.Parallel()
 	conformance.Run(t, conformance.Driver{
-		Name:       "sqlite3",
-		DataSource: conformance.UnderscoreDataSource,
+		DataSource:          conformance.UnderscoreDataSource,
+		Name:                "sqlite3",
+		Open:                nil,
+		SkipWriteContention: false,
 	})
 }
