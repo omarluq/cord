@@ -17,9 +17,11 @@ const (
 )
 
 type remoteMigrationLocker struct {
-	cancel      context.CancelFunc
-	renewalDone <-chan error
-	owner       string
+	cancel          context.CancelFunc
+	cancelMigration context.CancelCauseFunc
+	database        *sql.DB
+	renewalDone     <-chan error
+	owner           string
 }
 
 func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection *sql.Conn) error {
@@ -53,7 +55,7 @@ func (locker *remoteMigrationLocker) SessionLock(ctx context.Context, connection
 		}
 
 		if rows > 0 {
-			locker.startRenewal(connection, owner.String())
+			locker.startRenewal(owner.String())
 
 			return nil
 		}
@@ -84,7 +86,7 @@ func createRemoteMigrationLockTable(ctx context.Context, connection *sql.Conn) e
 	return nil
 }
 
-func (locker *remoteMigrationLocker) startRenewal(connection *sql.Conn, owner string) {
+func (locker *remoteMigrationLocker) startRenewal(owner string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 
@@ -92,46 +94,43 @@ func (locker *remoteMigrationLocker) startRenewal(connection *sql.Conn, owner st
 	locker.cancel = cancel
 	locker.renewalDone = done
 
-	go renewRemoteMigrationLock(ctx, connection, owner, done)
+	go func() {
+		err := renewRemoteMigrationLock(ctx, locker.database, owner)
+		if err != nil && locker.cancelMigration != nil {
+			locker.cancelMigration(err)
+		}
+
+		done <- err
+
+		close(done)
+	}()
 }
 
-func renewRemoteMigrationLock(
-	ctx context.Context,
-	connection *sql.Conn,
-	owner string,
-	done chan<- error,
-) {
-	defer close(done)
-
+func renewRemoteMigrationLock(ctx context.Context, database *sql.DB, owner string) error {
 	ticker := time.NewTicker(remoteMigrationLockRenewal)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			done <- nil
-
-			return
+			return nil
 		case <-ticker.C:
-			result, err := connection.ExecContext(ctx, `UPDATE cord_migration_lock
-				SET expires_at = unixepoch() + ? WHERE id = 1 AND owner = ?`,
-				int64(remoteMigrationLockLease/time.Second), owner)
-			if err != nil {
-				continue
-			}
+		}
 
-			rows, err := result.RowsAffected()
-			if err != nil {
-				done <- fmt.Errorf("inspect remote migration lock renewal: %w", err)
+		result, err := database.ExecContext(ctx, `UPDATE cord_migration_lock
+			SET expires_at = unixepoch() + ? WHERE id = 1 AND owner = ?`,
+			int64(remoteMigrationLockLease/time.Second), owner)
+		if err != nil {
+			return fmt.Errorf("renew remote migration lock: %w", err)
+		}
 
-				return
-			}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("inspect remote migration lock renewal: %w", err)
+		}
 
-			if rows == 0 {
-				done <- errors.New("remote migration lock ownership lost")
-
-				return
-			}
+		if rows == 0 {
+			return errors.New("remote migration lock ownership lost")
 		}
 	}
 }
