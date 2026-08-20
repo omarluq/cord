@@ -11,6 +11,9 @@ COPY playground/go.mod playground/go.sum ./playground/
 RUN go mod download && go mod download -C playground
 
 COPY . .
+# After creating the minimal Cord bundle, prune the module cache and rebuild a
+# representative module. The runtime's offline cache then contains only the
+# dependencies needed by playground compilation, and the build validates the bundle.
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags='-s -w' \
