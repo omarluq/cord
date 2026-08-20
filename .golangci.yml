@@ -51,7 +51,7 @@ linters:
     - paralleltest
     - tparallel
     - wastedassign
-    - exhaustruct
+    - exhaustruct_v5
     - varnamelen
     - forbidigo
     - cyclop
@@ -212,8 +212,8 @@ linters:
         - performance
         - style
 
-    exhaustruct:
-      include:
+    exhaustruct_v5:
+      enforce-patterns:
         - ^github\.com/omarluq/cord/.*
       allow-empty: true
-      allow-partial: true
+      explicit-mode: true
