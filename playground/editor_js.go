@@ -98,7 +98,9 @@ func (bridge browserBridge) mountGraph(elementID string) {
 func (bridge browserBridge) setGraph(graph protocol.Graph) {
 	encoded, err := json.Marshal(graph)
 	if err != nil {
-		panic(fmt.Errorf("encode graph: %w", err))
+		js.Global().Get("console").Call("error", fmt.Errorf("encode graph: %w", err).Error())
+
+		return
 	}
 	bridge.module.Call("setGraph", js.Global().Get("JSON").Call("parse", string(encoded)))
 }

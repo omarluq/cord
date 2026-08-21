@@ -19,7 +19,7 @@ export interface GraphNodeStyle {
   height: number;
 }
 
-type GraphState = "queued" | NodeState;
+export type GraphState = "queued" | NodeState;
 interface GraphPalette {
   background: string;
   text: string;
@@ -125,6 +125,8 @@ function layout(): cytoscape.BreadthFirstLayoutOptions {
 }
 
 export function mountGraph(element: HTMLElement): void {
+  if (resizeFrame !== 0) cancelAnimationFrame(resizeFrame);
+  resizeFrame = 0;
   graph?.destroy();
   container = element;
   signature = "";
@@ -197,9 +199,9 @@ export function setNodeState(id: string, state: NodeState): void {
 
 export function setGraphState(state: GraphState): void {
   if (!graph) return;
+  const color = palette()[state];
   graph.nodes().forEach((node) => applyNodeState(node, state));
   graph.edges().forEach((edge) => {
-    const color = palette()[state];
     edge.style("line-color", color);
     edge.style("target-arrow-color", color);
     edge.style("width", state === "running" ? 3 : 2);

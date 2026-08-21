@@ -14,6 +14,7 @@ import {
   zoomGraph,
   type GraphData,
   type GraphNodeStyle,
+  type GraphState,
 } from "./graph";
 import {
   destroyResizableLayout,
@@ -29,7 +30,7 @@ interface CordPlaygroundAPI {
   mountGraph(container: HTMLElement): void;
   setGraph(data: GraphData): void;
   zoomGraph(direction: number): void;
-  setGraphState(state: "queued" | NodeState): void;
+  setGraphState(state: GraphState): void;
   setNodeState(id: string, state: NodeState): void;
   runWasm(
     bytes: ArrayBuffer,
