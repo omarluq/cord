@@ -61,12 +61,16 @@ test(
     );
     await expect(page.locator("#workflow-editor .cm-editor")).toBeVisible();
 
-    const examples = page.getByRole("combobox", {
-      name: "Example workflow",
+    const examples = page.getByRole("navigation", {
+      name: "Example workflows",
     });
-    await expect(examples).toHaveValue("linear.go");
-    await expect(examples.locator("option")).toHaveCount(6);
-    await examples.selectOption("linear.go");
+    await expect(examples.getByRole("button")).toHaveCount(6);
+    await expect(examples.getByRole("button", {
+      name: "Open linear.go",
+    })).toHaveClass(/text-nord-8/);
+    await examples.getByRole("button", {
+      name: "Open linear.go",
+    }).click();
     await expect(page.locator("#workflow-editor")).toContainText(
       "func increment",
     );
@@ -186,9 +190,9 @@ test(
       { timeout: 30_000 },
     );
 
-    await page.getByRole("combobox", {
-      name: "Example workflow",
-    }).selectOption("large_pipeline.go");
+    await page.getByRole("button", {
+      name: "Open large_pipeline.go",
+    }).click();
     await page.getByRole("button", {
       name: "Compile and run workflow",
     }).click();

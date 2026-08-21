@@ -71,21 +71,25 @@ func (app *App) renderEditorPanel() goapp.UI {
 		panelClasses(),
 		"flex",
 		classMinHeight0,
-		classFlexColumn,
 	)...).Body(
+		app.renderFileTree(),
 		goapp.Div().Class(
 			"flex",
-			"shrink-0",
-			classItemsCenter,
-			"justify-between",
-			"gap-4",
-			"border-b",
-			classBorderNord3,
-			"px-4",
-			"py-3",
+			classMinHeight0,
+			"min-w-0",
+			classFlex1,
+			classFlexColumn,
 		).Body(
-			app.renderExampleSelect(),
-			goapp.Div().Class("flex", classItemsCenter, "gap-3").Body(
+			goapp.Div().Class(
+				"flex",
+				"shrink-0",
+				classItemsCenter,
+				"justify-end",
+				"border-b",
+				classBorderNord3,
+				"px-4",
+				"py-3",
+			).Body(
 				goapp.Span().
 					DataSet("testid", "status").
 					Class("sr-only").
@@ -93,8 +97,8 @@ func (app *App) renderEditorPanel() goapp.UI {
 					Text(string(app.status)),
 				app.renderExecutionButton(),
 			),
+			goapp.Div().ID(editorID).Class(classMinHeight0, classFlex1),
 		),
-		goapp.Div().ID(editorID).Class(classMinHeight0, classFlex1),
 	)
 }
 
@@ -277,55 +281,69 @@ func (app *App) renderExecutionButton() goapp.UI {
 		)
 }
 
-func (app *App) renderExampleSelect() goapp.UI {
-	options := make([]goapp.UI, 0, len(exampleScripts))
+func (app *App) renderFileTree() goapp.UI {
+	files := make([]goapp.UI, 0, len(exampleScripts))
+	disabled := !app.mounted || app.status == statusCompiling || app.status == statusRunning
+
 	for _, script := range exampleScripts {
-		options = append(
-			options,
-			goapp.Option().
-				Value(script.filename).
-				Selected(script.filename == app.selectedExample).
-				Text(script.filename),
-		)
+		classes := []string{
+			"flex",
+			"w-full",
+			classItemsCenter,
+			"gap-2",
+			"px-3",
+			"py-1.5",
+			"text-left",
+			"font-mono",
+			classTextExtraSmall,
+			"text-nord-5",
+			"hover:not-disabled:bg-nord-2",
+			"disabled:cursor-not-allowed",
+			"disabled:opacity-50",
+		}
+		if script.filename == app.selectedExample {
+			classes = append(classes, "bg-nord-2", "text-nord-8")
+		}
+
+		files = append(files, goapp.Li().Body(
+			goapp.Button().
+				Aria("label", "Open "+script.filename).
+				DataSet("filename", script.filename).
+				Class(classes...).
+				Disabled(disabled).
+				OnClick(app.selectExample(script.filename)).
+				Body(
+					goapp.Img().
+						Src("web/images/go-logo.svg").
+						Alt("").
+						Aria("hidden", "true").
+						Class("size-4", "shrink-0", "object-contain"),
+					goapp.Span().Class("truncate").Text(script.filename),
+				),
+		))
 	}
 
-	return goapp.Div().Class("relative").Body(
-		goapp.Select().
-			Aria("label", "Example workflow").
-			Class(
-				classCursorPointer,
-				"appearance-none",
-				"rounded",
-				"border",
-				classBorderNord3,
-				"bg-nord-0",
-				"py-1",
-				"pr-2",
-				"pl-8",
-				"font-mono",
-				classTextExtraSmall,
-				"text-nord-5",
-			).
-			Disabled(
-				!app.mounted ||
-					app.status == statusCompiling ||
-					app.status == statusRunning,
-			).
-			OnChange(app.selectExample).
-			Body(options...),
-		goapp.Img().
-			Src("web/images/go-logo.svg").
-			Alt("").
-			Aria("hidden", "true").
-			Class(
-				"pointer-events-none",
-				"absolute",
-				"top-1/2",
-				"left-2",
-				"h-4",
-				"w-4",
-				"-translate-y-1/2",
-				"object-contain",
-			),
+	return goapp.Nav().
+		Aria("label", "Example workflows").
+		Class(
+			"w-48",
+			"shrink-0",
+			"overflow-y-auto",
+			"border-r",
+			classBorderNord3,
+			"bg-nord-0",
+		).Body(
+		goapp.Div().Class(
+			"border-b",
+			classBorderNord3,
+			"px-3",
+			"py-3",
+			classTextExtraSmall,
+			"font-bold",
+			"uppercase",
+			"tracking-wider",
+			"text-nord-4",
+		).Text("Examples"),
+		goapp.Ul().Class("py-2").Body(files...),
 	)
 }
