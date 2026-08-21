@@ -289,4 +289,4 @@ tool (
 	golang.org/x/tools/cmd/deadcode
 )
 
-replace honnef.co/go/tools => honnef.co/go/tools v0.8.0
+replace honnef.co/go/tools => honnef.co/go/tools v0.8.1
