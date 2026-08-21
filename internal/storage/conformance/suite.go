@@ -57,6 +57,8 @@ const (
 	storeBusyTimeout                  = 5 * time.Second
 	heartbeatExtension                = 2 * time.Minute
 	joinDependencies                  = 2
+	workerA                           = "worker-a"
+	workerB                           = "worker-b"
 )
 
 // Run executes Cord's behavioral storage conformance suite.
@@ -198,9 +200,9 @@ func runJoinOrder(t *testing.T, open Open) {
 		t.Fatal(err)
 	}
 
-	first := mustClaim(t, store, "worker-a")
+	first := mustClaim(t, store, workerA)
 
-	second := mustClaim(t, store, "worker-b")
+	second := mustClaim(t, store, workerB)
 	requireNodeIDs(t, first, second, leftNodeID, rightNodeID)
 
 	accepted, err := store.CompleteNode(t.Context(), first.RunID, first.NodeID, first.Lease, []byte(`"left"`))
@@ -238,22 +240,17 @@ func runClaimAndCompletionFence(t *testing.T, open Open) {
 	}
 
 	claim := mustClaim(t, store, "winner")
-	if duplicate, claimed, err := store.ClaimReadyNode(t.Context(), "loser", time.Minute); err != nil || claimed {
-		t.Fatalf("duplicate claim = %#v, claimed=%v err=%v", duplicate, claimed, err)
-	}
+	duplicate, claimed, err := store.ClaimReadyNode(t.Context(), "loser", time.Minute)
+	requireNotClaimed(t, duplicate, claimed, err)
 
 	stale := claim.Lease
 	stale.Generation--
 
 	accepted, err := store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, stale, []byte(`"stale"`))
-	if err != nil || accepted {
-		t.Fatalf("stale completion: accepted=%v err=%v", accepted, err)
-	}
+	requireRejected(t, "stale completion", accepted, err)
 
 	accepted, err = store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"current"`))
-	if err != nil || !accepted {
-		t.Fatalf("owned completion: accepted=%v err=%v", accepted, err)
-	}
+	requireAccepted(t, "owned completion", accepted, err)
 }
 
 func runRetryAndPromotion(t *testing.T, open Open) {
@@ -266,19 +263,15 @@ func runRetryAndPromotion(t *testing.T, open Open) {
 		t.Fatal(err)
 	}
 
-	first := mustClaim(t, store, "worker-a")
+	first := mustClaim(t, store, workerA)
 
 	accepted, err := store.RetryNode(t.Context(), first.RunID, first.NodeID, first.Lease, []byte(`"retry"`), 0)
-	if err != nil || !accepted {
-		t.Fatalf("retry node: accepted=%v err=%v", accepted, err)
-	}
+	requireAccepted(t, "retry node", accepted, err)
 
 	promoted, err := store.PromoteRetries(t.Context())
-	if err != nil || promoted != 1 {
-		t.Fatalf("promote retries: count=%d err=%v", promoted, err)
-	}
+	requireCount(t, "promote retries", promoted, 1, err)
 
-	second := mustClaim(t, store, "worker-b")
+	second := mustClaim(t, store, workerB)
 	if second.Attempt != 2 || second.Lease.Generation <= first.Lease.Generation {
 		t.Fatalf("retry claim = %#v, first generation=%d", second, first.Lease.Generation)
 	}
@@ -298,9 +291,7 @@ func runFailure(t *testing.T, open Open) {
 	failure := []byte(`{"message":"permanent"}`)
 
 	accepted, err := store.FailNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, failure)
-	if err != nil || !accepted {
-		t.Fatalf("fail node: accepted=%v err=%v", accepted, err)
-	}
+	requireAccepted(t, "fail node", accepted, err)
 
 	result, err := store.GetRunResult(t.Context(), claim.RunID)
 	if err != nil {
@@ -326,7 +317,7 @@ func runHeartbeatAndRecovery(t *testing.T, open Open) {
 		t.Fatal(err)
 	}
 
-	first := mustClaim(t, store, "worker-a")
+	first := mustClaim(t, store, workerA)
 
 	accepted, expiry, err := store.HeartbeatNode(
 		t.Context(), first.RunID, first.NodeID, first.Lease, heartbeatExtension,
@@ -343,7 +334,7 @@ func runHeartbeatAndRecovery(t *testing.T, open Open) {
 	recovered, err := store.RecoverExpiredLeases(t.Context())
 	requireCount(t, "recover lease", recovered, 1, err)
 
-	second := mustClaim(t, store, "worker-b")
+	second := mustClaim(t, store, workerB)
 	requireRenewedClaim(t, second, first)
 
 	accepted, err = store.CompleteNode(t.Context(), first.RunID, first.NodeID, first.Lease, []byte(`"stale"`))
@@ -363,9 +354,7 @@ func runCancellation(t *testing.T, open Open) {
 	claim := mustClaim(t, store, "worker")
 
 	accepted, err := store.CancelRun(t.Context(), claim.RunID)
-	if err != nil || !accepted {
-		t.Fatalf("cancel run: accepted=%v err=%v", accepted, err)
-	}
+	requireAccepted(t, "cancel run", accepted, err)
 
 	result, err := store.GetRunResult(t.Context(), claim.RunID)
 	if err != nil || result.Status != storage.RunCanceled {
@@ -373,9 +362,7 @@ func runCancellation(t *testing.T, open Open) {
 	}
 
 	accepted, err = store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`))
-	if err != nil || accepted {
-		t.Fatalf("completion after cancellation: accepted=%v err=%v", accepted, err)
-	}
+	requireRejected(t, "completion after cancellation", accepted, err)
 }
 
 func runRestartAndResume(t *testing.T, open Open) {
@@ -400,16 +387,13 @@ func runRestartAndResume(t *testing.T, open Open) {
 		t.Fatal(err)
 	}
 
-	if recovered, recoverErr := restarted.RecoverExpiredLeases(t.Context()); recoverErr != nil || recovered != 1 {
-		t.Fatalf("restart recovery: count=%d err=%v", recovered, recoverErr)
-	}
+	recovered, recoverErr := restarted.RecoverExpiredLeases(t.Context())
+	requireCount(t, "restart recovery", recovered, 1, recoverErr)
 
 	second := mustClaim(t, restarted, "resumed-worker")
 
 	accepted, err := restarted.CompleteNode(t.Context(), second.RunID, second.NodeID, second.Lease, []byte(`"resumed"`))
-	if err != nil || !accepted {
-		t.Fatalf("resume completion: accepted=%v err=%v", accepted, err)
-	}
+	requireAccepted(t, "resume completion", accepted, err)
 }
 
 func runMigrationAndForeignKeys(t *testing.T, open Open) {
