@@ -9,6 +9,7 @@ import (
 
 	"github.com/omarluq/cord/internal/storage/conformance"
 	"github.com/omarluq/cord/internal/storage/sqlite"
+	"github.com/omarluq/cord/internal/storage/sqlite/remotelock"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -43,7 +44,7 @@ func TestRemoteMigrationRejectsSingleConnectionPool(t *testing.T) {
 	database.SetMaxOpenConns(1)
 
 	err := sqlite.Migrate(t.Context(), database)
-	require.ErrorContains(t, err, "requires at least two database connections")
+	require.ErrorIs(t, err, remotelock.ErrInsufficientPoolCapacity)
 	require.Zero(t, database.Stats().WaitCount)
 }
 
@@ -146,10 +147,11 @@ func openLibSQL(tb testing.TB, databaseURL string) *sql.DB {
 
 	database, err := sql.Open("libsql", databaseURL)
 	require.NoError(tb, err)
+	tb.Cleanup(func() { require.NoError(tb, database.Close()) })
+
 	database.SetMaxOpenConns(2)
 	require.NoError(tb, database.PingContext(tb.Context()))
 	require.NoError(tb, enableForeignKeys(tb, database))
-	tb.Cleanup(func() { require.NoError(tb, database.Close()) })
 
 	return database
 }
