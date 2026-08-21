@@ -180,7 +180,7 @@ func (locker *Locker) startRenewal(owner string, connection *sql.Conn) {
 	locker.renewalDone = done
 
 	go func() {
-		err := renew(ctx, connection, owner, locker.renewalInterval)
+		err := renew(ctx, connection, owner, locker.renewalInterval, nil)
 		if err != nil && locker.cancelMigration != nil {
 			locker.cancelMigration(err)
 		}
@@ -191,7 +191,13 @@ func (locker *Locker) startRenewal(owner string, connection *sql.Conn) {
 	}()
 }
 
-func renew(ctx context.Context, connection *sql.Conn, owner string, interval time.Duration) error {
+func renew(
+	ctx context.Context,
+	connection *sql.Conn,
+	owner string,
+	interval time.Duration,
+	renewed chan<- struct{},
+) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -218,6 +224,10 @@ func renew(ctx context.Context, connection *sql.Conn, owner string, interval tim
 
 		if rows == 0 {
 			return ErrLockOwnershipLost
+		}
+
+		if renewed != nil {
+			renewed <- struct{}{}
 		}
 
 		select {
