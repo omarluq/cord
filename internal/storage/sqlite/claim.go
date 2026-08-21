@@ -56,7 +56,7 @@ func (s *Store) ClaimReadyNode(
 }
 
 // ClaimReadyNodeForFunctions claims work only when its exact function signature is registered.
-// It reports no claim when registrations is empty because no signature can match.
+// ClaimReadyNodeForFunctions reports no claim when registrations is empty because no signature can match.
 func (s *Store) ClaimReadyNodeForFunctions(
 	ctx context.Context,
 	owner string,

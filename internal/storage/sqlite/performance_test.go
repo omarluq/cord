@@ -83,16 +83,17 @@ func BenchmarkStore_CreateRun(b *testing.B) {
 		b.Run(fmt.Sprintf("nodes=%d", nodeCount), func(b *testing.B) {
 			store := newBenchmarkStore(b)
 
-			plans := make([]storage.RunPlan, b.N)
-			for index := range plans {
-				plans[index] = benchmarkLinearPlan(storage.RunID(fmt.Sprintf("run-%d", index)), nodeCount)
-			}
-
 			b.ReportAllocs()
 			b.ResetTimer()
 
 			for index := range b.N {
-				if err := store.CreateRun(b.Context(), &plans[index]); err != nil {
+				b.StopTimer()
+
+				plan := benchmarkLinearPlan(storage.RunID(fmt.Sprintf("run-%d", index)), nodeCount)
+
+				b.StartTimer()
+
+				if err := store.CreateRun(b.Context(), &plan); err != nil {
 					b.Fatalf("create %d-node run: %v", nodeCount, err)
 				}
 			}
@@ -109,24 +110,33 @@ func BenchmarkStore_PollingAndMaintenance(b *testing.B) {
 			name: "empty claim",
 			run: func(store *cordsqlite.Store) error {
 				_, _, err := store.ClaimReadyNode(b.Context(), "benchmark-worker", time.Minute)
+				if err != nil {
+					return fmt.Errorf("claim ready node: %w", err)
+				}
 
-				return fmt.Errorf("claim ready node: %w", err)
+				return nil
 			},
 		},
 		{
 			name: "promote zero due",
 			run: func(store *cordsqlite.Store) error {
 				_, err := store.PromoteRetries(b.Context())
+				if err != nil {
+					return fmt.Errorf("promote retries: %w", err)
+				}
 
-				return fmt.Errorf("promote retries: %w", err)
+				return nil
 			},
 		},
 		{
 			name: "recover zero expired",
 			run: func(store *cordsqlite.Store) error {
 				_, err := store.RecoverExpiredLeases(b.Context())
+				if err != nil {
+					return fmt.Errorf("recover expired leases: %w", err)
+				}
 
-				return fmt.Errorf("recover expired leases: %w", err)
+				return nil
 			},
 		},
 	}
