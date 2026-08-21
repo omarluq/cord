@@ -98,7 +98,7 @@ func (bridge browserBridge) mountGraph(elementID string) {
 func (bridge browserBridge) setGraph(graph protocol.Graph) {
 	encoded, err := json.Marshal(graph)
 	if err != nil {
-		return
+		panic(fmt.Errorf("encode graph: %w", err))
 	}
 	bridge.module.Call("setGraph", js.Global().Get("JSON").Call("parse", string(encoded)))
 }
@@ -142,6 +142,11 @@ func (bridge *browserBridge) runWasm(bytes []byte, wasmExecURL string, receive f
 
 func (bridge *browserBridge) stopWasm() {
 	bridge.module.Call("stopWasm")
+	bridge.releaseCallbacks()
+}
+
+func (bridge *browserBridge) destroy() {
+	bridge.module.Call("destroy")
 	bridge.releaseCallbacks()
 }
 

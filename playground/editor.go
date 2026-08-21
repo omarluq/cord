@@ -62,3 +62,7 @@ func (browserBridge) runWasm([]byte, string, func(*workerEvent), func()) {
 func (browserBridge) stopWasm() {
 	// Native tests do not execute browser WebAssembly.
 }
+
+func (browserBridge) destroy() {
+	// Native tests do not mount browser resources.
+}

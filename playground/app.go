@@ -38,6 +38,7 @@ type App struct {
 	compilerURL     string
 	selectedExample string
 	compilations    compilationCache
+	active          bool
 	mounted         bool
 }
 
@@ -49,6 +50,7 @@ func NewApp() *App {
 		status:          statusLoading,
 		output:          "",
 		compilerURL:     defaultCompilerURL,
+		active:          false,
 		mounted:         false,
 		selectedExample: defaultExample,
 		compilations:    compilationCache{},
@@ -57,6 +59,8 @@ func NewApp() *App {
 
 // OnMount loads the editor and graph modules.
 func (app *App) OnMount(ctx goapp.Context) {
+	app.active = true
+
 	pageURL := ctx.Page().URL()
 	if endpoint, ok := compilerEndpoint(
 		pageURL,
@@ -69,6 +73,10 @@ func (app *App) OnMount(ctx goapp.Context) {
 	ctx.Async(func() {
 		loadBridge(func(bridge browserBridge, err error) {
 			ctx.Dispatch(func(goapp.Context) {
+				if !app.active {
+					return
+				}
+
 				if err != nil {
 					app.fail(err)
 
@@ -92,8 +100,10 @@ func (app *App) OnMount(ctx goapp.Context) {
 
 // OnDismount stops the currently executing workflow module.
 func (app *App) OnDismount() {
+	app.active = false
 	if app.mounted {
-		app.bridge.stopWasm()
+		app.bridge.destroy()
+		app.mounted = false
 	}
 }
 
@@ -200,7 +210,6 @@ func (app *App) handleWorkerEvent(message *workerEvent) {
 		app.bridge.setGraphState("failed")
 		app.status = statusFailed
 		app.output = appendOutput(app.output, message.Message())
-	case "exit":
 	}
 }
 
