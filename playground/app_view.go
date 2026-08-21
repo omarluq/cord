@@ -6,12 +6,14 @@ import (
 
 const (
 	classBackgroundCurrent = "bg-current"
+	classBackgroundNord1   = "bg-nord-1"
 	classBorderNord3       = "border-nord-3"
 	classCursorPointer     = "cursor-pointer"
 	classFlex1             = "flex-1"
 	classFlexColumn        = "flex-col"
 	classItemsCenter       = "items-center"
 	classMinHeight0        = "min-h-0"
+	classMinWidth0         = "min-w-0"
 	classOverflowHidden    = "overflow-hidden"
 	classTextExtraSmall    = "text-xs"
 )
@@ -68,10 +70,10 @@ func (app *App) renderEditorPanel() goapp.UI {
 		"relative",
 		"flex",
 		classMinHeight0,
-		"min-w-0",
+		classMinWidth0,
 		classFlexColumn,
 		classOverflowHidden,
-		"bg-nord-1",
+		classBackgroundNord1,
 	).Body(
 		goapp.Span().
 			DataSet("testid", "status").
@@ -95,7 +97,7 @@ func (app *App) renderResultsPanel() goapp.UI {
 			"grid",
 			"grid-rows-[minmax(0,2fr)_1px_minmax(0,1fr)]",
 			classMinHeight0,
-			"min-w-0",
+			classMinWidth0,
 			classOverflowHidden,
 		).
 		Body(
@@ -106,7 +108,7 @@ func (app *App) renderResultsPanel() goapp.UI {
 				classMinHeight0,
 				classFlexColumn,
 				classOverflowHidden,
-				"bg-nord-1",
+				classBackgroundNord1,
 			).Body(
 				goapp.Pre().
 					DataSet("testid", "run-result").
@@ -133,7 +135,7 @@ func (app *App) renderGraphPanel() goapp.UI {
 		classMinHeight0,
 		classFlexColumn,
 		classOverflowHidden,
-		"bg-nord-1",
+		classBackgroundNord1,
 	).Body(
 		goapp.Div().Class(
 			"absolute",
@@ -341,7 +343,7 @@ func (app *App) renderFileTree() goapp.UI {
 	return goapp.Nav().
 		Aria("label", "Example workflows").
 		Class(
-			"min-w-0",
+			classMinWidth0,
 			"overflow-y-auto",
 			"bg-nord-0",
 		).Body(

@@ -2,6 +2,10 @@ import type { WorkerMessage } from "./messages";
 
 let worker: Worker | undefined;
 
+/**
+ * Starts a worker and transfers ownership of bytes to it. The transfer detaches
+ * the buffer, so callers must not reuse bytes after this function returns.
+ */
 export function runWasm(
   bytes: ArrayBuffer,
   wasmExecURL: string,

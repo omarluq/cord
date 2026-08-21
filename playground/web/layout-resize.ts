@@ -84,6 +84,17 @@ function updateHandleValue(
   handle.setAttribute("aria-valuenow", String(Math.round(value)));
 }
 
+function keyboardMovement(key: string, vertical: boolean): number {
+  if (vertical) {
+    if (key === "ArrowLeft") return -keyboardStep;
+    if (key === "ArrowRight") return keyboardStep;
+    return 0;
+  }
+  if (key === "ArrowUp") return -keyboardStep;
+  if (key === "ArrowDown") return keyboardStep;
+  return 0;
+}
+
 function registerDrag(
   handle: HTMLElement,
   update: (movement: number) => void,
@@ -118,9 +129,7 @@ function registerDrag(
     startPosition = position;
   };
   const keyDown = (event: KeyboardEvent): void => {
-    const movement = vertical
-      ? event.key === "ArrowLeft" ? -keyboardStep : event.key === "ArrowRight" ? keyboardStep : 0
-      : event.key === "ArrowUp" ? -keyboardStep : event.key === "ArrowDown" ? keyboardStep : 0;
+    const movement = keyboardMovement(event.key, vertical);
     if (movement === 0) return;
     event.preventDefault();
     update(movement);
