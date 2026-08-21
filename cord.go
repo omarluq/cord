@@ -21,7 +21,8 @@ type Cord struct {
 	onSchedulerError  func(error)
 	wake              chan struct{}
 	slots             chan struct{}
-	errorReports      chan error
+	errorReports      chan struct{}
+	pendingError      error
 	owner             string
 	registrations     []storage.FunctionRegistration
 	retry             retryPolicy
@@ -30,6 +31,7 @@ type Cord struct {
 	leaseTTL          time.Duration
 	heartbeatInterval time.Duration
 	mu                sync.RWMutex
+	errorMu           sync.Mutex
 	closeOnce         sync.Once
 	lifecycleMu       sync.Mutex
 }
@@ -59,8 +61,19 @@ func (c *Cord) Shutdown(ctx context.Context) error {
 	select {
 	case <-c.shutdownDone:
 		return nil
+	default:
+	}
+
+	select {
+	case <-c.shutdownDone:
+		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("cord: wait for shutdown: %w", ctx.Err())
+		select {
+		case <-c.shutdownDone:
+			return nil
+		default:
+			return fmt.Errorf("cord: wait for shutdown: %w", ctx.Err())
+		}
 	}
 }
 
@@ -69,8 +82,12 @@ func (c *Cord) reportSchedulerError(err error) {
 		return
 	}
 
+	c.errorMu.Lock()
+	c.pendingError = errors.Join(c.pendingError, err)
+	c.errorMu.Unlock()
+
 	select {
-	case c.errorReports <- err:
+	case c.errorReports <- struct{}{}:
 	default:
 	}
 }
@@ -81,10 +98,23 @@ func (c *Cord) runErrorReporter() {
 	for {
 		select {
 		case <-c.ctx.Done():
+			c.deliverSchedulerErrors()
+
 			return
-		case err := <-c.errorReports:
-			c.onSchedulerError(err)
+		case <-c.errorReports:
+			c.deliverSchedulerErrors()
 		}
+	}
+}
+
+func (c *Cord) deliverSchedulerErrors() {
+	c.errorMu.Lock()
+	err := c.pendingError
+	c.pendingError = nil
+	c.errorMu.Unlock()
+
+	if err != nil {
+		c.onSchedulerError(err)
 	}
 }
 
@@ -127,7 +157,8 @@ func newCordWithSettings(store storage.Backend, owner string, settings scheduler
 		mu:               sync.RWMutex{}, registry: make(map[string]registeredInvocation), registrations: nil,
 		retry: settings.retry, slots: make(chan struct{}, settings.concurrency), store: store,
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
-		lifecycleMu: sync.Mutex{}, shutdownDone: make(chan struct{}), errorReports: make(chan error, 1),
+		lifecycleMu: sync.Mutex{}, errorMu: sync.Mutex{}, shutdownDone: make(chan struct{}),
+		errorReports: make(chan struct{}, 1),
 	}
 
 	cordRuntime.addGoroutine()

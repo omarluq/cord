@@ -61,7 +61,7 @@ func TestCord_HeartbeatFailureCancelsBeforeLeaseExpiry(t *testing.T) {
 			backend := heartbeatTestBackend{accepted: false, err: testCase.heartbeatErr, called: called}
 			runtime := &Cord{
 				store: backend, heartbeatInterval: 50 * time.Millisecond, leaseTTL: 200 * time.Millisecond,
-				onSchedulerError: func(err error) { reports <- err }, errorReports: make(chan error, 1),
+				onSchedulerError: func(err error) { reports <- err }, errorReports: make(chan struct{}, 1),
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan bool, 1)
@@ -82,18 +82,40 @@ func TestCord_HeartbeatFailureCancelsBeforeLeaseExpiry(t *testing.T) {
 				t.Fatal("heartbeat did not stop before the test deadline")
 			}
 
+			runtime.deliverSchedulerErrors()
+
 			if testCase.wantReport {
 				select {
-				case report := <-runtime.errorReports:
+				case report := <-reports:
 					require.ErrorContains(t, report, testCase.heartbeatErr.Error())
 				case <-time.After(time.Second):
 					t.Fatal("heartbeat error was not reported")
 				}
 			} else {
-				require.Empty(t, runtime.errorReports)
+				require.Empty(t, reports)
 			}
 		})
 	}
+}
+
+func TestCord_SchedulerErrorsAreCoalescedWithoutLoss(t *testing.T) {
+	t.Parallel()
+
+	first := errors.New("first scheduler error")
+	second := errors.New("second scheduler error")
+	reports := make(chan error, 1)
+	runtime := &Cord{
+		onSchedulerError: func(err error) { reports <- err },
+		errorReports:     make(chan struct{}, 1),
+	}
+
+	runtime.reportSchedulerError(first)
+	runtime.reportSchedulerError(second)
+	runtime.deliverSchedulerErrors()
+
+	report := <-reports
+	require.ErrorIs(t, report, first)
+	require.ErrorIs(t, report, second)
 }
 
 func TestCord_SchedulerErrorCallbackDoesNotBlockReporting(t *testing.T) {
