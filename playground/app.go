@@ -97,26 +97,26 @@ func (app *App) OnDismount() {
 	}
 }
 
-func (app *App) selectExample(_ goapp.Context, event goapp.Event) {
-	if !app.mounted {
-		return
+func (app *App) selectExample(filename string) func(goapp.Context, goapp.Event) {
+	return func(_ goapp.Context, _ goapp.Event) {
+		if !app.mounted || app.status == statusCompiling || app.status == statusRunning {
+			return
+		}
+
+		source, ok := exampleSource(filename)
+		if !ok {
+			return
+		}
+
+		app.selectedExample = filename
+		app.bridge.setSource(source)
+		app.bridge.setGraph(protocol.Graph{
+			Nodes: []protocol.Node{},
+			Edges: []protocol.Edge{},
+		})
+		app.output = ""
+		app.status = statusReady
 	}
-
-	filename := event.Get("target").Get("value").String()
-
-	source, ok := exampleSource(filename)
-	if !ok {
-		return
-	}
-
-	app.selectedExample = filename
-	app.bridge.setSource(source)
-	app.bridge.setGraph(protocol.Graph{
-		Nodes: []protocol.Node{},
-		Edges: []protocol.Edge{},
-	})
-	app.output = ""
-	app.status = statusReady
 }
 
 func (app *App) run(ctx goapp.Context, _ goapp.Event) {
