@@ -16,6 +16,7 @@ const (
 	classMinWidth0         = "min-w-0"
 	classOverflowHidden    = "overflow-hidden"
 	classTextExtraSmall    = "text-xs"
+	dataResizePanel        = "resize-panel"
 )
 
 func buttonClasses() []string {
@@ -67,7 +68,7 @@ func (app *App) Render() goapp.UI {
 
 func (app *App) renderEditorPanel() goapp.UI {
 	return goapp.Section().
-		DataSet("resize-panel", "editor").
+		DataSet(dataResizePanel, "editor").
 		Class(
 			"relative",
 			"flex",
@@ -95,7 +96,7 @@ func (app *App) renderEditorPanel() goapp.UI {
 func (app *App) renderResultsPanel() goapp.UI {
 	return goapp.Div().
 		ID("results-layout").
-		DataSet("resize-panel", "results").
+		DataSet(dataResizePanel, "results").
 		Class(
 			"grid",
 			"grid-rows-[minmax(0,2fr)_1px_minmax(0,1fr)]",
@@ -107,7 +108,7 @@ func (app *App) renderResultsPanel() goapp.UI {
 			app.renderGraphPanel(),
 			app.renderResizeHandle("output", "horizontal", "Resize graph and output"),
 			goapp.Section().
-				DataSet("resize-panel", "output").
+				DataSet(dataResizePanel, "output").
 				Class(
 					"flex",
 					classMinHeight0,
@@ -135,7 +136,7 @@ func (app *App) renderResultsPanel() goapp.UI {
 
 func (app *App) renderGraphPanel() goapp.UI {
 	return goapp.Section().
-		DataSet("resize-panel", "graph").
+		DataSet(dataResizePanel, "graph").
 		Class(
 			"relative",
 			"flex",
@@ -349,7 +350,7 @@ func (app *App) renderFileTree() goapp.UI {
 
 	return goapp.Nav().
 		Aria("label", "Example workflows").
-		DataSet("resize-panel", "files").
+		DataSet(dataResizePanel, "files").
 		Class(
 			classMinWidth0,
 			"overflow-y-auto",
