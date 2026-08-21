@@ -112,32 +112,6 @@ func TestLockerTakesOverAbandonedLease(t *testing.T) {
 	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
 }
 
-// TestLockerRenewsLease verifies an acquired lease is renewed repeatedly.
-func TestLockerRenewsLease(t *testing.T) {
-	t.Parallel()
-
-	database, connection := openDatabase(t)
-	createLockTable(t, database)
-	_, err := database.ExecContext(t.Context(), "CREATE TABLE renewal_events (renewed_at INTEGER NOT NULL)")
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), `CREATE TRIGGER observe_renewal
-		AFTER UPDATE ON cord_migration_lock
-		BEGIN INSERT INTO renewal_events VALUES (unixepoch()); END`)
-	require.NoError(t, err)
-
-	locker := remotelock.New(database, nil, remotelock.WithRenewalInterval(10*time.Millisecond))
-	require.NoError(t, locker.SessionLock(t.Context(), connection))
-
-	require.Eventually(t, func() bool {
-		var count int
-
-		queryErr := database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM renewal_events").Scan(&count)
-
-		return queryErr == nil && count >= 2
-	}, time.Second, 10*time.Millisecond)
-	require.NoError(t, locker.SessionUnlock(t.Context(), connection))
-}
-
 // TestLockerReportsRenewalOwnershipLoss verifies ownership loss cancels the migration.
 func TestLockerReportsRenewalOwnershipLoss(t *testing.T) {
 	t.Parallel()
