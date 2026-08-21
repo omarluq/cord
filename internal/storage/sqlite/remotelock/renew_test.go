@@ -16,23 +16,7 @@ import (
 func TestRenewRepeats(t *testing.T) {
 	t.Parallel()
 
-	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "renew.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, database.Close()) })
-
-	connection, err := database.Conn(t.Context())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, connection.Close()) })
-
-	_, err = connection.ExecContext(t.Context(), `CREATE TABLE cord_migration_lock (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		owner TEXT NOT NULL,
-		expires_at INTEGER NOT NULL
-	)`)
-	require.NoError(t, err)
-	_, err = connection.ExecContext(t.Context(),
-		"INSERT INTO cord_migration_lock (id, owner, expires_at) VALUES (1, 'owner', 0)")
-	require.NoError(t, err)
+	connection := openRenewalDatabase(t, "renew.db")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -41,7 +25,7 @@ func TestRenewRepeats(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- remotelock.RenewForTest(ctx, connection, "owner", time.Millisecond, renewed)
+		done <- remotelock.RenewForTest(ctx, connection, "owner", time.Millisecond, renewalNotifier(renewed))
 	}()
 
 	for range 2 {
@@ -59,7 +43,50 @@ func TestRenewRepeats(t *testing.T) {
 func TestRenewCancellationUnblocksNotification(t *testing.T) {
 	t.Parallel()
 
-	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "blocked-notification.db"))
+	connection := openRenewalDatabase(t, "blocked-notification.db")
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	renewed := make(chan struct{}, 1)
+	renewed <- struct{}{}
+
+	done := make(chan error, 1)
+	entered := make(chan struct{})
+	onRenewal := func(ctx context.Context) bool {
+		close(entered)
+
+		select {
+		case renewed <- struct{}{}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	go func() {
+		done <- remotelock.RenewForTest(ctx, connection, "owner", time.Millisecond, onRenewal)
+	}()
+
+	<-entered
+	cancel()
+	require.NoError(t, waitForRenewalExit(t, done))
+}
+
+func renewalNotifier(renewed chan<- struct{}) func(context.Context) bool {
+	return func(ctx context.Context) bool {
+		select {
+		case renewed <- struct{}{}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+func openRenewalDatabase(t *testing.T, name string) *sql.Conn {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
 
@@ -77,28 +104,7 @@ func TestRenewCancellationUnblocksNotification(t *testing.T) {
 		"INSERT INTO cord_migration_lock (id, owner, expires_at) VALUES (1, 'owner', 0)")
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(t.Context())
-
-	renewed := make(chan struct{}, 1)
-	renewed <- struct{}{}
-
-	done := make(chan error, 1)
-
-	go func() {
-		done <- remotelock.RenewForTest(ctx, connection, "owner", time.Millisecond, renewed)
-	}()
-
-	require.Eventually(t, func() bool {
-		var expiresAt int64
-
-		err := database.QueryRowContext(t.Context(),
-			"SELECT expires_at FROM cord_migration_lock WHERE id = 1").Scan(&expiresAt)
-
-		return err == nil && expiresAt > 0
-	}, 5*time.Second, time.Millisecond)
-
-	cancel()
-	require.NoError(t, waitForRenewalExit(t, done))
+	return connection
 }
 
 func waitForRenewalExit(t *testing.T, done <-chan error) error {
