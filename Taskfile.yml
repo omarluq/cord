@@ -169,10 +169,10 @@ tasks:
         '
 
   playground-browser-install:
-    desc: Install the pinned Playwright Chromium browser
+    desc: Install the pinned Playwright Chromium browser and Linux system dependencies
     deps: [playground-install]
     cmds:
-      - playground/node_modules/.bin/playwright install chromium
+      - playground/node_modules/.bin/playwright install --with-deps chromium
 
   playground-test:
     desc: Compile and exercise a user-authored Cord workflow in Chromium
