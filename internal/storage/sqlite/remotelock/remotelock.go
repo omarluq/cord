@@ -196,7 +196,7 @@ func renew(
 	connection *sql.Conn,
 	owner string,
 	interval time.Duration,
-	renewed chan<- struct{},
+	onRenewal func(context.Context) bool,
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -226,7 +226,7 @@ func renew(
 			return ErrLockOwnershipLost
 		}
 
-		if !notifyRenewal(ctx, renewed) {
+		if onRenewal != nil && !onRenewal(ctx) {
 			return nil
 		}
 
@@ -235,19 +235,6 @@ func renew(
 			return nil
 		case <-ticker.C:
 		}
-	}
-}
-
-func notifyRenewal(ctx context.Context, renewed chan<- struct{}) bool {
-	if renewed == nil {
-		return true
-	}
-
-	select {
-	case renewed <- struct{}{}:
-		return true
-	case <-ctx.Done():
-		return false
 	}
 }
 

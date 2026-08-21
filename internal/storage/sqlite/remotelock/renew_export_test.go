@@ -12,7 +12,7 @@ func RenewForTest(
 	connection *sql.Conn,
 	owner string,
 	interval time.Duration,
-	renewed chan<- struct{},
+	onRenewal func(context.Context) bool,
 ) error {
-	return renew(ctx, connection, owner, interval, renewed)
+	return renew(ctx, connection, owner, interval, onRenewal)
 }
