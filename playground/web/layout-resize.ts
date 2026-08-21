@@ -28,11 +28,17 @@ function horizontalMinimums(width: number): { files: number; editor: number; res
   };
 }
 
-function currentHorizontalSizes(layout: HTMLElement): HorizontalSizes {
-  const children = layout.children;
+function resizePanel(layout: HTMLElement, name: string): HTMLElement | null {
+  return layout.querySelector<HTMLElement>(`:scope > [data-resize-panel="${name}"]`);
+}
+
+function currentHorizontalSizes(
+  filesPanel: HTMLElement,
+  resultsPanel: HTMLElement,
+): HorizontalSizes {
   return {
-    files: (children[0] as HTMLElement).getBoundingClientRect().width,
-    results: (children[4] as HTMLElement).getBoundingClientRect().width,
+    files: filesPanel.getBoundingClientRect().width,
+    results: resultsPanel.getBoundingClientRect().width,
   };
 }
 
@@ -161,13 +167,18 @@ export function mountResizableLayout(): void {
   const results = document.getElementById("results-layout");
   if (!layout || !results) return;
 
+  const filesPanel = resizePanel(layout, "files");
+  const resultsPanel = resizePanel(layout, "results");
+  const graphPanel = resizePanel(results, "graph");
+  if (!filesPanel || !resultsPanel || !graphPanel) return;
+
   let horizontal = { files: preferredFiles, results: Math.min(preferredResults, layout.clientWidth / 2) };
   let graphHeight = results.clientHeight * preferredGraphRatio;
   const apply = (): void => {
     applyHorizontalSizes(layout, horizontal.files, horizontal.results);
-    horizontal = currentHorizontalSizes(layout);
+    horizontal = currentHorizontalSizes(filesPanel, resultsPanel);
     applyVerticalSize(results, graphHeight);
-    graphHeight = (results.children[0] as HTMLElement).getBoundingClientRect().height;
+    graphHeight = graphPanel.getBoundingClientRect().height;
   };
   apply();
 
@@ -178,19 +189,19 @@ export function mountResizableLayout(): void {
   if (filesHandle) {
     cleanups.push(registerDrag(filesHandle, (movement) => {
       applyHorizontalSizes(layout, horizontal.files + movement, horizontal.results);
-      horizontal = currentHorizontalSizes(layout);
+      horizontal = currentHorizontalSizes(filesPanel, resultsPanel);
     }));
   }
   if (resultsHandle) {
     cleanups.push(registerDrag(resultsHandle, (movement) => {
       applyHorizontalSizes(layout, horizontal.files, horizontal.results - movement);
-      horizontal = currentHorizontalSizes(layout);
+      horizontal = currentHorizontalSizes(filesPanel, resultsPanel);
     }));
   }
   if (outputHandle) {
     cleanups.push(registerDrag(outputHandle, (movement) => {
       applyVerticalSize(results, graphHeight + movement);
-      graphHeight = (results.children[0] as HTMLElement).getBoundingClientRect().height;
+      graphHeight = graphPanel.getBoundingClientRect().height;
     }));
   }
 

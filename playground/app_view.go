@@ -66,15 +66,17 @@ func (app *App) Render() goapp.UI {
 }
 
 func (app *App) renderEditorPanel() goapp.UI {
-	return goapp.Section().Class(
-		"relative",
-		"flex",
-		classMinHeight0,
-		classMinWidth0,
-		classFlexColumn,
-		classOverflowHidden,
-		classBackgroundNord1,
-	).Body(
+	return goapp.Section().
+		DataSet("resize-panel", "editor").
+		Class(
+			"relative",
+			"flex",
+			classMinHeight0,
+			classMinWidth0,
+			classFlexColumn,
+			classOverflowHidden,
+			classBackgroundNord1,
+		).Body(
 		goapp.Span().
 			DataSet("testid", "status").
 			Class("sr-only").
@@ -93,6 +95,7 @@ func (app *App) renderEditorPanel() goapp.UI {
 func (app *App) renderResultsPanel() goapp.UI {
 	return goapp.Div().
 		ID("results-layout").
+		DataSet("resize-panel", "results").
 		Class(
 			"grid",
 			"grid-rows-[minmax(0,2fr)_1px_minmax(0,1fr)]",
@@ -103,13 +106,15 @@ func (app *App) renderResultsPanel() goapp.UI {
 		Body(
 			app.renderGraphPanel(),
 			app.renderResizeHandle("output", "horizontal", "Resize graph and output"),
-			goapp.Section().Class(
-				"flex",
-				classMinHeight0,
-				classFlexColumn,
-				classOverflowHidden,
-				classBackgroundNord1,
-			).Body(
+			goapp.Section().
+				DataSet("resize-panel", "output").
+				Class(
+					"flex",
+					classMinHeight0,
+					classFlexColumn,
+					classOverflowHidden,
+					classBackgroundNord1,
+				).Body(
 				goapp.Pre().
 					DataSet("testid", "run-result").
 					Class(
@@ -129,14 +134,16 @@ func (app *App) renderResultsPanel() goapp.UI {
 }
 
 func (app *App) renderGraphPanel() goapp.UI {
-	return goapp.Section().Class(
-		"relative",
-		"flex",
-		classMinHeight0,
-		classFlexColumn,
-		classOverflowHidden,
-		classBackgroundNord1,
-	).Body(
+	return goapp.Section().
+		DataSet("resize-panel", "graph").
+		Class(
+			"relative",
+			"flex",
+			classMinHeight0,
+			classFlexColumn,
+			classOverflowHidden,
+			classBackgroundNord1,
+		).Body(
 		goapp.Div().Class(
 			"absolute",
 			"top-3",
@@ -342,6 +349,7 @@ func (app *App) renderFileTree() goapp.UI {
 
 	return goapp.Nav().
 		Aria("label", "Example workflows").
+		DataSet("resize-panel", "files").
 		Class(
 			classMinWidth0,
 			"overflow-y-auto",
