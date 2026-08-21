@@ -21,10 +21,11 @@ RUN CGO_ENABLED=0 go build \
     ./playground/cmd/compiler && \
     mkdir -p /out/tmp /out/cord/internal && \
     cp go.mod go.sum ./*.go /out/cord/ && \
-    cp -R internal/backoff internal/serialization internal/storage /out/cord/internal/ && \
+    cp -R internal/backoff internal/hashframe internal/serialization internal/storage /out/cord/internal/ && \
     rm -rf /out/cord/internal/storage/conformance && \
     find /out/cord -name '*_test.go' -delete && \
     find /out/cord -depth -type d -empty -delete && \
+    chmod -R a+rX /out/cord && \
     rm -rf \
         /usr/local/go/api \
         /usr/local/go/doc \
