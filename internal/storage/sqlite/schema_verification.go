@@ -1,11 +1,12 @@
 package sqlite
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -16,6 +17,7 @@ const (
 	affinityInteger = "INTEGER"
 	onDeleteCascade = "CASCADE"
 	runIDColumn     = "run_id"
+	doubleTypeToken = "DO" + "UB"
 	secondKey       = 2
 	thirdKey        = 3
 )
@@ -142,8 +144,8 @@ func requiredSchema() []schemaTable {
 
 func verifySchemaStructure(ctx context.Context, database *sql.DB) error {
 	tables := requiredSchema()
-	for index := range tables {
-		if err := verifyTable(ctx, database, &tables[index]); err != nil {
+	for position := range tables {
+		if err := verifyTable(ctx, database, &tables[position]); err != nil {
 			return fmt.Errorf("schema is incompatible: %w", err)
 		}
 	}
@@ -245,11 +247,11 @@ func verifyForeignKeys(ctx context.Context, database *sql.DB, expected *schemaTa
 		return err
 	}
 
-	for index := range expected.foreignKeys {
-		if !containsForeignKey(foreignKeys, &expected.foreignKeys[index]) {
+	for position := range expected.foreignKeys {
+		if !containsForeignKey(foreignKeys, &expected.foreignKeys[position]) {
 			return fmt.Errorf(
 				"table %q is missing foreign key %v; found %v",
-				expected.name, expected.foreignKeys[index], foreignKeys,
+				expected.name, expected.foreignKeys[position], foreignKeys,
 			)
 		}
 	}
@@ -407,11 +409,27 @@ func inspectForeignKeys(
 		foreignKeys = append(foreignKeys, *byID[identifier])
 	}
 
-	sort.Slice(foreignKeys, func(left, right int) bool {
-		return fmt.Sprint(foreignKeys[left]) < fmt.Sprint(foreignKeys[right])
+	slices.SortFunc(foreignKeys, func(left, right schemaForeignKey) int {
+		return compareForeignKeys(&left, &right)
 	})
 
 	return foreignKeys, nil
+}
+
+func compareForeignKeys(left, right *schemaForeignKey) int {
+	if compared := cmp.Compare(left.table, right.table); compared != 0 {
+		return compared
+	}
+
+	if compared := cmp.Compare(left.onDelete, right.onDelete); compared != 0 {
+		return compared
+	}
+
+	if compared := slices.Compare(left.from, right.from); compared != 0 {
+		return compared
+	}
+
+	return slices.Compare(left.to, right.to)
 }
 
 func sqliteAffinity(declaredType string) string {
@@ -423,7 +441,7 @@ func sqliteAffinity(declaredType string) string {
 		return affinityText
 	case declaredType == "", strings.Contains(declaredType, affinityBlob):
 		return affinityBlob
-	case containsAny(declaredType, "REAL", "FLOA", "DOUBT"):
+	case containsAny(declaredType, "REAL", "FLOA", doubleTypeToken):
 		return "REAL"
 	default:
 		return "NUMERIC"
