@@ -226,8 +226,8 @@ func renew(
 			return ErrLockOwnershipLost
 		}
 
-		if renewed != nil {
-			renewed <- struct{}{}
+		if !notifyRenewal(ctx, renewed) {
+			return nil
 		}
 
 		select {
@@ -235,6 +235,19 @@ func renew(
 			return nil
 		case <-ticker.C:
 		}
+	}
+}
+
+func notifyRenewal(ctx context.Context, renewed chan<- struct{}) bool {
+	if renewed == nil {
+		return true
+	}
+
+	select {
+	case renewed <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
