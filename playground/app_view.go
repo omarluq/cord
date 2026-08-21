@@ -16,15 +16,6 @@ const (
 	classTextExtraSmall    = "text-xs"
 )
 
-func panelClasses() []string {
-	return []string{
-		classOverflowHidden,
-		"border",
-		classBorderNord3,
-		"bg-nord-1",
-	}
-}
-
 func buttonClasses() []string {
 	return []string{
 		classCursorPointer,
@@ -52,111 +43,98 @@ func (app *App) Render() goapp.UI {
 		classFlexColumn,
 		classOverflowHidden,
 	).Body(
-		goapp.Div().Class(
-			"grid",
-			classMinHeight0,
-			"w-full",
-			classFlex1,
-			"grid-cols-2",
-			classOverflowHidden,
-		).Body(
-			app.renderEditorPanel(),
-			app.renderResultsPanel(),
-		),
+		goapp.Div().
+			ID("playground-layout").
+			Class(
+				"grid",
+				"grid-cols-[192px_1px_minmax(0,1fr)_1px_minmax(240px,1fr)]",
+				classMinHeight0,
+				"w-full",
+				classFlex1,
+				classOverflowHidden,
+			).
+			Body(
+				app.renderFileTree(),
+				app.renderResizeHandle("files", "vertical", "Resize file tree and editor"),
+				app.renderEditorPanel(),
+				app.renderResizeHandle("results", "vertical", "Resize editor and results"),
+				app.renderResultsPanel(),
+			),
 	)
 }
 
 func (app *App) renderEditorPanel() goapp.UI {
-	return goapp.Section().Class(append(
-		panelClasses(),
+	return goapp.Section().Class(
+		"relative",
 		"flex",
 		classMinHeight0,
-	)...).Body(
-		app.renderFileTree(),
-		goapp.Div().Class(
-			"flex",
-			classMinHeight0,
-			"min-w-0",
-			classFlex1,
-			classFlexColumn,
-		).Body(
-			goapp.Div().Class(
-				"flex",
-				"shrink-0",
-				classItemsCenter,
-				"justify-end",
-				"border-b",
-				classBorderNord3,
-				"px-4",
-				"py-3",
-			).Body(
-				goapp.Span().
-					DataSet("testid", "status").
-					Class("sr-only").
-					Aria("live", "polite").
-					Text(string(app.status)),
-				app.renderExecutionButton(),
-			),
-			goapp.Div().ID(editorID).Class(classMinHeight0, classFlex1),
+		"min-w-0",
+		classFlexColumn,
+		classOverflowHidden,
+		"bg-nord-1",
+	).Body(
+		goapp.Span().
+			DataSet("testid", "status").
+			Class("sr-only").
+			Aria("live", "polite").
+			Text(string(app.status)),
+		goapp.Div().Class("absolute", "right-3", "top-3", "z-20").Body(
+			app.renderExecutionButton(),
 		),
+		goapp.Div().
+			ID(editorID).
+			Aria("label", "Workflow Go source").
+			Class(classMinHeight0, classFlex1),
 	)
 }
 
 func (app *App) renderResultsPanel() goapp.UI {
-	return goapp.Div().Class(
-		"grid",
-		classMinHeight0,
-		"min-w-0",
-		"grid-rows-[minmax(0,2fr)_minmax(0,1fr)]",
-		classOverflowHidden,
-	).Body(
-		app.renderGraphPanel(),
-		goapp.Section().Class(append(
-			panelClasses(),
-			"flex",
+	return goapp.Div().
+		ID("results-layout").
+		Class(
+			"grid",
+			"grid-rows-[minmax(0,2fr)_1px_minmax(0,1fr)]",
 			classMinHeight0,
-			classFlexColumn,
-		)...).Body(
-			goapp.Div().Class(
-				"shrink-0",
-				"border-b",
-				classBorderNord3,
-				"px-4",
-				"py-3",
+			"min-w-0",
+			classOverflowHidden,
+		).
+		Body(
+			app.renderGraphPanel(),
+			app.renderResizeHandle("output", "horizontal", "Resize graph and output"),
+			goapp.Section().Class(
+				"flex",
+				classMinHeight0,
+				classFlexColumn,
+				classOverflowHidden,
+				"bg-nord-1",
 			).Body(
-				goapp.H2().Class(
-					classTextExtraSmall,
-					"font-bold",
-					"uppercase",
-					"tracking-wider",
-				).Text("Output"),
+				goapp.Pre().
+					DataSet("testid", "run-result").
+					Class(
+						classMinHeight0,
+						classFlex1,
+						"overflow-x-hidden",
+						"overflow-y-auto",
+						"whitespace-pre-wrap",
+						"p-4",
+						"font-mono",
+						"text-sm",
+						"text-nord-14",
+					).
+					Text(app.output),
 			),
-			goapp.Pre().
-				DataSet("testid", "run-result").
-				Class(
-					classMinHeight0,
-					classFlex1,
-					"overflow-x-hidden",
-					"overflow-y-auto",
-					"whitespace-pre-wrap",
-					"p-4",
-					"font-mono",
-					"text-sm",
-					"text-nord-14",
-				).
-				Text(app.output),
-		),
-	)
+		)
 }
 
 func (app *App) renderGraphPanel() goapp.UI {
-	return goapp.Section().Class(append(
-		panelClasses(),
+	return goapp.Section().Class(
 		"relative",
 		"flex",
 		classMinHeight0,
 		classFlexColumn,
-	)...).Body(
+		classOverflowHidden,
+		"bg-nord-1",
+	).Body(
 		goapp.Div().Class(
 			"absolute",
 			"top-3",
@@ -174,6 +152,36 @@ func (app *App) renderGraphPanel() goapp.UI {
 			"bg-nord-0",
 		),
 	)
+}
+
+func (app *App) renderResizeHandle(name, orientation, label string) goapp.UI {
+	classes := []string{
+		"relative",
+		"z-30",
+		"bg-nord-3",
+		"touch-none",
+		"after:absolute",
+		"after:content-['']",
+		"hover:bg-nord-8",
+		"focus-visible:bg-nord-8",
+	}
+	if orientation == "vertical" {
+		classes = append(classes, "cursor-col-resize", "after:inset-y-0", "after:-inset-x-1.5")
+	} else {
+		classes = append(classes, "cursor-row-resize", "after:-inset-y-1.5", "after:inset-x-0")
+	}
+
+	return goapp.Div().
+		Role("separator").
+		Aria("label", label).
+		Aria("orientation", orientation).
+		Aria("valuemin", "0").
+		Aria("valuemax", "100").
+		Aria("valuenow", "50").
+		DataSet("resize-handle", name).
+		DataSet("testid", name+"-resize-handle").
+		TabIndex(0).
+		Class(classes...)
 }
 
 func (app *App) renderZoomButton(direction string, amount int) goapp.UI {
@@ -301,13 +309,20 @@ func (app *App) renderFileTree() goapp.UI {
 			"disabled:cursor-not-allowed",
 			"disabled:opacity-50",
 		}
-		if script.filename == app.selectedExample {
+
+		selected := script.filename == app.selectedExample
+		if selected {
 			classes = append(classes, "bg-nord-2", "text-nord-8")
 		}
 
+		button := goapp.Button().
+			Aria("label", "Open "+script.filename)
+		if selected {
+			button = button.Aria("current", "page")
+		}
+
 		files = append(files, goapp.Li().Body(
-			goapp.Button().
-				Aria("label", "Open "+script.filename).
+			button.
 				DataSet("filename", script.filename).
 				Class(classes...).
 				Disabled(disabled).
@@ -326,24 +341,10 @@ func (app *App) renderFileTree() goapp.UI {
 	return goapp.Nav().
 		Aria("label", "Example workflows").
 		Class(
-			"w-48",
-			"shrink-0",
+			"min-w-0",
 			"overflow-y-auto",
-			"border-r",
-			classBorderNord3,
 			"bg-nord-0",
 		).Body(
-		goapp.Div().Class(
-			"border-b",
-			classBorderNord3,
-			"px-3",
-			"py-3",
-			classTextExtraSmall,
-			"font-bold",
-			"uppercase",
-			"tracking-wider",
-			"text-nord-4",
-		).Text("Examples"),
 		goapp.Ul().Class("py-2").Body(files...),
 	)
 }

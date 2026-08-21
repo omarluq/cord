@@ -170,6 +170,71 @@ test(
   },
 );
 
+test("resizes playground panels from their borders", async ({ page }) => {
+  await page.goto(
+    `http://127.0.0.1:4173/?compiler=${encodeURIComponent(compilerURL)}`,
+  );
+  await expect(page.locator('[data-testid="status"]')).toHaveText("ready", {
+    timeout: 30_000,
+  });
+
+  const files = page.getByTestId("files-resize-handle");
+  const results = page.getByTestId("results-resize-handle");
+  const output = page.getByTestId("output-resize-handle");
+  await expect(files).toHaveAttribute("aria-orientation", "vertical");
+  await expect(output).toHaveAttribute("aria-orientation", "horizontal");
+
+  const drag = async (
+    handle: typeof files,
+    deltaX: number,
+    deltaY: number,
+  ): Promise<void> => {
+    const box = await handle.boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + deltaX, y + deltaY);
+    await page.mouse.up();
+  };
+
+  const fileWidth = await page.getByRole("navigation", {
+    name: "Example workflows",
+  }).evaluate((element) => element.getBoundingClientRect().width);
+  await drag(files, 40, 0);
+  await expect.poll(() => page.getByRole("navigation", {
+    name: "Example workflows",
+  }).evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(fileWidth);
+
+  const resultWidth = await page.locator("#results-layout").evaluate(
+    (element) => element.getBoundingClientRect().width,
+  );
+  await drag(results, -40, 0);
+  await expect.poll(() => page.locator("#results-layout").evaluate(
+    (element) => element.getBoundingClientRect().width,
+  )).toBeGreaterThan(resultWidth);
+
+  const graphHeight = await page.locator("#workflow-graph").evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  await drag(output, 0, 40);
+  await expect.poll(() => page.locator("#workflow-graph").evaluate(
+    (element) => element.getBoundingClientRect().height,
+  )).toBeGreaterThan(graphHeight);
+
+  const beforeKey = Number(await files.getAttribute("aria-valuenow"));
+  await files.focus();
+  await files.press("ArrowRight");
+  await expect.poll(async () => Number(await files.getAttribute("aria-valuenow")))
+    .toBeGreaterThan(beforeKey);
+
+  await page.setViewportSize({ width: 480, height: 520 });
+  await expect(page.locator("#workflow-editor")).toBeVisible();
+  await expect(page.locator("#workflow-graph")).toBeVisible();
+  await expect(page.locator('[data-testid="run-result"]')).toBeVisible();
+});
+
 test(
   "compiles and executes the large pipeline",
   async ({ page }) => {
