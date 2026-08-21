@@ -160,6 +160,21 @@ func TestCord_ShutdownBoundsNonCooperativeStep(t *testing.T) {
 	require.ErrorContains(t, <-runDone, "runtime closed")
 }
 
+func TestCord_ShutdownCompletedRuntimeIgnoresCanceledWaitContext(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := cord.New(t.Context(), openSQLite(t))
+	require.NoError(t, err)
+	require.NoError(t, runtime.Close())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for range 100 {
+		require.NoError(t, runtime.Shutdown(ctx))
+	}
+}
+
 func TestCord_ShutdownRejectsNilContext(t *testing.T) {
 	t.Parallel()
 

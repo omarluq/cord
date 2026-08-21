@@ -80,6 +80,7 @@ func TestNew_OptionsLeasePrecisionBoundary(t *testing.T) {
 		options cord.Options
 	}{
 		{name: "derived heartbeat", options: cord.Options{LeaseTTL: 30 * time.Millisecond}},
+		{name: "clamped derived heartbeat", options: cord.Options{LeaseTTL: 2 * time.Millisecond}},
 		{name: "one millisecond heartbeat", options: cord.Options{
 			LeaseTTL: 2 * time.Millisecond, HeartbeatInterval: time.Millisecond,
 		}},

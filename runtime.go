@@ -116,7 +116,10 @@ func runtimeSettings(options Options) (schedulerSettings, error) {
 
 	heartbeatInterval := options.HeartbeatInterval
 	if heartbeatInterval == 0 {
-		heartbeatInterval = min(defaultHeartbeatInterval, leaseTTL/heartbeatsPerLease)
+		heartbeatInterval = max(
+			minimumLeasePrecision,
+			min(defaultHeartbeatInterval, leaseTTL/heartbeatsPerLease),
+		)
 	}
 
 	retry, err := retrySettings(options)
