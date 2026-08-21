@@ -37,11 +37,12 @@ func retry(
 
 	operationCtx := ctx
 
-	cancel := func() {}
 	if !stopAt.IsZero() {
+		var cancel context.CancelFunc
+
 		operationCtx, cancel = context.WithDeadline(ctx, stopAt)
+		defer cancel()
 	}
-	defer cancel()
 
 	for attempt := 1; attempt <= retryAttempts; attempt++ {
 		err := operationFunc(operationCtx)

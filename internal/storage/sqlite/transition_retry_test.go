@@ -1,6 +1,7 @@
 package sqlite_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -56,11 +57,11 @@ func TestFencedTerminalTransitionRetriesWholeTransaction(t *testing.T) {
 			database, store := newTransitionStore(t)
 			attempts := 0
 			accepted, transitionErr := sqlite.FencedTerminalTransitionForTest(
-				t.Context(), store, test.leaseExpiry(), func(transaction *sql.Tx) error {
+				t.Context(), store, test.leaseExpiry(), func(attemptCtx context.Context, transaction *sql.Tx) error {
 					attempts++
 
 					_, execErr := transaction.ExecContext(
-						t.Context(), "INSERT INTO transition_attempts (attempt) VALUES (?)", attempts,
+						attemptCtx, "INSERT INTO transition_attempts (attempt) VALUES (?)", attempts,
 					)
 					if execErr != nil {
 						return fmt.Errorf("record transition attempt: %w", execErr)
