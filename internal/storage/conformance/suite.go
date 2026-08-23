@@ -6,47 +6,28 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
-	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
-	"github.com/omarluq/cord"
 	"github.com/omarluq/cord/internal/storage"
-	"github.com/omarluq/cord/internal/storage/sqlite"
 )
 
-// Driver configures a database/sql driver for the conformance suite.
-type Driver struct {
-	// DataSource builds a driver data source from a temporary path and busy timeout.
-	DataSource func(string, time.Duration) string
-	// Open optionally opens the database and takes precedence over Name and DataSource.
-	Open func(testing.TB) *sql.DB
-	// Name identifies the registered database/sql driver.
-	Name string
-	// SkipWriteContention skips the local-file write-contention test.
-	SkipWriteContention bool
+type runCanceler interface {
+	CancelRun(context.Context, storage.RunID) (bool, error)
 }
 
-// RepeatedPragmaDataSource builds a data source for drivers that accept repeated _pragma parameters.
-func RepeatedPragmaDataSource(path string, timeout time.Duration) string {
-	query := url.Values{}
-	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", timeout.Milliseconds()))
-	query.Add("_pragma", "foreign_keys(1)")
-	query.Add("_pragma", "journal_mode(WAL)")
-
-	return "file:" + path + "?" + query.Encode()
-}
-
-// UnderscoreDataSource builds a data source for drivers that accept underscore-prefixed options.
-func UnderscoreDataSource(path string, timeout time.Duration) string {
-	query := url.Values{}
-	query.Set("_busy_timeout", strconv.FormatInt(timeout.Milliseconds(), 10))
-	query.Set("_foreign_keys", "on")
-	query.Set("_journal_mode", "WAL")
-
-	return "file:" + path + "?" + query.Encode()
+// Harness supplies backend-specific database lifecycle operations to the common suite.
+type Harness struct {
+	// Open opens a test database identified by name.
+	Open func(testing.TB, string) *sql.DB
+	// Migrate brings a newly opened database to the current schema.
+	Migrate func(context.Context, *sql.DB) error
+	// NewBackend constructs a backend over an open, migrated database.
+	NewBackend func(*sql.DB) (storage.Backend, error)
+	// ExpireLease makes a claimed lease eligible for recovery.
+	ExpireLease func(context.Context, *sql.DB, storage.RunID, storage.NodeID) error
+	// DeleteRun deletes a run using the backend's native test mechanism.
+	DeleteRun func(context.Context, *sql.DB, storage.RunID) error
 }
 
 const (
@@ -54,109 +35,51 @@ const (
 	leftNodeID         storage.NodeID = "left"
 	rightNodeID        storage.NodeID = "right"
 	joinNodeID         storage.NodeID = "join"
-	storeBusyTimeout                  = 5 * time.Second
 	heartbeatExtension                = 2 * time.Minute
 	joinDependencies                  = 2
 	workerA                           = "worker-a"
 	workerB                           = "worker-b"
 )
 
-// Run executes Cord's behavioral storage conformance suite.
-func Run(t *testing.T, driver Driver) {
+// Run executes Cord's backend-neutral behavioral storage conformance suite.
+func Run(t *testing.T, harness Harness) {
 	t.Helper()
-
-	open := func(tb testing.TB, path string, timeout time.Duration) *sql.DB {
-		tb.Helper()
-
-		var database *sql.DB
-		if driver.Open != nil {
-			database = driver.Open(tb)
-		} else {
-			var err error
-
-			database, err = sql.Open(driver.Name, driver.DataSource(path, timeout))
-			if err != nil {
-				tb.Fatal(err)
-			}
-		}
-
-		tb.Cleanup(func() {
-			if err := database.Close(); err != nil {
-				tb.Errorf("close database: %v", err)
-			}
-		})
-
-		return database
-	}
+	validateHarness(t, harness)
 
 	tests := []struct {
-		run  func(*testing.T, Open)
+		run  func(*testing.T, Harness)
 		name string
 	}{
-		{name: "workflow", run: runWorkflow},
 		{name: "create and result", run: runCreateAndResult},
 		{name: "join order and dependency release", run: runJoinOrder},
 		{name: "claim uniqueness and completion fence", run: runClaimAndCompletionFence},
 		{name: "retry and promotion", run: runRetryAndPromotion},
 		{name: "failure", run: runFailure},
-		{name: "heartbeat and recovery", run: runHeartbeatAndRecovery},
 		{name: "cancellation", run: runCancellation},
+		{name: "heartbeat and recovery", run: runHeartbeatAndRecovery},
 		{name: "restart and resume", run: runRestartAndResume},
-		{name: "migration idempotence and foreign keys", run: runMigrationAndForeignKeys},
+		{name: "migration idempotence", run: runMigrationIdempotence},
+		{name: "run deletion", run: runRunDeletion},
 	}
 	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			testCase.run(t, open)
-		})
-	}
-
-	if !driver.SkipWriteContention {
-		t.Run("write contention", func(t *testing.T) { runContention(t, open) })
+		t.Run(testCase.name, func(t *testing.T) { testCase.run(t, harness) })
 	}
 }
 
-// Open opens a backend-specific test database.
-type Open func(testing.TB, string, time.Duration) *sql.DB
-
-func runWorkflow(t *testing.T, open Open) {
+func validateHarness(t *testing.T, harness Harness) {
 	t.Helper()
 
-	const (
-		busyTimeout = 5 * time.Second
-		input       = 2
-		want        = 4
-	)
-
-	database := open(t, filepath.Join(t.TempDir(), "workflow.db"), busyTimeout)
-
-	runtime, err := cord.New(t.Context(), database, cord.Options{PollInterval: time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		closeErr := runtime.Close()
-		if closeErr != nil {
-			t.Errorf("close runtime: %v", closeErr)
-		}
-	})
-
-	workflow := runtime.From("sqlite-driver-conformance", timesTwo)
-
-	result, err := workflow.Run(t.Context(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if result != want {
-		t.Fatalf("result = %d, want %d", result, want)
+	if harness.Open == nil || harness.Migrate == nil || harness.NewBackend == nil ||
+		harness.ExpireLease == nil || harness.DeleteRun == nil {
+		t.Fatal("conformance harness requires Open, Migrate, NewBackend, ExpireLease, and DeleteRun")
 	}
 }
 
-func runCreateAndResult(t *testing.T, open Open) {
+func runCreateAndResult(t *testing.T, harness Harness) {
 	t.Helper()
 
-	_, store := openStore(t, open, "create-result")
+	opened := openStore(t, harness, "create-result")
+	store := opened.backend
 	plan := singleNodePlan("conformance-create", "create")
 
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -190,10 +113,11 @@ func runCreateAndResult(t *testing.T, open Open) {
 	}
 }
 
-func runJoinOrder(t *testing.T, open Open) {
+func runJoinOrder(t *testing.T, harness Harness) {
 	t.Helper()
 
-	_, store := openStore(t, open, "join")
+	opened := openStore(t, harness, "join")
+	store := opened.backend
 
 	plan := joinPlan("conformance-join")
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -208,7 +132,7 @@ func runJoinOrder(t *testing.T, open Open) {
 	accepted, err := store.CompleteNode(t.Context(), first.RunID, first.NodeID, first.Lease, []byte(`"left"`))
 	requireAccepted(t, "complete left", accepted, err)
 
-	earlyClaim, earlyClaimed, earlyErr := store.ClaimReadyNode(t.Context(), "worker-early", time.Minute)
+	earlyClaim, earlyClaimed, earlyErr := claimAny(t.Context(), store, "worker-early")
 	requireNotClaimed(t, earlyClaim, earlyClaimed, earlyErr)
 
 	accepted, err = store.CompleteNode(t.Context(), second.RunID, second.NodeID, second.Lease, []byte(`"right"`))
@@ -229,10 +153,11 @@ func runJoinOrder(t *testing.T, open Open) {
 	}
 }
 
-func runClaimAndCompletionFence(t *testing.T, open Open) {
+func runClaimAndCompletionFence(t *testing.T, harness Harness) {
 	t.Helper()
 
-	_, store := openStore(t, open, "claim-fence")
+	opened := openStore(t, harness, "claim-fence")
+	store := opened.backend
 
 	plan := singleNodePlan("conformance-claim", "claim")
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -240,7 +165,7 @@ func runClaimAndCompletionFence(t *testing.T, open Open) {
 	}
 
 	claim := mustClaim(t, store, "winner")
-	duplicate, claimed, err := store.ClaimReadyNode(t.Context(), "loser", time.Minute)
+	duplicate, claimed, err := claimAny(t.Context(), store, "loser")
 	requireNotClaimed(t, duplicate, claimed, err)
 
 	stale := claim.Lease
@@ -253,10 +178,11 @@ func runClaimAndCompletionFence(t *testing.T, open Open) {
 	requireAccepted(t, "owned completion", accepted, err)
 }
 
-func runRetryAndPromotion(t *testing.T, open Open) {
+func runRetryAndPromotion(t *testing.T, harness Harness) {
 	t.Helper()
 
-	_, store := openStore(t, open, "retry")
+	opened := openStore(t, harness, "retry")
+	store := opened.backend
 
 	plan := singleNodePlan("conformance-retry", "retry")
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -277,10 +203,11 @@ func runRetryAndPromotion(t *testing.T, open Open) {
 	}
 }
 
-func runFailure(t *testing.T, open Open) {
+func runFailure(t *testing.T, harness Harness) {
 	t.Helper()
 
-	_, store := openStore(t, open, "failure")
+	opened := openStore(t, harness, "failure")
+	store := opened.backend
 
 	plan := joinPlan("conformance-failure")
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -302,15 +229,50 @@ func runFailure(t *testing.T, open Open) {
 		t.Fatalf("failed result = %#v", result)
 	}
 
-	if next, claimed, claimErr := store.ClaimReadyNode(t.Context(), "other", time.Minute); claimErr != nil || claimed {
+	if next, claimed, claimErr := claimAny(t.Context(), store, "other"); claimErr != nil || claimed {
 		t.Fatalf("claim after failure = %#v, claimed=%v err=%v", next, claimed, claimErr)
 	}
 }
 
-func runHeartbeatAndRecovery(t *testing.T, open Open) {
+func runCancellation(t *testing.T, harness Harness) {
 	t.Helper()
 
-	database, store := openStore(t, open, "lease")
+	backend := openStore(t, harness, "cancel").backend
+
+	canceler, ok := backend.(runCanceler)
+	if !ok {
+		t.Skip("backend does not support cancellation")
+	}
+
+	plan := joinPlan("conformance-cancel")
+	if err := backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	claim := mustClaim(t, backend, "worker")
+	accepted, err := canceler.CancelRun(t.Context(), claim.RunID)
+	requireAccepted(t, "cancel run", accepted, err)
+
+	result, err := backend.GetRunResult(t.Context(), claim.RunID)
+	if err != nil || result.Status != storage.RunCanceled {
+		t.Fatalf("canceled result = %#v, err=%v", result, err)
+	}
+
+	accepted, err = backend.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`))
+	requireRejected(t, "completion after cancellation", accepted, err)
+
+	accepted, err = canceler.CancelRun(t.Context(), claim.RunID)
+	requireRejected(t, "repeat cancellation", accepted, err)
+
+	accepted, err = canceler.CancelRun(t.Context(), "missing-run")
+	requireRejected(t, "missing run cancellation", accepted, err)
+}
+
+func runHeartbeatAndRecovery(t *testing.T, harness Harness) {
+	t.Helper()
+
+	opened := openStore(t, harness, "lease")
+	database, store := opened.database, opened.backend
 
 	plan := singleNodePlan("conformance-lease", "lease")
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -324,10 +286,7 @@ func runHeartbeatAndRecovery(t *testing.T, open Open) {
 	)
 	requireHeartbeat(t, accepted, expiry, first.Lease.ExpiresAt, err)
 
-	_, expireErr := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE run_id = ? AND node_id = ?`,
-		first.RunID, first.NodeID)
-	if expireErr != nil {
+	if expireErr := harness.ExpireLease(t.Context(), database, first.RunID, first.NodeID); expireErr != nil {
 		t.Fatal(expireErr)
 	}
 
@@ -341,34 +300,11 @@ func runHeartbeatAndRecovery(t *testing.T, open Open) {
 	requireRejected(t, "expired lease completion", accepted, err)
 }
 
-func runCancellation(t *testing.T, open Open) {
+func runRestartAndResume(t *testing.T, harness Harness) {
 	t.Helper()
 
-	_, store := openStore(t, open, "cancel")
-
-	plan := joinPlan("conformance-cancel")
-	if err := store.CreateRun(t.Context(), &plan); err != nil {
-		t.Fatal(err)
-	}
-
-	claim := mustClaim(t, store, "worker")
-
-	accepted, err := store.CancelRun(t.Context(), claim.RunID)
-	requireAccepted(t, "cancel run", accepted, err)
-
-	result, err := store.GetRunResult(t.Context(), claim.RunID)
-	if err != nil || result.Status != storage.RunCanceled {
-		t.Fatalf("canceled result = %#v, err=%v", result, err)
-	}
-
-	accepted, err = store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`))
-	requireRejected(t, "completion after cancellation", accepted, err)
-}
-
-func runRestartAndResume(t *testing.T, open Open) {
-	t.Helper()
-
-	database, store := openStore(t, open, "restart")
+	opened := openStore(t, harness, "restart")
+	database, store := opened.database, opened.backend
 
 	plan := singleNodePlan("conformance-restart", "restart")
 	if err := store.CreateRun(t.Context(), &plan); err != nil {
@@ -376,13 +312,11 @@ func runRestartAndResume(t *testing.T, open Open) {
 	}
 
 	first := mustClaim(t, store, "departed-worker")
-	if _, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE run_id = ? AND node_id = ?`,
-		first.RunID, first.NodeID); err != nil {
-		t.Fatal(err)
+	if expireErr := harness.ExpireLease(t.Context(), database, first.RunID, first.NodeID); expireErr != nil {
+		t.Fatal(expireErr)
 	}
 
-	restarted, err := sqlite.New(database)
+	restarted, err := harness.NewBackend(database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,70 +330,74 @@ func runRestartAndResume(t *testing.T, open Open) {
 	requireAccepted(t, "resume completion", accepted, err)
 }
 
-func runMigrationAndForeignKeys(t *testing.T, open Open) {
+func runMigrationIdempotence(t *testing.T, harness Harness) {
 	t.Helper()
 
-	database := open(t, filepath.Join(t.TempDir(), "migration.db"), storeBusyTimeout)
-	if err := sqlite.Migrate(t.Context(), database); err != nil {
+	database := harness.Open(t, "migration-idempotence")
+	if err := harness.Migrate(t.Context(), database); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := sqlite.Migrate(t.Context(), database); err != nil {
+	if err := harness.Migrate(t.Context(), database); err != nil {
 		t.Fatalf("second migration: %v", err)
 	}
 
-	store, err := sqlite.New(database)
+	if _, err := harness.NewBackend(database); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runRunDeletion(t *testing.T, harness Harness) {
+	t.Helper()
+
+	opened := openStore(t, harness, "run-deletion")
+	database, backend := opened.database, opened.backend
+
+	plan := joinPlan("conformance-run-deletion")
+	if err := backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := harness.DeleteRun(t.Context(), database, plan.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := backend.GetRunResult(t.Context(), plan.Run.ID); !errors.Is(err, storage.ErrRunNotFound) {
+		t.Fatalf("deleted run error = %v, want %v", err, storage.ErrRunNotFound)
+	}
+}
+
+type openedStore struct {
+	database *sql.DB
+	backend  storage.Backend
+}
+
+func openStore(t *testing.T, harness Harness, name string) openedStore {
+	t.Helper()
+
+	database := harness.Open(t, name)
+	if err := harness.Migrate(t.Context(), database); err != nil {
+		t.Fatal(err)
+	}
+
+	backend, err := harness.NewBackend(database)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	plan := joinPlan("conformance-foreign-key")
-	if err := store.CreateRun(t.Context(), &plan); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := database.ExecContext(t.Context(), "DELETE FROM cord_runs WHERE id = ?", plan.Run.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	queries := []struct{ table, query string }{
-		{table: "cord_nodes", query: "SELECT COUNT(*) FROM cord_nodes WHERE run_id = ?"},
-		{table: "cord_edges", query: "SELECT COUNT(*) FROM cord_edges WHERE run_id = ?"},
-	}
-	for _, current := range queries {
-		var count int
-
-		row := database.QueryRowContext(t.Context(), current.query, plan.Run.ID)
-		if err := row.Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-
-		if count != 0 {
-			t.Fatalf("%s rows after run deletion = %d, want 0", current.table, count)
-		}
-	}
+	return openedStore{database: database, backend: backend}
 }
 
-func openStore(t *testing.T, open Open, name string) (*sql.DB, *sqlite.Store) {
+func mustClaim(t *testing.T, store storage.Backend, owner string) *storage.Claim {
 	t.Helper()
 
-	database := open(t, filepath.Join(t.TempDir(), name+".db"), storeBusyTimeout)
-	if err := sqlite.Migrate(t.Context(), database); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := sqlite.New(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return database, store
-}
-
-func mustClaim(t *testing.T, store *sqlite.Store, owner string) *storage.Claim {
-	t.Helper()
-
-	claim, claimed, err := store.ClaimReadyNode(t.Context(), owner, time.Minute)
+	claim, claimed, err := store.ClaimReadyNodeForFunctions(
+		t.Context(), owner, time.Minute, []storage.FunctionRegistration{
+			{Key: "example.com/Step", Signature: "signature"},
+			{Key: "example.com/Left", Signature: "left"},
+			{Key: "example.com/Right", Signature: "right"},
+			{Key: "example.com/Join", Signature: "join"},
+		})
 	if err != nil || !claimed || claim == nil {
 		t.Fatalf("claim node: claim=%#v claimed=%v err=%v", claim, claimed, err)
 	}
@@ -467,66 +405,18 @@ func mustClaim(t *testing.T, store *sqlite.Store, owner string) *storage.Claim {
 	return claim
 }
 
-func runContention(t *testing.T, open Open) {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "contention.db")
-	first := open(t, path, 0)
-	second := open(t, path, 0)
-
-	if err := sqlite.Migrate(t.Context(), first); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := sqlite.New(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	transaction, err := first.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		if err := transaction.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			t.Errorf("rollback transaction: %v", err)
-		}
+func claimAny(ctx context.Context, backend storage.Backend, owner string) (*storage.Claim, bool, error) {
+	claim, claimed, err := backend.ClaimReadyNodeForFunctions(ctx, owner, time.Minute, []storage.FunctionRegistration{
+		{Key: "example.com/Step", Signature: "signature"},
+		{Key: "example.com/Left", Signature: "left"},
+		{Key: "example.com/Right", Signature: "right"},
+		{Key: "example.com/Join", Signature: "join"},
 	})
-
-	if _, err := transaction.ExecContext(t.Context(), "UPDATE cord_runs SET status = status"); err != nil {
-		t.Fatal(err)
+	if err != nil {
+		return claim, claimed, fmt.Errorf("claim ready node: %w", err)
 	}
 
-	verifyRetryWhileLocked(t, store, transaction)
-}
-
-func verifyRetryWhileLocked(t *testing.T, store *sqlite.Store, transaction *sql.Tx) {
-	t.Helper()
-
-	const lockObservationDelay = 20 * time.Millisecond
-
-	now := time.Now().UTC()
-	runID := storage.RunID(fmt.Sprintf("sqlite-driver-contention-%d", now.UnixNano()))
-
-	result := make(chan error, 1)
-	go func() {
-		result <- store.CreateRun(t.Context(), contentionPlan(runID, now))
-	}()
-
-	select {
-	case err := <-result:
-		t.Fatalf("create run returned while the write lock was held: %v", err)
-	case <-time.After(lockObservationDelay):
-	}
-
-	if err := transaction.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := <-result; err != nil {
-		t.Fatal(err)
-	}
+	return claim, claimed, nil
 }
 
 func requireAccepted(t *testing.T, operation string, accepted bool, err error) {
@@ -593,12 +483,6 @@ func requireRenewedClaim(t *testing.T, current, previous *storage.Claim) {
 	}
 }
 
-func timesTwo(_ context.Context, input int) (int, error) {
-	const multiplier = 2
-
-	return input * multiplier, nil
-}
-
 func singleNodePlan(runID storage.RunID, name string) storage.RunPlan {
 	const maxAttempts = 3
 
@@ -650,22 +534,5 @@ func conformanceNode(
 		CompletedAt: nil, StartedAt: nil, Lease: storage.Lease{}, Error: nil, Output: nil,
 		RunID: runID, ID: identifier, FunctionKey: functionKey, SignatureHash: signature,
 		Status: status, AvailableAt: availableAt, RemainingDeps: remainingDependencies, Attempt: 0,
-	}
-}
-
-func contentionPlan(runID storage.RunID, now time.Time) *storage.RunPlan {
-	return &storage.RunPlan{
-		Edges: nil,
-		Run: storage.Run{
-			CompletedAt: nil, Output: nil, Error: nil,
-			ID: runID, WorkflowName: "sqlite-driver-contention", DefinitionHash: "definition",
-			TerminalNodeID: "node", Status: storage.RunRunning, Input: []byte(`1`), CreatedAt: now, UpdatedAt: now,
-			MaxAttempts: 1, RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Millisecond, RetryPolicyVersion: 1,
-		},
-		Nodes: []storage.Node{{
-			CompletedAt: nil, StartedAt: nil, Lease: storage.Lease{}, Error: nil, Output: nil,
-			RunID: runID, ID: "node", FunctionKey: "example.com/Step", SignatureHash: "signature",
-			Status: storage.NodeReady, AvailableAt: now, RemainingDeps: 0, Attempt: 0,
-		}},
 	}
 }

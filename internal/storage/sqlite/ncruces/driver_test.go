@@ -10,7 +10,7 @@ import (
 
 func TestDriverConformance(t *testing.T) {
 	t.Parallel()
-	conformance.Run(t, conformance.Driver{
+	conformance.RunSQLite(t, conformance.SQLiteDriver{
 		DataSource:          conformance.RepeatedPragmaDataSource,
 		Name:                "sqlite3",
 		Open:                nil,
