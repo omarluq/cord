@@ -1,12 +1,16 @@
-name: Release
+name: PostgreSQL compatibility
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: postgres-compatibility-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   postgres:
@@ -62,21 +66,3 @@ jobs:
 
       - name: Run PostgreSQL compatibility tests
         run: task test-postgres
-
-  goreleaser:
-    needs: postgres
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
