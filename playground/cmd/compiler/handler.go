@@ -58,13 +58,19 @@ func newHandlerWithContext(
 		maxSource:      cfg.maxSourceBytes,
 		writeTimeout:   cfg.writeTimeout,
 		slots:          make(chan struct{}, cfg.maxConcurrency),
-		cache:          newCompilationCache(ctx, cfg),
+		cache:          newCompilationCache(cfg),
 	}
 
-	return http.HandlerFunc(service.serveHTTP)
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		service.serveHTTP(ctx, response, request)
+	})
 }
 
-func (service *service) serveHTTP(response http.ResponseWriter, request *http.Request) {
+func (service *service) serveHTTP(
+	serviceContext context.Context,
+	response http.ResponseWriter,
+	request *http.Request,
+) {
 	service.setHeaders(response, request.Header.Get("Origin"))
 
 	if request.Method == http.MethodOptions {
@@ -82,7 +88,7 @@ func (service *service) serveHTTP(response http.ResponseWriter, request *http.Re
 			slog.Error("write health response", "error", err)
 		}
 	case request.Method == http.MethodPost && request.URL.Path == compilePath:
-		service.compile(response, request)
+		service.compile(serviceContext, response, request)
 	case request.URL.Path == compilePath || request.URL.Path == "/healthz":
 		response.Header().Set("Allow", allowedMethods(request.URL.Path))
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
@@ -101,7 +107,11 @@ func (service *service) options(response http.ResponseWriter, request *http.Requ
 	response.WriteHeader(http.StatusNoContent)
 }
 
-func (service *service) compile(response http.ResponseWriter, request *http.Request) {
+func (service *service) compile(
+	serviceContext context.Context,
+	response http.ResponseWriter,
+	request *http.Request,
+) {
 	appendVary(response.Header(), "Accept-Encoding")
 
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get(contentTypeHeader))
@@ -134,6 +144,7 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	}
 
 	artifact, err := service.cache.load(
+		serviceContext,
 		request.Context(),
 		input.Source,
 		func(ctx context.Context) (compilationArtifact, error) {

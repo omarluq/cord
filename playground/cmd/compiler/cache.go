@@ -31,7 +31,6 @@ type compilation struct {
 }
 
 type compilationCache struct {
-	ctx      context.Context
 	values   *hot.HotCache[[sha256.Size]byte, compilationArtifact]
 	inflight map[[sha256.Size]byte]*compilation
 	timeout  time.Duration
@@ -39,9 +38,8 @@ type compilationCache struct {
 	mu sync.Mutex
 }
 
-func newCompilationCache(ctx context.Context, cfg *config) *compilationCache {
+func newCompilationCache(cfg *config) *compilationCache {
 	return &compilationCache{
-		ctx: ctx,
 		values: hot.NewHotCache[
 			[sha256.Size]byte,
 			compilationArtifact,
@@ -55,7 +53,8 @@ func newCompilationCache(ctx context.Context, cfg *config) *compilationCache {
 }
 
 func (cache *compilationCache) load(
-	ctx context.Context,
+	serviceContext context.Context,
+	waiterContext context.Context,
 	source string,
 	loader func(context.Context) (compilationArtifact, error),
 ) (compilationArtifact, error) {
@@ -90,7 +89,7 @@ func (cache *compilationCache) load(
 		}
 		cache.inflight[key] = flight
 
-		go cache.compile(key, flight, loader)
+		go cache.compile(serviceContext, key, flight, loader)
 	}
 	cache.mu.Unlock()
 
@@ -101,12 +100,13 @@ func (cache *compilationCache) load(
 		}
 
 		return *flight.artifact, nil
-	case <-ctx.Done():
-		return compilationArtifact{}, fmt.Errorf("load compiled artifact: %w", ctx.Err())
+	case <-waiterContext.Done():
+		return compilationArtifact{}, fmt.Errorf("load compiled artifact: %w", waiterContext.Err())
 	}
 }
 
 func (cache *compilationCache) compile(
+	serviceContext context.Context,
 	key [sha256.Size]byte,
 	flight *compilation,
 	loader func(context.Context) (compilationArtifact, error),
@@ -114,7 +114,7 @@ func (cache *compilationCache) compile(
 	// Shared work belongs to the service rather than any waiter. In particular,
 	// it is intentionally allowed to finish and populate the cache after every
 	// waiter has left, bounded by the service lifecycle and compilation timeout.
-	ctx, cancel := context.WithTimeout(cache.ctx, cache.timeout)
+	ctx, cancel := context.WithTimeout(serviceContext, cache.timeout)
 	defer cancel()
 
 	artifact, err := loader(ctx)
