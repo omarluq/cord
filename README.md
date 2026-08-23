@@ -8,8 +8,8 @@
 [![License](https://img.shields.io/github/license/omarluq/cord)](./LICENSE.txt)
 
 Cord is a durable workflow library for Go. Compose ordinary typed functions into
-linear or branching workflows; Cord persists each run in SQLite and resumes
-available work after a process restart.
+linear or branching workflows; Cord persists each run in SQLite or PostgreSQL
+and resumes available work after a process restart.
 
 <img src="assets/banner.png" alt="Cord banner" height="400">
 
@@ -17,11 +17,14 @@ available work after a process restart.
 
 ```bash
 go get github.com/omarluq/cord
-go get modernc.org/sqlite
+go get modernc.org/sqlite # or github.com/jackc/pgx/v5
 ```
 
-Cord works with a caller-owned `*sql.DB` backed by SQLite. The examples use the
-pure-Go [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) driver.
+Cord works with a caller-owned `*sql.DB` backed by SQLite (including remote
+libSQL) or PostgreSQL. The examples use the pure-Go
+[`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) driver. PostgreSQL
+applications use pgx's [`database/sql`](https://pkg.go.dev/github.com/jackc/pgx/v5/stdlib)
+driver; Cord does not expose a driver, dialect option, or PostgreSQL-specific API.
 
 ## Quick start
 
@@ -82,6 +85,83 @@ func main() {
 
 The name passed to `From` is the durable workflow identity. Keep it stable when
 renaming or refactoring the root function.
+
+## PostgreSQL with pgx
+
+Register pgx's `database/sql` driver in the application, configure and health-check
+the caller-owned pool, then pass it to the same constructor:
+
+```go
+import _ "github.com/jackc/pgx/v5/stdlib"
+
+db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+if err != nil {
+    return err
+}
+db.SetMaxOpenConns(10)
+db.SetMaxIdleConns(10)
+if err := db.PingContext(ctx); err != nil {
+    return errors.Join(err, db.Close())
+}
+
+runtime, err := cord.New(ctx, db)
+```
+
+Cord detects supported SQL capabilities internally, including through wrapped
+drivers. An unsupported database makes `cord.New` return an error matching
+`cord.ErrMigrationFailed`; there is no public backend selector. Size the pool for
+application traffic, concurrent Cord workers, and startup migration work, and
+monitor `sql.DB.Stats` for waits. `Close` and `Shutdown` never close the pool; the
+application must close it. See the pgx commands for the
+[`linear`](./examples/linear/pg) and [`join`](./examples/join/pg) examples.
+
+Supported driver families are modernc, mattn, and ncruces SQLite, remote
+Turso/libSQL, and pgx v5 stdlib for PostgreSQL 14–18.
+
+## Turso and remote libSQL
+
+Use Turso's maintained Go libSQL driver when the database is hosted remotely:
+
+```bash
+go get github.com/tursodatabase/go-libsql
+```
+
+```go
+import _ "github.com/tursodatabase/go-libsql"
+
+func openTurso(ctx context.Context) (*sql.DB, error) {
+    databaseURL, err := url.Parse(os.Getenv("TURSO_DATABASE_URL"))
+    if err != nil {
+        return nil, fmt.Errorf("parse Turso database URL: %w", err)
+    }
+
+    query := databaseURL.Query()
+    query.Set("authToken", os.Getenv("TURSO_AUTH_TOKEN"))
+    databaseURL.RawQuery = query.Encode()
+
+    db, err := sql.Open("libsql", databaseURL.String())
+    if err != nil {
+        return nil, fmt.Errorf("open Turso database: %w", err)
+    }
+    // Remote migration locking reserves one connection for lease renewal while
+    // Goose holds another for migration work.
+    db.SetMaxOpenConns(2)
+
+    if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+        return nil, errors.Join(err, db.Close())
+    }
+
+    return db, nil
+}
+```
+
+Pass the returned database to `cord.New(ctx, db)`. The application owns the
+credentials, pool configuration, and `db.Close`. Remote migration locking
+requires at least two open connections so lease renewal cannot self-block; Cord
+returns an error instead of migrating when `MaxOpenConns` is one. Do not
+configure local-file WAL or locking pragmas for a remote URL. Cord uses an
+internal database lock to serialize migrations rather than SQLite's file
+locking.
 
 ## Register workflows at startup
 
@@ -165,8 +245,10 @@ total := cord.Join(items, shipping).Then(add)
 amount, err := total.Run(ctx, orderID)
 ```
 
-See [`examples/linear`](./examples/linear) and
-[`examples/join`](./examples/join) for complete programs.
+See the reusable [`linear`](./examples/linear) and
+[`join`](./examples/join) workflow packages. Each includes executable
+[`sqlite`](./examples/linear/sqlite) and [`pg`](./examples/linear/pg) commands;
+the PostgreSQL commands read `CORD_POSTGRES_DSN`.
 
 ## Retries and terminal failures
 
@@ -285,12 +367,35 @@ complete API.
 
 ## Development
 
-This project uses [mise](https://mise.jdx.dev/) and [Task](https://taskfile.dev/):
+This project uses [mise](https://mise.jdx.dev/) to pin Go, Task, and Bun. A
+fresh checkout can provision those tools and the lockfile-pinned browser
+packages with:
 
 ```bash
 mise install
-mise exec -- task ci
+mise exec -- task playground-install
 ```
+
+Validation is split by portability and purpose:
+
+| Gate | Requirements | Coverage |
+|---|---|---|
+| `mise exec -- task build-library` | Go only; CGO disabled | Portable Cord library build |
+| `mise exec -- go test ./...` | Go, CGO toolchain, Docker | Library tests, including mandatory mattn and Turso/libSQL integration |
+| `CORD_POSTGRES_DSN=... mise exec -- task test-postgres` | Go and PostgreSQL | Mandatory PostgreSQL integration/conformance tests and executable pgx example |
+| `mise exec -- task build` | Go and CGO toolchain | All native workspace packages |
+| `mise exec -- task ci` | Go, Task, Bun, CGO toolchain, Docker | Formatting, lint, dead code, race-tested drivers (including Turso), portable and native builds, and playground assets |
+| `mise exec -- task playground-test` | CI prerequisites, Chromium system libraries, and network access for the first browser install | Browser smoke test |
+
+Docker is a hard prerequisite for the mandatory Turso tests; they do not
+silently skip. `test-postgres` likewise fails if `CORD_POSTGRES_DSN` is absent or
+PostgreSQL is unreachable. PR CI uses PostgreSQL 18; scheduled and release gates
+run the PostgreSQL 14–18 matrix. Task installs frozen Bun dependencies, and the browser test
+installs pinned Playwright Chromium automatically. Linux is the hosted-CI reference platform;
+the pure-Go library build is the portability gate for other supported Go
+platforms. Cord never changes caller-owned database pool settings. Remote
+Turso migrations need at least two available connections, and applications
+should monitor `sql.DB.Stats` pool waits under scheduler load.
 
 ## License
 
