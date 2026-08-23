@@ -1,13 +1,13 @@
-// Command join demonstrates joining two workflow branches.
-package main
+// Package join demonstrates joining two workflow branches.
+package join
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
 	"github.com/omarluq/cord"
-	"github.com/omarluq/cord/internal/exampledb"
 )
 
 func loadReport(_ context.Context, value int) (int, error) { return value, nil }
@@ -15,25 +15,19 @@ func double(_ context.Context, value int) (int, error)     { return value * 2, n
 func addThree(_ context.Context, value int) (int, error)   { return value + 3, nil }
 func sum(_ context.Context, left, right int) (int, error)  { return left + right, nil }
 
-func run(ctx context.Context, input int) (_ int, err error) {
-	database := exampledb.DB()
-
+// Run executes the join example using a caller-owned database.
+func Run(ctx context.Context, database *sql.DB, input int) (_ int, err error) {
 	runtime, err := cord.New(ctx, database)
 	if err != nil {
 		return 0, fmt.Errorf("create runtime: %w", err)
 	}
 
 	defer func() {
-		err = errors.Join(err, runtime.Close(), database.Close())
+		err = errors.Join(err, runtime.Close())
 	}()
 
 	root := runtime.From("report-summary", loadReport)
 	flow := cord.Join(root.Then(double), root.Then(addThree)).Then(sum)
 
 	return flow.Run(ctx, input)
-}
-
-func main() {
-	result, err := run(context.Background(), 4)
-	fmt.Println(result, err)
 }
