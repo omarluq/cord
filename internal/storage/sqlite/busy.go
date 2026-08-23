@@ -11,7 +11,8 @@ const (
 	primaryCodeMask = uint64(0xff)
 )
 
-func isBusy(err error) bool {
+// IsBusy reports whether err contains a SQLite busy or locked result.
+func IsBusy(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -21,10 +22,10 @@ func isBusy(err error) bool {
 	}
 
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		return slices.ContainsFunc(joined.Unwrap(), isBusy)
+		return slices.ContainsFunc(joined.Unwrap(), IsBusy)
 	}
 
-	return isBusy(errors.Unwrap(err))
+	return IsBusy(errors.Unwrap(err))
 }
 
 func busyCodeMatches(err error) bool {
