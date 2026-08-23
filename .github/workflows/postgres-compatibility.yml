@@ -35,7 +35,7 @@ jobs:
         image: ${{ matrix.postgres.image }}
         env:
           POSTGRES_DB: cord
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: ${{ format('cord-{0}-{1}', github.run_id, github.run_attempt) }}
           POSTGRES_USER: postgres
         ports:
           - 5432:5432
@@ -45,7 +45,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      CORD_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/cord?sslmode=disable
+      CORD_POSTGRES_DSN: ${{ format('postgres://postgres:cord-{0}-{1}@127.0.0.1:5432/cord?sslmode=disable', github.run_id, github.run_attempt) }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
