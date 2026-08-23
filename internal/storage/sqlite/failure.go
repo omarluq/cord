@@ -28,7 +28,7 @@ func (s *Store) RetryNode(
 	var accepted bool
 
 	err := retryFencedContention(
-		ctx, "retry scheduling node retry", lease.ExpiresAt, func(attemptCtx context.Context) error {
+		ctx, "retry scheduling node retry", lease.Remaining, func(attemptCtx context.Context) error {
 			result, execErr := s.database.ExecContext(attemptCtx, `UPDATE cord_nodes SET status = ?, error_payload = ?,
 			available_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?), lease_owner = NULL, lease_expires_at = NULL
 			WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
@@ -68,7 +68,7 @@ func (s *Store) FailNode(
 	failure storage.EncodedPayload,
 ) (bool, error) {
 	return s.fencedTerminalTransition(
-		ctx, lease.ExpiresAt, func(attemptCtx context.Context, transaction *sql.Tx) error {
+		ctx, lease.Remaining, func(attemptCtx context.Context, transaction *sql.Tx) error {
 			result, err := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET status = ?, error_payload = ?, lease_owner = NULL, lease_expires_at = NULL,
 				completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')

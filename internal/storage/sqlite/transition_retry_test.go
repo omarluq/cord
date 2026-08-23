@@ -17,36 +17,36 @@ func TestFencedTerminalTransitionRetriesWholeTransaction(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		leaseExpiry  func() time.Time
-		name         string
-		busyAttempts int
-		wantAttempts int
-		wantAccepted bool
-		wantBusy     bool
+		name           string
+		leaseRemaining time.Duration
+		busyAttempts   int
+		wantAttempts   int
+		wantAccepted   bool
+		wantBusy       bool
 	}{
 		{
-			name:         "first attempt is busy",
-			busyAttempts: 1,
-			leaseExpiry:  func() time.Time { return time.Now().Add(time.Minute) },
-			wantAccepted: true,
-			wantAttempts: 2,
-			wantBusy:     false,
+			name:           "first attempt is busy",
+			busyAttempts:   1,
+			leaseRemaining: time.Minute,
+			wantAccepted:   true,
+			wantAttempts:   2,
+			wantBusy:       false,
 		},
 		{
-			name:         "multiple attempts are busy",
-			busyAttempts: 2,
-			leaseExpiry:  func() time.Time { return time.Now().Add(time.Minute) },
-			wantAccepted: true,
-			wantAttempts: 3,
-			wantBusy:     false,
+			name:           "multiple attempts are busy",
+			busyAttempts:   2,
+			leaseRemaining: time.Minute,
+			wantAccepted:   true,
+			wantAttempts:   3,
+			wantBusy:       false,
 		},
 		{
-			name:         "expired lease bounds the operation",
-			busyAttempts: 1,
-			leaseExpiry:  func() time.Time { return time.Now().Add(-time.Second) },
-			wantAccepted: false,
-			wantAttempts: 0,
-			wantBusy:     false,
+			name:           "expired lease bounds the operation",
+			busyAttempts:   1,
+			leaseRemaining: time.Nanosecond,
+			wantAccepted:   false,
+			wantAttempts:   0,
+			wantBusy:       false,
 		},
 	}
 
@@ -57,7 +57,7 @@ func TestFencedTerminalTransitionRetriesWholeTransaction(t *testing.T) {
 			database, store := newTransitionStore(t)
 			attempts := 0
 			accepted, transitionErr := sqlite.FencedTerminalTransitionForTest(
-				t.Context(), store, test.leaseExpiry(), func(attemptCtx context.Context, transaction *sql.Tx) error {
+				t.Context(), store, test.leaseRemaining, func(attemptCtx context.Context, transaction *sql.Tx) error {
 					attempts++
 
 					_, execErr := transaction.ExecContext(

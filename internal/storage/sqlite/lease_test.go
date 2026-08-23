@@ -32,7 +32,7 @@ func TestStore_HeartbeatNodeRejectsNonPositiveTTLWithoutMutation(t *testing.T) {
 			)
 			require.ErrorContains(t, err, "TTL must be positive")
 			assert.False(t, accepted)
-			assert.True(t, expiry.IsZero())
+			assert.Zero(t, expiry)
 
 			var after string
 
@@ -63,7 +63,7 @@ func TestStore_HeartbeatNodeRejectsExpiredLeaseWithoutMutation(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.False(t, accepted)
-	assert.True(t, expiry.IsZero())
+	assert.Zero(t, expiry)
 
 	var persistedExpiry string
 
@@ -94,7 +94,7 @@ func TestStore_HeartbeatNodeRejectsInactiveRun(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.False(t, heartbeatAccepted)
-	assert.True(t, expiry.IsZero())
+	assert.Zero(t, expiry)
 }
 
 func TestStore_RecoverExpiredLeasesLeavesActiveLeasesUntouched(t *testing.T) {

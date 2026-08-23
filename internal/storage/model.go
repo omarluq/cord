@@ -71,14 +71,14 @@ type Node struct {
 	AvailableAt   time.Time
 	CompletedAt   *time.Time
 	StartedAt     *time.Time
-	SignatureHash string
+	FunctionKey   string
 	RunID         RunID
 	ID            NodeID
-	FunctionKey   string
+	SignatureHash string
 	Status        NodeStatus
-	Lease         Lease
 	Error         EncodedPayload
 	Output        EncodedPayload
+	Lease         Lease
 	RemainingDeps int
 	Attempt       int
 }

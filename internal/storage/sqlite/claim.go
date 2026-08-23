@@ -30,6 +30,7 @@ const (
 		RETURNING run_id, node_id, function_key, signature_hash, attempt,
 			lease_generation,
 			CAST((julianday(lease_expires_at) - 2440587.5) * 86400000 AS INTEGER),
+			MAX(0, CAST((julianday(lease_expires_at) - julianday('now')) * 86400000000 AS INTEGER)),
 			(SELECT max_attempts FROM cord_runs WHERE id = run_id),
 			(SELECT retry_base_delay_ns FROM cord_runs WHERE id = run_id),
 			(SELECT retry_max_delay_ns FROM cord_runs WHERE id = run_id),
@@ -124,7 +125,7 @@ func (s *Store) claimReadyNodeOnce(
 func scanClaim(row *sql.Row, owner string) (*storage.Claim, error) {
 	claim := &storage.Claim{}
 
-	var expiresUnixMillis, retryBaseDelayNS, retryMaxDelayNS int64
+	var expiresUnixMillis, remainingMicros, retryBaseDelayNS, retryMaxDelayNS int64
 
 	err := row.Scan(
 		&claim.RunID,
@@ -134,6 +135,7 @@ func scanClaim(row *sql.Row, owner string) (*storage.Claim, error) {
 		&claim.Attempt,
 		&claim.Lease.Generation,
 		&expiresUnixMillis,
+		&remainingMicros,
 		&claim.MaxAttempts,
 		&retryBaseDelayNS,
 		&retryMaxDelayNS,
@@ -145,6 +147,7 @@ func scanClaim(row *sql.Row, owner string) (*storage.Claim, error) {
 
 	claim.Lease.Owner = owner
 	claim.Lease.ExpiresAt = time.UnixMilli(expiresUnixMillis).UTC()
+	claim.Lease.Remaining = time.Duration(remainingMicros) * time.Microsecond
 	claim.RetryBaseDelay = time.Duration(retryBaseDelayNS)
 	claim.RetryMaxDelay = time.Duration(retryMaxDelayNS)
 

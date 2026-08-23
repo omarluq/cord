@@ -23,10 +23,10 @@ type Backend interface {
 	FailNode(context.Context, RunID, NodeID, Lease, EncodedPayload) (bool, error)
 	// PromoteRetries makes retrying nodes eligible once their delay has elapsed.
 	PromoteRetries(context.Context) (int64, error)
-	// RecoverExpiredLeases returns abandoned running nodes to the ready state.
+	// RecoverExpiredLeases readies retryable abandoned nodes and terminalizes exhausted ones.
 	RecoverExpiredLeases(context.Context) (int64, error)
-	// HeartbeatNode extends a node lease and returns its new expiry time.
-	HeartbeatNode(context.Context, RunID, NodeID, Lease, time.Duration) (bool, time.Time, error)
+	// HeartbeatNode extends a node lease and returns its database-relative remaining lifetime.
+	HeartbeatNode(context.Context, RunID, NodeID, Lease, time.Duration) (bool, time.Duration, error)
 	// GetRunResult returns the persisted state and payloads for a run.
 	GetRunResult(context.Context, RunID) (RunResult, error)
 }
@@ -49,6 +49,10 @@ type Lease struct {
 	ExpiresAt  time.Time
 	Owner      string
 	Generation int64
+	// Remaining is the conservative database-relative lease lifetime observed
+	// when the lease was claimed. It is for local scheduling only and is not
+	// persisted or used as a durable ownership fence.
+	Remaining time.Duration
 }
 
 // Claim describes a node won by a worker.

@@ -15,12 +15,12 @@ func IsBusyForTest(err error) bool {
 func FencedTerminalTransitionForTest(
 	ctx context.Context,
 	store *Store,
-	leaseExpiresAt time.Time,
+	leaseRemaining time.Duration,
 	transition func(context.Context, *sql.Tx) error,
 ) (bool, error) {
 	return store.fencedTerminalTransition(
 		ctx,
-		leaseExpiresAt,
+		leaseRemaining,
 		func(attemptCtx context.Context, transaction *sql.Tx) error {
 			return transition(attemptCtx, transaction)
 		},

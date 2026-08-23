@@ -67,7 +67,7 @@ func (s *Store) CompleteNode(
 	output storage.EncodedPayload,
 ) (bool, error) {
 	return s.fencedTerminalTransition(
-		ctx, lease.ExpiresAt, func(attemptCtx context.Context, transaction *sql.Tx) error {
+		ctx, lease.Remaining, func(attemptCtx context.Context, transaction *sql.Tx) error {
 			result, err := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET status = ?, output_payload = ?, error_payload = NULL,
 				lease_owner = NULL, lease_expires_at = NULL,

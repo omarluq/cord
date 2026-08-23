@@ -95,7 +95,7 @@ func TestStore_HeartbeatExtendsLeaseAndRejectsLoss(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.True(t, accepted)
-	assert.True(t, expiry.After(claim.Lease.ExpiresAt))
+	assert.Positive(t, expiry)
 
 	_, err = database.ExecContext(t.Context(), `UPDATE cord_nodes SET lease_generation = lease_generation + 1
 		WHERE run_id = ? AND node_id = ?`, claim.RunID, claim.NodeID)
