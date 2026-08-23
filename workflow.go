@@ -92,8 +92,11 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 		return zero, errors.New("cord: runtime closed")
 	}
 
-	persistErr := w.runtime.store.CreateRun(ctx, runPlan)
-	w.runtime.finishRunAdmission()
+	persistErr := func() error {
+		defer w.runtime.finishRunAdmission()
+
+		return w.runtime.store.CreateRun(ctx, runPlan)
+	}()
 
 	if persistErr != nil {
 		return zero, fmt.Errorf("cord: persist run: %w", persistErr)
