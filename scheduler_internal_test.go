@@ -662,10 +662,9 @@ type admissionTestBackend struct {
 	allowCreate    chan struct{}
 	created        chan storage.RunID
 	resultRead     chan struct{}
-	result         storage.RunResult
+	result         resultStore
 	startOnce      sync.Once
 	resultReadOnce sync.Once
-	resultMu       sync.RWMutex
 }
 
 func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
@@ -687,22 +686,13 @@ func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storag
 }
 
 func (backend *admissionTestBackend) GetRunResult(context.Context, storage.RunID) (storage.RunResult, error) {
-	backend.resultMu.RLock()
-	result := backend.result
-	backend.resultMu.RUnlock()
+	result := backend.result.get()
 
 	if backend.resultRead != nil {
 		backend.resultReadOnce.Do(func() { close(backend.resultRead) })
 	}
 
 	return result, nil
-}
-
-func (backend *admissionTestBackend) setResult(result storage.RunResult) {
-	backend.resultMu.Lock()
-	defer backend.resultMu.Unlock()
-
-	backend.result = result
 }
 
 func (*admissionTestBackend) ClaimReadyNodeForFunctions(
@@ -830,11 +820,11 @@ func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) 
 		allowCreate:   make(chan struct{}),
 		created:       make(chan storage.RunID, 1),
 		resultRead:    make(chan struct{}),
-		result: storage.RunResult{
+		result: newResultStore(storage.RunResult{
 			Status: storage.RunRunning,
 			Output: nil,
 			Error:  nil,
-		},
+		}),
 	}
 	runtime := newAdmissionTestRuntime(backend)
 	flow := runtime.From("persist-versus-close", admissionTestStep)
@@ -865,7 +855,7 @@ func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) 
 	<-runtime.ctx.Done()
 	<-backend.resultRead
 
-	backend.setResult(storage.RunResult{
+	backend.result.set(storage.RunResult{
 		Status: storage.RunCompleted,
 		Output: storage.EncodedPayload("2"),
 		Error:  nil,
