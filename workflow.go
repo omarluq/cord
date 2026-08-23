@@ -88,23 +88,38 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 		return zero, fmt.Errorf("cord: construct result codec: %w", err)
 	}
 
-	if err = w.runtime.store.CreateRun(ctx, runPlan); err != nil {
-		return zero, fmt.Errorf("cord: persist run: %w", err)
+	if !w.runtime.admitRun() {
+		return zero, errors.New("cord: runtime closed")
+	}
+
+	persistErr := w.runtime.store.CreateRun(ctx, runPlan)
+	w.runtime.finishRunAdmission()
+
+	if persistErr != nil {
+		return zero, fmt.Errorf("cord: persist run: %w", persistErr)
 	}
 
 	w.runtime.signalScheduler()
 
-	return w.wait(ctx, runPlan.Run.ID, resultCodec)
+	// Shutdown waits for this admitted persistence attempt before canceling the
+	// runtime, so a durable run cannot be hidden behind runtime closed here.
+	return w.wait(ctx, runPlan.Run.ID, resultCodec, true)
 }
+
+const resultPollInterval = 100 * time.Millisecond
 
 func (w Workflow[I, O]) wait(
 	ctx context.Context,
 	runID storage.RunID,
 	codec serialization.JSONCodec[O],
+	observeRuntimeClose bool,
 ) (O, error) {
 	var zero O
 
-	ticker := time.NewTicker(w.runtime.pollInterval)
+	completed, unsubscribe := w.runtime.subscribeCompletion(runID)
+	defer unsubscribe()
+
+	ticker := time.NewTicker(resultPollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -120,13 +135,41 @@ func (w Workflow[I, O]) wait(
 			}
 		}
 
-		select {
-		case <-w.runtime.ctx.Done():
-			return zero, errors.New("cord: runtime closed")
-		case <-ctx.Done():
-			return zero, fmt.Errorf("cord: workflow context: %w", ctx.Err())
-		case <-ticker.C:
+		if err := waitForResultSignal(
+			ctx, w.runtime.ctx, completed, ticker.C, observeRuntimeClose,
+		); err != nil {
+			return zero, err
 		}
+	}
+}
+
+func waitForResultSignal(
+	ctx context.Context,
+	runtimeCtx context.Context,
+	completed <-chan struct{},
+	poll <-chan time.Time,
+	observeRuntimeClose bool,
+) error {
+	if !observeRuntimeClose {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("cord: workflow context: %w", ctx.Err())
+		case <-completed:
+			return nil
+		case <-poll:
+			return nil
+		}
+	}
+
+	select {
+	case <-runtimeCtx.Done():
+		return errors.New("cord: runtime closed")
+	case <-ctx.Done():
+		return fmt.Errorf("cord: workflow context: %w", ctx.Err())
+	case <-completed:
+		return nil
+	case <-poll:
+		return nil
 	}
 }
 
