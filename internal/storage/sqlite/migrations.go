@@ -43,7 +43,7 @@ func Verify(ctx context.Context, database *sql.DB) error {
 // Migrate applies all pending SQLite migrations.
 func Migrate(ctx context.Context, database *sql.DB) error {
 	return retry(ctx, "wait for concurrent migration", time.Time{}, func(err error) bool {
-		return errors.Is(err, storage.ErrSchemaOutdated) || isBusy(err)
+		return errors.Is(err, storage.ErrSchemaOutdated) || IsBusy(err)
 	}, func(operationCtx context.Context) error {
 		if err := migrateWithRetry(operationCtx, database); err != nil {
 			return err

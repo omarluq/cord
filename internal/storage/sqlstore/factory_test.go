@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/omarluq/cord/internal/storage/sqlstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 )
 
 func TestDetect(t *testing.T) {
@@ -73,6 +75,43 @@ func TestDetect(t *testing.T) {
 			assert.Equal(t, testCase.want, got)
 		})
 	}
+}
+
+func TestDetectTreatsSQLiteBusyAsSQLite(t *testing.T) {
+	t.Parallel()
+
+	database, err := sql.Open(
+		"sqlite",
+		"file:"+t.TempDir()+"/busy.db?_pragma=busy_timeout(0)&_pragma=locking_mode(EXCLUSIVE)",
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	connection, err := database.Conn(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, connection.Close()) })
+
+	_, err = connection.ExecContext(t.Context(), "CREATE TABLE lock_holder (id INTEGER)")
+	require.NoError(t, err)
+
+	transaction, err := connection.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		rollbackErr := transaction.Rollback()
+		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			t.Errorf("rollback lock transaction: %v", rollbackErr)
+		}
+	})
+
+	_, err = transaction.ExecContext(t.Context(), "INSERT INTO lock_holder VALUES (1)")
+	require.NoError(t, err)
+
+	detectionCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = sqlstore.Detect(detectionCtx, database)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotContains(t, err.Error(), "PostgreSQL capability probe")
 }
 
 func TestNewDispatchesPostgres(t *testing.T) {

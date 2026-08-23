@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/omarluq/cord/internal/storage/postgres"
@@ -15,6 +16,7 @@ import (
 const (
 	postgresCapabilityProbe = "SELECT current_setting('server_version_num')::bigint"
 	sqliteCapabilityProbe   = "SELECT sqlite_version()"
+	capabilityRetryDelay    = 10 * time.Millisecond
 )
 
 type dialect uint8
@@ -72,11 +74,28 @@ func New(ctx context.Context, database *sql.DB) (*Store, error) {
 }
 
 func detect(ctx context.Context, database *sql.DB) (dialect, error) {
-	var sqliteVersion string
+	var (
+		sqliteVersion string
+		sqliteErr     error
+	)
 
-	sqliteErr := database.QueryRowContext(ctx, sqliteCapabilityProbe).Scan(&sqliteVersion)
-	if sqliteErr == nil {
-		return dialectSQLite, nil
+	for {
+		sqliteErr = database.QueryRowContext(ctx, sqliteCapabilityProbe).Scan(&sqliteVersion)
+		if sqliteErr == nil {
+			return dialectSQLite, nil
+		}
+
+		if !sqlite.IsBusy(sqliteErr) {
+			break
+		}
+
+		// A concurrent SQLite migration can temporarily lock even a capability
+		// probe. Retry detection instead of misclassifying SQLite as PostgreSQL.
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("detect SQL storage backend: %w", context.Cause(ctx))
+		case <-time.After(capabilityRetryDelay):
+		}
 	}
 
 	if ctx.Err() != nil {

@@ -11,7 +11,7 @@ import (
 const retryAttempts = 20
 
 func retryContention(ctx context.Context, operation string, operationFunc func(context.Context) error) error {
-	return retry(ctx, operation, time.Time{}, isBusy, operationFunc)
+	return retry(ctx, operation, time.Time{}, IsBusy, operationFunc)
 }
 
 func retryFencedContention(
@@ -20,7 +20,7 @@ func retryFencedContention(
 	leaseExpiresAt time.Time,
 	operationFunc func(context.Context) error,
 ) error {
-	return retry(ctx, operation, leaseExpiresAt, isBusy, operationFunc)
+	return retry(ctx, operation, leaseExpiresAt, IsBusy, operationFunc)
 }
 
 func retry(
