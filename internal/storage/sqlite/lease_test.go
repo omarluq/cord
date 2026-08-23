@@ -1,6 +1,8 @@
 package sqlite_test
 
 import (
+	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -109,4 +111,60 @@ func TestStore_RecoverExpiredLeasesLeavesActiveLeasesUntouched(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, recovered)
 	assertNodeState(t, database, claim.RunID, claim.NodeID, storage.NodeRunning, 0)
+}
+
+func TestStore_RecoverExpiredExhaustedLeasesInBatches(t *testing.T) {
+	t.Parallel()
+
+	const (
+		batchSize = 100
+		runCount  = batchSize + 1
+	)
+
+	database, store := newStore(t, true)
+	now := time.Now().UTC()
+
+	for index := range runCount {
+		plan := validPlan(now, storage.RunID(fmt.Sprintf("batch-recovery-%03d", index)))
+		plan.Run.MaxAttempts = 1
+		require.NoError(t, store.CreateRun(t.Context(), &plan))
+		claimNode(t, store)
+	}
+
+	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
+		SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second')
+		WHERE status = ?`, storage.NodeRunning)
+	require.NoError(t, err)
+
+	recovered, err := store.RecoverExpiredLeases(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, int64(batchSize), recovered)
+	assertExpiredRunningRunCount(t, database, 1)
+
+	recovered, err = store.RecoverExpiredLeases(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), recovered)
+	assertExpiredRunningRunCount(t, database, 0)
+
+	var failedRuns int
+
+	err = database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM cord_runs WHERE status = ?`, storage.RunFailed).
+		Scan(&failedRuns)
+	require.NoError(t, err)
+	assert.Equal(t, runCount, failedRuns)
+}
+
+func assertExpiredRunningRunCount(t *testing.T, database *sql.DB, expected int) {
+	t.Helper()
+
+	var count int
+
+	err := database.QueryRowContext(t.Context(), `SELECT COUNT(DISTINCT n.run_id)
+		FROM cord_nodes AS n JOIN cord_runs AS r ON r.id = n.run_id
+		WHERE n.status = ? AND julianday(n.lease_expires_at) <= julianday('now') AND r.status = ?`,
+		storage.NodeRunning,
+		storage.RunRunning,
+	).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, expected, count)
 }
