@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/omarluq/cord/playground/internal/protocol"
 )
 
 func performCompilationRequest(
@@ -24,7 +26,7 @@ func performCompilationRequest(
 		return nil, fmt.Errorf("create compilation request: %w", err)
 	}
 
-	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Type", protocol.JSONMediaType)
 
 	response, err := (&http.Client{Timeout: compilationRequestTimeout}).Do(request)
 	if err != nil {

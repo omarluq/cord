@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"syscall/js"
+
+	"github.com/omarluq/cord/playground/internal/protocol"
 )
 
 func performCompilationRequest(
@@ -23,7 +25,7 @@ func performCompilationRequest(
 	options := js.Global().Get("Object").New()
 	options.Set("method", http.MethodPost)
 	headers := js.Global().Get("Headers").New()
-	headers.Call("set", "Content-Type", "application/json")
+	headers.Call("set", "Content-Type", protocol.JSONMediaType)
 	options.Set("headers", headers)
 
 	requestBody := js.Global().Get("Uint8Array").New(len(body))

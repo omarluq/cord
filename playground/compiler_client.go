@@ -54,7 +54,7 @@ func compile(
 	endpoint string,
 	source string,
 ) (compilationArtifact, error) {
-	body, err := json.Marshal(map[string]string{"source": source})
+	body, err := json.Marshal(protocol.CompileRequest{Source: source})
 	if err != nil {
 		return compilationArtifact{}, fmt.Errorf(
 			"encode compilation request: %w",
@@ -111,9 +111,7 @@ func readCompilationResponse(
 }
 
 func compilationError(status string, body []byte) error {
-	var failure struct {
-		Error string `json:"error"`
-	}
+	var failure protocol.ErrorResponse
 	if json.Unmarshal(body, &failure) == nil && failure.Error != "" {
 		return fmt.Errorf("compile workflow: %s", failure.Error)
 	}
@@ -133,7 +131,7 @@ func decodeArtifact(
 		)
 	}
 
-	if mediaType != "multipart/form-data" ||
+	if mediaType != protocol.MultipartMediaType ||
 		parameters["boundary"] == "" {
 		return compilationArtifact{}, fmt.Errorf(
 			"unexpected content type %q",
@@ -186,7 +184,7 @@ func readArtifactPart(
 	name := part.FormName()
 
 	limit := int64(maxGraphBytes)
-	if name == "wasm" {
+	if name == protocol.WASMPartName {
 		limit = maxWASMBytes
 	}
 
@@ -198,11 +196,11 @@ func readArtifactPart(
 	}
 
 	switch name {
-	case "graph":
+	case protocol.GraphPartName:
 		if err := json.Unmarshal(content, &artifact.graph); err != nil {
 			return false, fmt.Errorf("decode graph: %w", err)
 		}
-	case "wasm":
+	case protocol.WASMPartName:
 		artifact.wasm = content
 	}
 
