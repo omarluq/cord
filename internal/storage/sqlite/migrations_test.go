@@ -64,7 +64,7 @@ func TestMigrateConcurrentConnections(t *testing.T) {
 	}
 
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []int64{1, 2}, versions)
+	assert.Equal(t, []int64{1, 2, 3}, versions)
 }
 
 func TestVerifyReportsSchemaCompatibility(t *testing.T) {
@@ -92,11 +92,11 @@ func TestVerifyReportsSchemaCompatibility(t *testing.T) {
 		database := openDatabase(t, true)
 		require.NoError(t, sqlite.Migrate(t.Context(), database))
 		_, err := database.ExecContext(t.Context(), `INSERT INTO cord_schema_migrations
-			(version_id, is_applied, tstamp) VALUES (3, 1, datetime('now'))`)
+			(version_id, is_applied, tstamp) VALUES (4, 1, datetime('now'))`)
 		require.NoError(t, err)
 		err = sqlite.Verify(t.Context(), database)
 		require.ErrorIs(t, err, storage.ErrSchemaNewer)
-		assert.Contains(t, err.Error(), "current=3 required=2")
+		assert.Contains(t, err.Error(), "current=4 required=3")
 	})
 }
 
@@ -158,9 +158,14 @@ func incompatibleSchemaCases() []incompatibleSchemaCase {
 			wantError: `column "cord_edges"."run_id"`,
 		},
 		{
-			name:       "missing index",
+			name:       "missing node index",
 			statements: []string{`DROP INDEX cord_nodes_lease_expires_at_idx`},
 			wantError:  `index "cord_nodes_lease_expires_at_idx" is missing`,
+		},
+		{
+			name:       "missing ordered-child edge index",
+			statements: []string{`DROP INDEX cord_edges_run_child_parent_order_idx`},
+			wantError:  `index "cord_edges_run_child_parent_order_idx" is missing`,
 		},
 		{
 			name: "wrong index columns",
@@ -189,6 +194,8 @@ func incompatibleSchemaCases() []incompatibleSchemaCase {
 					parent_order INTEGER NOT NULL DEFAULT 0,
 					PRIMARY KEY (run_id, parent_node_id, child_node_id)
 				)`,
+				`CREATE INDEX cord_edges_run_child_parent_order_idx
+					ON cord_edges(run_id, child_node_id, parent_order)`,
 			},
 			wantError: `table "cord_edges" is missing foreign key`,
 		},
@@ -217,13 +224,50 @@ func runIncompatibleSchemaCase(t *testing.T, testCase incompatibleSchemaCase) {
 	assert.Contains(t, err.Error(), testCase.wantError)
 }
 
+func TestMigrateUpgradesV2SchemaAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	database := openDatabase(t, true)
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+
+	_, err := database.ExecContext(t.Context(), "DROP INDEX cord_edges_run_child_parent_order_idx")
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(),
+		"DELETE FROM cord_schema_migrations WHERE version_id = 3")
+	require.NoError(t, err)
+
+	err = sqlite.Verify(t.Context(), database)
+	require.ErrorIs(t, err, storage.ErrSchemaOutdated)
+
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	require.NoError(t, sqlite.Verify(t.Context(), database))
+
+	rows, err := database.QueryContext(t.Context(),
+		"SELECT name FROM pragma_index_info('cord_edges_run_child_parent_order_idx') ORDER BY seqno")
+	require.NoError(t, err)
+
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var columns []string
+
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		columns = append(columns, name)
+	}
+
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"run_id", "child_node_id", "parent_order"}, columns)
+}
+
 func TestVerifyTreatsLatestRolledBackMigrationAsPreviousVersion(t *testing.T) {
 	t.Parallel()
 
 	database := openDatabase(t, true)
 	require.NoError(t, sqlite.Migrate(t.Context(), database))
 	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_schema_migrations
-		(version_id, is_applied, tstamp) VALUES (3, 0, datetime('now'))`)
+		(version_id, is_applied, tstamp) VALUES (4, 0, datetime('now'))`)
 	require.NoError(t, err)
 	require.NoError(t, sqlite.Verify(t.Context(), database))
 }

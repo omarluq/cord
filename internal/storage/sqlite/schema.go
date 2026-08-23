@@ -11,13 +11,25 @@ import (
 const (
 	schemaV1 = 1
 	schemaV2 = 2
+	schemaV3 = 3
 )
 
 func migrations() []*goose.Migration {
 	return []*goose.Migration{
 		goose.NewGoMigration(schemaV1, &goose.GoFunc{RunTx: migrateV1}, nil),
 		goose.NewGoMigration(schemaV2, &goose.GoFunc{RunTx: migrateV2}, nil),
+		goose.NewGoMigration(schemaV3, &goose.GoFunc{RunTx: migrateV3}, nil),
 	}
+}
+
+func migrateV3(ctx context.Context, transaction *sql.Tx) error {
+	_, err := transaction.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS cord_edges_run_child_parent_order_idx
+		ON cord_edges(run_id, child_node_id, parent_order)`)
+	if err != nil {
+		return fmt.Errorf("create ordered-child edge index: %w", err)
+	}
+
+	return nil
 }
 
 func migrateV2(ctx context.Context, transaction *sql.Tx) error {
