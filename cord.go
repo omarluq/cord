@@ -125,15 +125,19 @@ func (c *Cord) admitRun() bool {
 
 // finishRunAdmission releases admission after persistence and lets a waiting
 // shutdown cancel local execution once all admitted submissions are reported.
-func (c *Cord) finishRunAdmission() {
+// It reports whether shutdown began while the persistence attempt was admitted.
+func (c *Cord) finishRunAdmission() bool {
 	c.admissionMu.Lock()
 	c.admittedRuns--
-	stopNow := !c.acceptingRuns && c.admittedRuns == 0
+	shutdownStarted := !c.acceptingRuns
+	stopNow := shutdownStarted && c.admittedRuns == 0
 	c.admissionMu.Unlock()
 
 	if stopNow {
 		c.stopRuntime()
 	}
+
+	return shutdownStarted
 }
 
 func (c *Cord) subscribeCompletion(

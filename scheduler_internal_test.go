@@ -657,12 +657,15 @@ func TestCord_WakeDoesNotRunMaintenance(t *testing.T) {
 
 type admissionTestBackend struct {
 	storage.Backend
-	createPanic   any
-	createStarted chan struct{}
-	allowCreate   chan struct{}
-	created       chan storage.RunID
-	result        storage.RunResult
-	startOnce     sync.Once
+	createPanic    any
+	createStarted  chan struct{}
+	allowCreate    chan struct{}
+	created        chan storage.RunID
+	resultRead     chan struct{}
+	result         storage.RunResult
+	startOnce      sync.Once
+	resultReadOnce sync.Once
+	resultMu       sync.RWMutex
 }
 
 func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
@@ -684,7 +687,22 @@ func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storag
 }
 
 func (backend *admissionTestBackend) GetRunResult(context.Context, storage.RunID) (storage.RunResult, error) {
-	return backend.result, nil
+	backend.resultMu.RLock()
+	result := backend.result
+	backend.resultMu.RUnlock()
+
+	if backend.resultRead != nil {
+		backend.resultReadOnce.Do(func() { close(backend.resultRead) })
+	}
+
+	return result, nil
+}
+
+func (backend *admissionTestBackend) setResult(result storage.RunResult) {
+	backend.resultMu.Lock()
+	defer backend.resultMu.Unlock()
+
+	backend.result = result
 }
 
 func (*admissionTestBackend) ClaimReadyNodeForFunctions(
@@ -708,6 +726,8 @@ func newAdmissionTestRuntime(backend storage.Backend) *Cord {
 
 func admissionTestStep(_ context.Context, input int) (int, error) { return input + 1, nil }
 
+// TestWorkflowRunCreateRunPanicReleasesAdmission verifies that a CreateRun
+// panic releases admission and allows shutdown to complete.
 func TestWorkflowRunCreateRunPanicReleasesAdmission(t *testing.T) {
 	t.Parallel()
 
@@ -800,6 +820,8 @@ func TestWorkflowRunShutdownDuringSubmissionRejectsBeforePersistence(t *testing.
 	}
 }
 
+// TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported verifies that a
+// persisted running submission remains observable when shutdown wins afterward.
 func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) {
 	t.Parallel()
 
@@ -807,9 +829,10 @@ func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) 
 		createStarted: make(chan struct{}),
 		allowCreate:   make(chan struct{}),
 		created:       make(chan storage.RunID, 1),
+		resultRead:    make(chan struct{}),
 		result: storage.RunResult{
-			Status: storage.RunCompleted,
-			Output: storage.EncodedPayload("2"),
+			Status: storage.RunRunning,
+			Output: nil,
 			Error:  nil,
 		},
 	}
@@ -839,6 +862,15 @@ func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) 
 	close(backend.allowCreate)
 	createdID := <-backend.created
 	require.NotEmpty(t, createdID)
+	<-runtime.ctx.Done()
+	<-backend.resultRead
+
+	backend.setResult(storage.RunResult{
+		Status: storage.RunCompleted,
+		Output: storage.EncodedPayload("2"),
+		Error:  nil,
+	})
+	runtime.notifyCompletion(createdID)
 
 	outcome := <-runDone
 	require.NoError(t, outcome.err)

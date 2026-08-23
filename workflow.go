@@ -92,20 +92,31 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 		return zero, errors.New("cord: runtime closed")
 	}
 
-	persistErr := func() error {
-		defer w.runtime.finishRunAdmission()
+	shutdownOverlappedPersistence, err := w.persistRun(ctx, runPlan)
+	if err != nil {
+		return zero, err
+	}
 
-		return w.runtime.store.CreateRun(ctx, runPlan)
+	// A submission that won admission and persisted during shutdown remains
+	// observable through its caller's context even after local execution stops.
+	return w.wait(ctx, runPlan.Run.ID, resultCodec, !shutdownOverlappedPersistence)
+}
+
+func (w Workflow[I, O]) persistRun(
+	ctx context.Context,
+	runPlan *storage.RunPlan,
+) (shutdownOverlappedPersistence bool, err error) {
+	defer func() {
+		shutdownOverlappedPersistence = w.runtime.finishRunAdmission()
 	}()
-	if persistErr != nil {
-		return zero, fmt.Errorf("cord: persist run: %w", persistErr)
+
+	if err := w.runtime.store.CreateRun(ctx, runPlan); err != nil {
+		return false, fmt.Errorf("cord: persist run: %w", err)
 	}
 
 	w.runtime.signalScheduler()
 
-	// Shutdown waits for this admitted persistence attempt before canceling the
-	// runtime, so a durable run cannot be hidden behind runtime closed here.
-	return w.wait(ctx, runPlan.Run.ID, resultCodec, true)
+	return shutdownOverlappedPersistence, nil
 }
 
 const resultPollInterval = 100 * time.Millisecond
