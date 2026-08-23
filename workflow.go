@@ -153,19 +153,13 @@ func waitForResultSignal(
 	poll <-chan time.Time,
 	observeRuntimeClose bool,
 ) error {
-	if !observeRuntimeClose {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("cord: workflow context: %w", ctx.Err())
-		case <-completed:
-			return nil
-		case <-poll:
-			return nil
-		}
+	var runtimeDone <-chan struct{}
+	if observeRuntimeClose {
+		runtimeDone = runtimeCtx.Done()
 	}
 
 	select {
-	case <-runtimeCtx.Done():
+	case <-runtimeDone:
 		return errors.New("cord: runtime closed")
 	case <-ctx.Done():
 		return fmt.Errorf("cord: workflow context: %w", ctx.Err())
