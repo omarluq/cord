@@ -41,6 +41,37 @@ type runFailureError struct{ failure *persistedFailure }
 
 func (err runFailureError) Error() string { return err.failure.Message }
 
+type fencedTransitionClass uint8
+
+const (
+	fencedTransitionLeaseLost fencedTransitionClass = iota
+	fencedTransitionDurableWinner
+	fencedTransitionCancellationWon
+	fencedTransitionImpossibleState
+)
+
+type fencedTransitionError struct {
+	operation string
+	status    storage.RunStatus
+	class     fencedTransitionClass
+}
+
+// Error describes why durable storage rejected a scheduler transition.
+func (err *fencedTransitionError) Error() string {
+	switch err.class {
+	case fencedTransitionLeaseLost:
+		return fmt.Sprintf("cord: %s rejected: lease ownership was lost", err.operation)
+	case fencedTransitionDurableWinner:
+		return fmt.Sprintf("cord: %s rejected: durable run outcome %q already won", err.operation, err.status)
+	case fencedTransitionCancellationWon:
+		return fmt.Sprintf("cord: %s rejected: run cancellation already won", err.operation)
+	case fencedTransitionImpossibleState:
+		return fmt.Sprintf("cord: %s rejected: impossible durable run status %q", err.operation, err.status)
+	}
+
+	return fmt.Sprintf("cord: %s rejected: unknown transition classification", err.operation)
+}
+
 func encodedStep[I, O any](step func(context.Context, I) (O, error)) encodedInvocation {
 	inputCodec, inputErr := serialization.NewJSONCodec[I]()
 	outputCodec, outputErr := serialization.NewJSONCodec[O]()
@@ -284,7 +315,7 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	defer commitCancel()
 
 	if invokeErr == nil {
-		_, err = c.store.CompleteNode(commitCtx, claim.RunID, claim.NodeID, claim.Lease, output)
+		err = c.completeClaim(commitCtx, claim, output)
 	} else {
 		err = c.handleFailure(commitCtx, claim, invokeErr)
 	}
@@ -292,6 +323,25 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	if err != nil {
 		c.reportSchedulerError(err)
 	}
+}
+
+func (c *Cord) completeClaim(
+	ctx context.Context,
+	claim *storage.Claim,
+	output storage.EncodedPayload,
+) error {
+	accepted, err := c.store.CompleteNode(ctx, claim.RunID, claim.NodeID, claim.Lease, output)
+	if err != nil {
+		return fmt.Errorf("cord: complete node: %w", err)
+	}
+
+	if !accepted {
+		return c.classifyRejectedTransition(ctx, claim.RunID, "node completion")
+	}
+
+	c.notifyCompletion(claim.RunID)
+
+	return nil
 }
 
 func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeErr error) error {
@@ -304,22 +354,63 @@ func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeEr
 	}
 
 	if isPermanent(invokeErr) || claim.Attempt >= policy.maxAttempts {
-		_, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)
+		accepted, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)
 		if err != nil {
 			return fmt.Errorf("cord: fail node: %w", err)
 		}
+
+		if !accepted {
+			return c.classifyRejectedTransition(ctx, claim.RunID, "node failure")
+		}
+
+		c.notifyCompletion(claim.RunID)
 
 		return nil
 	}
 
 	delay := retryDelay(policy, claim.Attempt)
 
-	_, err := c.store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure, delay)
+	accepted, err := c.store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure, delay)
 	if err != nil {
 		return fmt.Errorf("cord: schedule retry: %w", err)
 	}
 
+	if !accepted {
+		return c.classifyRejectedTransition(ctx, claim.RunID, "node retry")
+	}
+
 	return nil
+}
+
+func (c *Cord) classifyRejectedTransition(
+	ctx context.Context,
+	runID storage.RunID,
+	operation string,
+) error {
+	result, err := c.store.GetRunResult(ctx, runID)
+	if err != nil {
+		if errors.Is(err, storage.ErrRunNotFound) {
+			return &fencedTransitionError{
+				operation: operation,
+				class:     fencedTransitionImpossibleState,
+			}
+		}
+
+		return fmt.Errorf("cord: classify rejected %s: %w", operation, err)
+	}
+
+	class := fencedTransitionImpossibleState
+
+	switch result.Status {
+	case storage.RunRunning:
+		class = fencedTransitionLeaseLost
+	case storage.RunCompleted, storage.RunFailed:
+		class = fencedTransitionDurableWinner
+	case storage.RunCanceling, storage.RunCanceled:
+		class = fencedTransitionCancellationWon
+	}
+
+	return &fencedTransitionError{operation: operation, status: result.Status, class: class}
 }
 
 func invokeSafely(
@@ -352,21 +443,20 @@ func encodeFailure(claim *storage.Claim, err error) storage.EncodedPayload {
 
 func (c *Cord) heartbeat(ctx context.Context, claim *storage.Claim, cancel context.CancelFunc, done chan<- bool) {
 	held := true
-	expires := claim.Lease.ExpiresAt
 
-	defer func() {
-		claim.Lease.ExpiresAt = expires
+	remaining := claim.Lease.Remaining
+	if remaining <= 0 {
+		remaining = c.leaseTTL
+	}
 
-		done <- held
-	}()
+	defer func() { done <- held }()
 
 	ticker := time.NewTicker(c.heartbeatInterval)
 	defer ticker.Stop()
 
-	// SQLite supplies absolute lease timestamps, which are not safe to compare
-	// with a potentially skewed host clock. Use monotonic elapsed time and leave
-	// one heartbeat interval as a safety margin for the database round trip.
-	leaseTimer := time.NewTimer(c.leaseTTL - c.heartbeatInterval)
+	// Remaining is measured by the database. time.Timer then tracks only local
+	// monotonic elapsed time, with one heartbeat interval reserved for retries.
+	leaseTimer := time.NewTimer(heartbeatSafetyWindow(remaining, c.heartbeatInterval))
 	defer leaseTimer.Stop()
 
 	for {
@@ -380,13 +470,20 @@ func (c *Cord) heartbeat(ctx context.Context, claim *storage.Claim, cancel conte
 
 			return
 		case <-ticker.C:
-			outcome, newExpiry := c.heartbeatOnce(ctx, claim)
+			outcome, newRemaining := c.heartbeatOnce(ctx, claim)
 			switch outcome {
 			case heartbeatAccepted:
-				expires = newExpiry
-				claim.Lease.ExpiresAt = newExpiry
+				claim.Lease.Remaining = newRemaining
 
-				leaseTimer.Reset(c.leaseTTL - c.heartbeatInterval)
+				if newRemaining <= c.heartbeatInterval {
+					held = false
+
+					cancel()
+
+					return
+				}
+
+				leaseTimer.Reset(heartbeatSafetyWindow(newRemaining, c.heartbeatInterval))
 			case heartbeatRetryable:
 				continue
 			case heartbeatLost:
@@ -408,30 +505,40 @@ const (
 	heartbeatLost
 )
 
-func (c *Cord) heartbeatOnce(ctx context.Context, claim *storage.Claim) (heartbeatOutcome, time.Time) {
-	accepted, expiry, err := c.store.HeartbeatNode(ctx, claim.RunID, claim.NodeID, claim.Lease, c.leaseTTL)
+func heartbeatSafetyWindow(remaining, retryMargin time.Duration) time.Duration {
+	if remaining <= retryMargin {
+		return 0
+	}
+
+	return remaining - retryMargin
+}
+
+func (c *Cord) heartbeatOnce(ctx context.Context, claim *storage.Claim) (heartbeatOutcome, time.Duration) {
+	accepted, remaining, err := c.store.HeartbeatNode(ctx, claim.RunID, claim.NodeID, claim.Lease, c.leaseTTL)
 	if err != nil {
 		if ctx.Err() == nil {
 			c.reportSchedulerError(fmt.Errorf("cord: heartbeat node: %w", err))
 		}
 
-		return heartbeatRetryable, time.Time{}
+		return heartbeatRetryable, 0
 	}
 
 	if !accepted {
-		return heartbeatLost, time.Time{}
+		return heartbeatLost, 0
 	}
 
-	return heartbeatAccepted, expiry
+	return heartbeatAccepted, remaining
 }
 
 func (c *Cord) releaseClaim(claim *storage.Claim, cause error) {
 	ctx, cancel := context.WithTimeout(context.Background(), terminalCommitTimeout)
 	defer cancel()
 
-	_, err := c.store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, nil, 0)
+	accepted, err := c.store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, nil, 0)
 	if err != nil {
 		cause = errors.Join(cause, fmt.Errorf("cord: release unusable claim: %w", err))
+	} else if !accepted {
+		cause = errors.Join(cause, c.classifyRejectedTransition(ctx, claim.RunID, "claim release"))
 	}
 
 	c.reportSchedulerError(cause)
