@@ -12,10 +12,10 @@ var errFenceRejected = errors.New("lease fence rejected")
 
 func (s *Store) fencedTerminalTransition(
 	ctx context.Context,
-	leaseExpiresAt time.Time,
+	leaseRemaining time.Duration,
 	transition func(context.Context, *sql.Tx) error,
 ) (accepted bool, err error) {
-	err = retryFencedContention(ctx, "retry fenced transition", leaseExpiresAt, func(attemptCtx context.Context) error {
+	err = retryFencedContention(ctx, "retry fenced transition", leaseRemaining, func(attemptCtx context.Context) error {
 		accepted, err = s.fencedTerminalTransitionOnce(attemptCtx, transition)
 
 		return err
