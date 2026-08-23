@@ -25,14 +25,12 @@ const (
 	contentTypeHeader = "Content-Type"
 	gzipEncoding      = "gzip"
 	identityEncoding  = "identity"
-	jsonMediaType     = "application/json"
 )
 
-var errCompilerBusy = errors.New("compiler is busy")
-
-type compileRequest struct {
-	Source string `json:"source"`
-}
+var (
+	errCompilerBusy          = errors.New("compiler is busy")
+	errResponseWriteDeadline = errors.New("set compilation response write deadline")
+)
 
 type service struct {
 	compiler       compiler
@@ -41,18 +39,26 @@ type service struct {
 	cache          *compilationCache
 	maxRequest     int64
 	maxSource      int
-	timeout        time.Duration
+	writeTimeout   time.Duration
 }
 
 func newHandler(cfg *config, compiler compiler) http.Handler {
+	return newHandlerWithContext(context.Background(), cfg, compiler)
+}
+
+func newHandlerWithContext(
+	ctx context.Context,
+	cfg *config,
+	compiler compiler,
+) http.Handler {
 	service := &service{
 		compiler:       compiler,
 		allowedOrigins: parseAllowedOrigins(cfg.allowedOrigin),
 		maxRequest:     cfg.maxRequestBytes,
 		maxSource:      cfg.maxSourceBytes,
-		timeout:        cfg.compileTimeout,
+		writeTimeout:   cfg.writeTimeout,
 		slots:          make(chan struct{}, cfg.maxConcurrency),
-		cache:          newCompilationCache(cfg),
+		cache:          newCompilationCache(ctx, cfg),
 	}
 
 	return http.HandlerFunc(service.serveHTTP)
@@ -99,7 +105,7 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 	appendVary(response.Header(), "Accept-Encoding")
 
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get(contentTypeHeader))
-	if err != nil || mediaType != jsonMediaType {
+	if err != nil || mediaType != protocol.JSONMediaType {
 		writeJSONError(
 			response,
 			"Content-Type must be application/json",
@@ -127,12 +133,10 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(request.Context(), service.timeout)
-	defer cancel()
-
 	artifact, err := service.cache.load(
+		request.Context(),
 		input.Source,
-		func() (compilationArtifact, error) {
+		func(ctx context.Context) (compilationArtifact, error) {
 			if !service.acquire() {
 				return compilationArtifact{}, errCompilerBusy
 			}
@@ -147,13 +151,17 @@ func (service *service) compile(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	if err := writeArtifact(response, &artifact, encoding); err != nil {
+	if err := writeArtifact(response, &artifact, encoding, service.writeTimeout); err != nil {
 		slog.Error(
 			"write compilation response",
 			"error", err,
 			"request_error", request.Context().Err(),
 			"wasm_bytes", len(artifact.wasm),
 		)
+
+		if errors.Is(err, errResponseWriteDeadline) {
+			writeJSONError(response, "compiler response unavailable", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -194,18 +202,18 @@ func (service *service) writeCompileError(response http.ResponseWriter, err erro
 func (service *service) readRequest(
 	response http.ResponseWriter,
 	request *http.Request,
-) (compileRequest, int, error) {
+) (protocol.CompileRequest, int, error) {
 	body := http.MaxBytesReader(response, request.Body, service.maxRequest)
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
 
 	input, status, err := decodeRequest(decoder)
 	if err != nil {
-		return compileRequest{}, status, err
+		return protocol.CompileRequest{}, status, err
 	}
 
 	if err := ensureJSONEnd(decoder); err != nil {
-		return compileRequest{}, http.StatusBadRequest,
+		return protocol.CompileRequest{}, http.StatusBadRequest,
 			errors.New("request must contain one JSON object")
 	}
 
@@ -257,8 +265,11 @@ func writeArtifact(
 	response http.ResponseWriter,
 	artifact *compilationArtifact,
 	encoding string,
+	writeTimeout time.Duration,
 ) error {
 	var gzipBody []byte
+
+	var identityLength int64
 
 	if encoding == gzipEncoding {
 		var err error
@@ -267,11 +278,26 @@ func writeArtifact(
 		if err != nil {
 			return err
 		}
+	} else {
+		counter := &byteCounter{}
+		if err := writeArtifactBody(counter, artifact.boundary, artifact.graph, artifact.wasm); err != nil {
+			return fmt.Errorf("measure compilation response: %w", err)
+		}
+
+		identityLength = counter.bytes
+	}
+
+	if err := http.NewResponseController(response).SetWriteDeadline(
+		time.Now().Add(writeTimeout),
+	); err != nil {
+		// Fail closed before committing response headers. Proceeding through an
+		// unsupported wrapper would make artifact writes unbounded.
+		return fmt.Errorf("%w: %w", errResponseWriteDeadline, err)
 	}
 
 	response.Header().Set(
 		contentTypeHeader,
-		"multipart/form-data; boundary="+artifact.boundary,
+		protocol.MultipartMediaType+"; boundary="+artifact.boundary,
 	)
 	response.Header().Set("Content-Disposition", `attachment; filename="cord-workflow"`)
 
@@ -288,12 +314,7 @@ func writeArtifact(
 		return nil
 	}
 
-	counter := &byteCounter{}
-	if err := writeArtifactBody(counter, artifact.boundary, artifact.graph, artifact.wasm); err != nil {
-		return fmt.Errorf("measure compilation response: %w", err)
-	}
-
-	response.Header().Set("Content-Length", strconv.FormatInt(counter.bytes, 10))
+	response.Header().Set("Content-Length", strconv.FormatInt(identityLength, 10))
 	response.WriteHeader(http.StatusOK)
 
 	return writeArtifactBody(response, artifact.boundary, artifact.graph, artifact.wasm)
@@ -320,7 +341,7 @@ func writeArtifactBody(
 		return fmt.Errorf("set response boundary: %w", err)
 	}
 
-	graphPart, err := writer.CreateFormField("graph")
+	graphPart, err := writer.CreateFormField(protocol.GraphPartName)
 	if err != nil {
 		return fmt.Errorf("create graph response: %w", err)
 	}
@@ -329,7 +350,7 @@ func writeArtifactBody(
 		return fmt.Errorf("encode graph response: %w", encodeErr)
 	}
 
-	wasmPart, err := writer.CreateFormFile("wasm", "app.wasm")
+	wasmPart, err := writer.CreateFormFile(protocol.WASMPartName, "app.wasm")
 	if err != nil {
 		return fmt.Errorf("create WebAssembly response: %w", err)
 	}
@@ -373,16 +394,16 @@ func (service *service) acquire() bool {
 	}
 }
 
-func decodeRequest(decoder *json.Decoder) (compileRequest, int, error) {
-	var input compileRequest
+func decodeRequest(decoder *json.Decoder) (protocol.CompileRequest, int, error) {
+	var input protocol.CompileRequest
 	if err := decoder.Decode(&input); err != nil {
 		maxBytesError, requestTooLarge := errors.AsType[*http.MaxBytesError](err)
 		if requestTooLarge && maxBytesError != nil {
-			return compileRequest{}, http.StatusRequestEntityTooLarge,
+			return protocol.CompileRequest{}, http.StatusRequestEntityTooLarge,
 				errors.New("request body is too large")
 		}
 
-		return compileRequest{}, http.StatusBadRequest,
+		return protocol.CompileRequest{}, http.StatusBadRequest,
 			errors.New("invalid JSON request")
 	}
 
@@ -532,11 +553,11 @@ func parseAllowedOrigins(value string) map[string]struct{} {
 }
 
 func writeJSONError(response http.ResponseWriter, message string, status int) {
-	response.Header().Set(contentTypeHeader, jsonMediaType)
+	response.Header().Set(contentTypeHeader, protocol.JSONMediaType)
 	response.WriteHeader(status)
 
 	if err := json.NewEncoder(response).Encode(
-		map[string]string{"error": message},
+		protocol.ErrorResponse{Error: message},
 	); err != nil {
 		slog.Error("write JSON error response", "error", err)
 	}

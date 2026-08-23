@@ -21,6 +21,7 @@ const (
 	defaultMaxWASMBytes    = 32 << 20
 	defaultMaxDiagnostics  = 64 << 10
 	defaultTimeout         = 2 * time.Minute
+	defaultWriteTimeout    = 30 * time.Second
 	defaultConcurrency     = 2
 	defaultCacheCapacity   = 2
 	defaultCacheTTL        = 15 * time.Minute
@@ -39,6 +40,7 @@ type config struct {
 	maxWASMBytes    int64
 	maxDiagnostics  int
 	compileTimeout  time.Duration
+	writeTimeout    time.Duration
 	maxConcurrency  int
 	cacheCapacity   int
 	cacheTTL        time.Duration
@@ -69,7 +71,10 @@ func run(arguments []string) error {
 		return err
 	}
 
-	server := newHTTPServer(&cfg, newHandler(&cfg, compiler))
+	serviceContext, cancelService := context.WithCancel(context.Background())
+	defer cancelService()
+
+	server := newHTTPServer(&cfg, newHandlerWithContext(serviceContext, &cfg, compiler))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -91,8 +96,12 @@ func run(arguments []string) error {
 		defer cancel()
 
 		if err := server.Shutdown(shutdownContext); err != nil {
+			cancelService()
+
 			return fmt.Errorf("shut down compiler: %w", err)
 		}
+
+		cancelService()
 
 		return nil
 	}
@@ -138,6 +147,12 @@ func parseConfig(arguments []string) (config, error) {
 		"maximum compiler diagnostics size",
 	)
 	flags.DurationVar(&cfg.compileTimeout, "timeout", defaultTimeout, "compilation timeout")
+	flags.DurationVar(
+		&cfg.writeTimeout,
+		"write-timeout",
+		defaultWriteTimeout,
+		"compiled artifact response write timeout",
+	)
 	flags.IntVar(
 		&cfg.maxConcurrency,
 		"concurrency",
@@ -169,6 +184,22 @@ func parseConfig(arguments []string) (config, error) {
 }
 
 func validateConfig(cfg *config) error {
+	if err := validateSizeLimits(cfg); err != nil {
+		return err
+	}
+
+	if cfg.compileTimeout <= 0 || cfg.writeTimeout <= 0 || cfg.maxConcurrency < 1 {
+		return errors.New("timeouts and concurrency must be positive")
+	}
+
+	if cfg.cacheCapacity < 1 || cfg.cacheTTL <= 0 {
+		return errors.New("cache settings must be positive")
+	}
+
+	return nil
+}
+
+func validateSizeLimits(cfg *config) error {
 	if cfg.maxRequestBytes < 1 || cfg.maxSourceBytes < 1 ||
 		cfg.maxWASMBytes < 1 || cfg.maxDiagnostics < 1 {
 		return errors.New("size limits must be positive")
@@ -176,14 +207,6 @@ func validateConfig(cfg *config) error {
 
 	if cfg.maxWASMBytes == math.MaxInt64 {
 		return errors.New("maximum WebAssembly size is too large")
-	}
-
-	if cfg.compileTimeout <= 0 || cfg.maxConcurrency < 1 {
-		return errors.New("timeout and concurrency must be positive")
-	}
-
-	if cfg.cacheCapacity < 1 || cfg.cacheTTL <= 0 {
-		return errors.New("cache settings must be positive")
 	}
 
 	return nil
