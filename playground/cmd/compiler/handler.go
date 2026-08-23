@@ -267,9 +267,10 @@ func writeArtifact(
 	encoding string,
 	writeTimeout time.Duration,
 ) error {
-	var gzipBody []byte
-
-	var identityLength int64
+	var (
+		gzipBody       []byte
+		identityLength int64
+	)
 
 	if encoding == gzipEncoding {
 		var err error
