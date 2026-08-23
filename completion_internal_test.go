@@ -12,11 +12,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type resultStore struct {
+	value storage.RunResult
+	mu    sync.RWMutex
+}
+
+func newResultStore(result storage.RunResult) resultStore {
+	return resultStore{value: result, mu: sync.RWMutex{}}
+}
+
+func (store *resultStore) get() storage.RunResult {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	return store.value
+}
+
+func (store *resultStore) set(result storage.RunResult) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	store.value = result
+}
+
 type resultWaitBackend struct {
 	storage.Backend
 	reads  chan struct{}
-	result storage.RunResult
-	mu     sync.Mutex
+	result resultStore
 }
 
 type notifiedResult struct {
@@ -30,17 +52,7 @@ func (backend *resultWaitBackend) GetRunResult(context.Context, storage.RunID) (
 	default:
 	}
 
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-
-	return backend.result, nil
-}
-
-func (backend *resultWaitBackend) setResult(result storage.RunResult) {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-
-	backend.result = result
+	return backend.result.get(), nil
 }
 
 func newResultWaitRuntime(
@@ -51,9 +63,8 @@ func newResultWaitRuntime(
 	t.Helper()
 
 	backend := &resultWaitBackend{
-		result: result,
+		result: newResultStore(result),
 		reads:  make(chan struct{}, readCapacity),
-		mu:     sync.Mutex{},
 	}
 	runtime := &Cord{
 		store:             backend,
@@ -113,7 +124,7 @@ func TestWorkflowWaitUsesLocalNotification(t *testing.T) {
 	}()
 
 	<-backend.reads
-	backend.setResult(storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil})
+	backend.result.set(storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil})
 
 	started := time.Now()
 
@@ -170,7 +181,7 @@ func TestWorkflowWaitPollsDurableRemoteCompletion(t *testing.T) {
 	}()
 
 	<-backend.reads
-	backend.setResult(storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil})
+	backend.result.set(storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil})
 
 	select {
 	case waitErr := <-done:
@@ -186,9 +197,8 @@ func TestCompletionWaiterCleanupOnCancelAndClose(t *testing.T) {
 	t.Parallel()
 
 	backend := &resultWaitBackend{
-		result: storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
+		result: newResultStore(storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil}),
 		reads:  make(chan struct{}, 4),
-		mu:     sync.Mutex{},
 	}
 	runtime := newAdmissionTestRuntime(backend)
 	codec, err := serialization.NewJSONCodec[int]()
