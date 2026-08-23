@@ -72,7 +72,16 @@ func RunSQLite(t *testing.T, driver SQLiteDriver) {
 
 			return nil
 		},
-		DeleteRun: deleteSQLiteRun,
+		CancelRun: func(ctx context.Context, backend storage.Backend, runID storage.RunID) (bool, error) {
+			store, ok := backend.(*sqlite.Store)
+			if !ok {
+				return false, fmt.Errorf("cancel SQLite run: backend type %T", backend)
+			}
+
+			return store.CancelRun(ctx, runID)
+		},
+		DeleteRun:    deleteSQLiteRun,
+		CountRunRows: countSQLiteRunRows,
 	}
 
 	Run(t, harness)
@@ -118,24 +127,25 @@ func deleteSQLiteRun(ctx context.Context, database *sql.DB, runID storage.RunID)
 		return fmt.Errorf("delete SQLite run: %w", err)
 	}
 
-	queries := map[string]string{
-		"cord_nodes": "SELECT COUNT(*) FROM cord_nodes WHERE run_id = ?",
-		"cord_edges": "SELECT COUNT(*) FROM cord_edges WHERE run_id = ?",
-	}
-	for table, query := range queries {
-		var count int
-
-		row := database.QueryRowContext(ctx, query, runID)
-		if err := row.Scan(&count); err != nil {
-			return fmt.Errorf("count SQLite %s rows: %w", table, err)
-		}
-
-		if count != 0 {
-			return fmt.Errorf("%s rows after run deletion = %d, want 0", table, count)
-		}
-	}
-
 	return nil
+}
+
+func countSQLiteRunRows(
+	ctx context.Context,
+	database *sql.DB,
+	runID storage.RunID,
+) (nodes, edges int, err error) {
+	if scanErr := database.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM cord_nodes WHERE run_id = ?", runID).Scan(&nodes); scanErr != nil {
+		return 0, 0, fmt.Errorf("count SQLite node rows: %w", scanErr)
+	}
+
+	if scanErr := database.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM cord_edges WHERE run_id = ?", runID).Scan(&edges); scanErr != nil {
+		return 0, 0, fmt.Errorf("count SQLite edge rows: %w", scanErr)
+	}
+
+	return nodes, edges, nil
 }
 
 func runSQLiteWorkflow(t *testing.T, harness Harness) {

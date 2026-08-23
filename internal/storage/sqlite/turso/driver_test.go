@@ -138,7 +138,23 @@ func libSQLOpener(databaseURL string) func(testing.TB) *sql.DB {
 	return func(tb testing.TB) *sql.DB {
 		tb.Helper()
 
-		return openLibSQL(tb, databaseURL)
+		database := openLibSQL(tb, databaseURL)
+		resetLibSQL(tb, database)
+
+		return database
+	}
+}
+
+func resetLibSQL(tb testing.TB, database *sql.DB) {
+	tb.Helper()
+
+	// Remote libSQL exposes one database for the container, so unlike file-backed
+	// SQLite the conformance subtests cannot isolate themselves with unique paths.
+	for _, table := range []string{
+		"cord_edges", "cord_nodes", "cord_runs", "cord_schema_migrations", "cord_migration_lock",
+	} {
+		_, err := database.ExecContext(tb.Context(), "DROP TABLE IF EXISTS "+table)
+		require.NoError(tb, err, "reset remote libSQL table %s", table)
 	}
 }
 

@@ -12,10 +12,6 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
-type runCanceler interface {
-	CancelRun(context.Context, storage.RunID) (bool, error)
-}
-
 // Harness supplies backend-specific database lifecycle operations to the common suite.
 type Harness struct {
 	// Open opens a test database identified by name.
@@ -26,8 +22,12 @@ type Harness struct {
 	NewBackend func(*sql.DB) (storage.Backend, error)
 	// ExpireLease makes a claimed lease eligible for recovery.
 	ExpireLease func(context.Context, *sql.DB, storage.RunID, storage.NodeID) error
+	// CancelRun durably cancels a run.
+	CancelRun func(context.Context, storage.Backend, storage.RunID) (bool, error)
 	// DeleteRun deletes a run using the backend's native test mechanism.
 	DeleteRun func(context.Context, *sql.DB, storage.RunID) error
+	// CountRunRows counts node and edge rows belonging to a run.
+	CountRunRows func(context.Context, *sql.DB, storage.RunID) (nodes int, edges int, err error)
 }
 
 const (
@@ -35,6 +35,10 @@ const (
 	leftNodeID         storage.NodeID = "left"
 	rightNodeID        storage.NodeID = "right"
 	joinNodeID         storage.NodeID = "join"
+	stepFunctionKey                   = "example.com/Step"
+	leftFunctionKey                   = "example.com/Left"
+	rightFunctionKey                  = "example.com/Right"
+	joinFunctionKey                   = "example.com/Join"
 	heartbeatExtension                = 2 * time.Minute
 	joinDependencies                  = 2
 	workerA                           = "worker-a"
@@ -70,8 +74,9 @@ func validateHarness(t *testing.T, harness Harness) {
 	t.Helper()
 
 	if harness.Open == nil || harness.Migrate == nil || harness.NewBackend == nil ||
-		harness.ExpireLease == nil || harness.DeleteRun == nil {
-		t.Fatal("conformance harness requires Open, Migrate, NewBackend, ExpireLease, and DeleteRun")
+		harness.ExpireLease == nil || harness.CancelRun == nil || harness.DeleteRun == nil ||
+		harness.CountRunRows == nil {
+		t.Fatal("conformance harness requires all lifecycle and operation callbacks")
 	}
 }
 
@@ -239,18 +244,13 @@ func runCancellation(t *testing.T, harness Harness) {
 
 	backend := openStore(t, harness, "cancel").backend
 
-	canceler, ok := backend.(runCanceler)
-	if !ok {
-		t.Skip("backend does not support cancellation")
-	}
-
 	plan := joinPlan("conformance-cancel")
 	if err := backend.CreateRun(t.Context(), &plan); err != nil {
 		t.Fatal(err)
 	}
 
 	claim := mustClaim(t, backend, "worker")
-	accepted, err := canceler.CancelRun(t.Context(), claim.RunID)
+	accepted, err := harness.CancelRun(t.Context(), backend, claim.RunID)
 	requireAccepted(t, "cancel run", accepted, err)
 
 	result, err := backend.GetRunResult(t.Context(), claim.RunID)
@@ -261,10 +261,10 @@ func runCancellation(t *testing.T, harness Harness) {
 	accepted, err = backend.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`))
 	requireRejected(t, "completion after cancellation", accepted, err)
 
-	accepted, err = canceler.CancelRun(t.Context(), claim.RunID)
+	accepted, err = harness.CancelRun(t.Context(), backend, claim.RunID)
 	requireRejected(t, "repeat cancellation", accepted, err)
 
-	accepted, err = canceler.CancelRun(t.Context(), "missing-run")
+	accepted, err = harness.CancelRun(t.Context(), backend, "missing-run")
 	requireRejected(t, "missing run cancellation", accepted, err)
 }
 
@@ -365,6 +365,15 @@ func runRunDeletion(t *testing.T, harness Harness) {
 	if _, err := backend.GetRunResult(t.Context(), plan.Run.ID); !errors.Is(err, storage.ErrRunNotFound) {
 		t.Fatalf("deleted run error = %v, want %v", err, storage.ErrRunNotFound)
 	}
+
+	nodes, edges, err := harness.CountRunRows(t.Context(), database, plan.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if nodes != 0 || edges != 0 {
+		t.Fatalf("rows after run deletion: nodes=%d edges=%d, want 0", nodes, edges)
+	}
 }
 
 type openedStore struct {
@@ -392,12 +401,7 @@ func mustClaim(t *testing.T, store storage.Backend, owner string) *storage.Claim
 	t.Helper()
 
 	claim, claimed, err := store.ClaimReadyNodeForFunctions(
-		t.Context(), owner, time.Minute, []storage.FunctionRegistration{
-			{Key: "example.com/Step", Signature: "signature"},
-			{Key: "example.com/Left", Signature: "left"},
-			{Key: "example.com/Right", Signature: "right"},
-			{Key: "example.com/Join", Signature: "join"},
-		})
+		t.Context(), owner, time.Minute, conformanceRegistrations())
 	if err != nil || !claimed || claim == nil {
 		t.Fatalf("claim node: claim=%#v claimed=%v err=%v", claim, claimed, err)
 	}
@@ -406,17 +410,23 @@ func mustClaim(t *testing.T, store storage.Backend, owner string) *storage.Claim
 }
 
 func claimAny(ctx context.Context, backend storage.Backend, owner string) (*storage.Claim, bool, error) {
-	claim, claimed, err := backend.ClaimReadyNodeForFunctions(ctx, owner, time.Minute, []storage.FunctionRegistration{
-		{Key: "example.com/Step", Signature: "signature"},
-		{Key: "example.com/Left", Signature: "left"},
-		{Key: "example.com/Right", Signature: "right"},
-		{Key: "example.com/Join", Signature: "join"},
-	})
+	claim, claimed, err := backend.ClaimReadyNodeForFunctions(
+		ctx, owner, time.Minute, conformanceRegistrations(),
+	)
 	if err != nil {
 		return claim, claimed, fmt.Errorf("claim ready node: %w", err)
 	}
 
 	return claim, claimed, nil
+}
+
+func conformanceRegistrations() []storage.FunctionRegistration {
+	return []storage.FunctionRegistration{
+		{Key: stepFunctionKey, Signature: "signature"},
+		{Key: leftFunctionKey, Signature: "left"},
+		{Key: rightFunctionKey, Signature: "right"},
+		{Key: joinFunctionKey, Signature: "join"},
+	}
 }
 
 func requireAccepted(t *testing.T, operation string, accepted bool, err error) {
@@ -498,7 +508,7 @@ func singleNodePlan(runID storage.RunID, name string) storage.RunPlan {
 			RetryMaxDelay: time.Second, RetryPolicyVersion: 1,
 		},
 		Nodes: []storage.Node{
-			conformanceNode(runID, conformanceNodeID, "example.com/Step", "signature", storage.NodeReady, now, 0),
+			conformanceNode(runID, conformanceNodeID, stepFunctionKey, "signature", storage.NodeReady, now, 0),
 		},
 	}
 }
@@ -507,10 +517,10 @@ func joinPlan(runID storage.RunID) storage.RunPlan {
 	plan := singleNodePlan(runID, "join")
 	plan.Run.TerminalNodeID = joinNodeID
 	plan.Nodes = []storage.Node{
-		conformanceNode(runID, leftNodeID, "example.com/Left", "left", storage.NodeReady, plan.Run.CreatedAt, 0),
-		conformanceNode(runID, rightNodeID, "example.com/Right", "right", storage.NodeReady, plan.Run.CreatedAt, 0),
+		conformanceNode(runID, leftNodeID, leftFunctionKey, "left", storage.NodeReady, plan.Run.CreatedAt, 0),
+		conformanceNode(runID, rightNodeID, rightFunctionKey, "right", storage.NodeReady, plan.Run.CreatedAt, 0),
 		conformanceNode(
-			runID, joinNodeID, "example.com/Join", "join",
+			runID, joinNodeID, joinFunctionKey, "join",
 			storage.NodePending, plan.Run.CreatedAt, joinDependencies,
 		),
 	}
