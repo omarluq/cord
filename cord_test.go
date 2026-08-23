@@ -66,6 +66,9 @@ func timesTwo(_ context.Context, value int) (int, error)    { return value * 2, 
 func passThrough(_ context.Context, value int) (int, error) { return value, nil }
 func leftText(_ context.Context, _ int) (string, error)     { return "left", nil }
 func sum(_ context.Context, left, right int) (int, error)   { return left + right, nil }
+func subtract(_ context.Context, left, right int) (int, error) {
+	return left - right, nil
+}
 func formatJoined(_ context.Context, left string, right int) (string, error) {
 	return fmt.Sprintf("%s:%d", left, right), nil
 }
@@ -124,6 +127,61 @@ func TestJoin_UnrelatedWorkflowsFailAtRun(t *testing.T) {
 	result, err := joined.Run(t.Context(), 1)
 	assert.Zero(t, result)
 	require.EqualError(t, err, "cord: cannot join unrelated workflows")
+}
+
+func TestJoin_IdenticalTailAliasesFailBeforePersistence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		flow func(*cord.Cord) cord.Workflow[int, int]
+		name string
+	}{
+		{
+			name: "direct root",
+			flow: func(runtime *cord.Cord) cord.Workflow[int, int] {
+				root := runtime.From("direct-identical-tail", passThrough)
+
+				return cord.Join(root, root).Then(sum)
+			},
+		},
+		{
+			name: "nested alias",
+			flow: func(runtime *cord.Cord) cord.Workflow[int, int] {
+				root := runtime.From("nested-identical-tail", passThrough)
+				nested := root.Then(addOne).Then(timesTwo)
+				alias := nested
+
+				return cord.Join(nested, alias).Then(sum)
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			database, runtime := newRuntime(t)
+			result, err := testCase.flow(runtime).Run(t.Context(), 1)
+			assert.Zero(t, result)
+			require.EqualError(t, err, "cord: cannot join identical workflow tails")
+
+			var runs int
+			require.NoError(t, database.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM cord_runs").Scan(&runs))
+			assert.Zero(t, runs)
+		})
+	}
+}
+
+func TestJoin_DistinctTailsUsingSameFunctionPreserveParentOrder(t *testing.T) {
+	t.Parallel()
+
+	root := mustRuntime(t).From("same-function-siblings", passThrough)
+	left := root.Then(addOne).Then(timesTwo)
+	right := root.Then(timesTwo).Then(timesTwo)
+
+	result, err := cord.Join(left, right).Then(subtract).Run(t.Context(), 2)
+	require.NoError(t, err)
+	assert.Equal(t, -2, result)
 }
 
 func TestWorkflow_EmptyNameFailsAtRun(t *testing.T) {

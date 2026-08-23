@@ -64,20 +64,18 @@ func validateRetryPolicy(run *Run) error {
 	return nil
 }
 
+type edgeKey struct {
+	parent NodeID
+	child  NodeID
+}
+
 func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 	children := make(map[NodeID][]NodeID, len(plan.Nodes))
+	edges := make(map[edgeKey]struct{}, len(plan.Edges))
 
 	for _, edge := range plan.Edges {
-		if edge.RunID != plan.Run.ID {
-			return fmt.Errorf("validate run plan: edge %q -> %q has run ID %q", edge.Parent, edge.Child, edge.RunID)
-		}
-
-		if _, exists := dependencies[edge.Parent]; !exists {
-			return fmt.Errorf("validate run plan: edge parent %q does not exist", edge.Parent)
-		}
-
-		if _, exists := dependencies[edge.Child]; !exists {
-			return fmt.Errorf("validate run plan: edge child %q does not exist", edge.Child)
+		if err := validateEdge(plan.Run.ID, edge, dependencies, edges); err != nil {
+			return err
 		}
 
 		dependencies[edge.Child]++
@@ -103,6 +101,29 @@ func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 			return fmt.Errorf("validate run plan: node %q must initially be %q", current.ID, expected)
 		}
 	}
+
+	return nil
+}
+
+func validateEdge(runID RunID, edge Edge, dependencies map[NodeID]int, edges map[edgeKey]struct{}) error {
+	if edge.RunID != runID {
+		return fmt.Errorf("validate run plan: edge %q -> %q has run ID %q", edge.Parent, edge.Child, edge.RunID)
+	}
+
+	if _, exists := dependencies[edge.Parent]; !exists {
+		return fmt.Errorf("validate run plan: edge parent %q does not exist", edge.Parent)
+	}
+
+	if _, exists := dependencies[edge.Child]; !exists {
+		return fmt.Errorf("validate run plan: edge child %q does not exist", edge.Child)
+	}
+
+	key := edgeKey{parent: edge.Parent, child: edge.Child}
+	if _, exists := edges[key]; exists {
+		return fmt.Errorf("validate run plan: duplicate edge %q -> %q", edge.Parent, edge.Child)
+	}
+
+	edges[key] = struct{}{}
 
 	return nil
 }
