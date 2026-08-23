@@ -3,31 +3,15 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 
 	"github.com/omarluq/cord/examples/linear"
+	"github.com/omarluq/cord/internal/examplecmd"
 	"github.com/omarluq/cord/internal/exampledb"
 )
 
-func run(ctx context.Context) (err error) {
-	database, err := exampledb.OpenSQLite()
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, database.Close()) }()
-
-	result, err := linear.Run(ctx, database, 4)
-	if err != nil {
-		return fmt.Errorf("run linear workflow: %w", err)
-	}
-
-	if _, err := fmt.Println(result); err != nil {
-		return fmt.Errorf("write result: %w", err)
-	}
-
-	return nil
+func run(ctx context.Context) error {
+	return examplecmd.Run(ctx, exampledb.OpenSQLite, linear.Run, 4)
 }
 
 func main() {
