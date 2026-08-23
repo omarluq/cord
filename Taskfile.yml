@@ -217,6 +217,16 @@ tasks:
     cmds:
       - go test -race -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
 
+  test-postgres:
+    desc: Run mandatory PostgreSQL integration tests and pgx examples
+    preconditions:
+      - sh: test -n "${CORD_POSTGRES_DSN:-}"
+        msg: CORD_POSTGRES_DSN is required (for example, postgres://postgres:postgres@localhost:5432/cord?sslmode=disable)
+    cmds:
+      - go test -race -shuffle=on ./internal/storage/postgres/...
+      - go run ./examples/linear/pg
+      - go run ./examples/join/pg
+
   playground-test-coverage:
     desc: Run playground tests and write a separate coverage profile
     cmds:
