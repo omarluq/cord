@@ -11,6 +11,8 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
+const exhaustedLeaseRecoveryBatchSize = 100
+
 // RecoverExpiredLeases recovers abandoned nodes with a newer fence. Nodes with
 // another attempt become ready; nodes whose final attempt expired atomically
 // fail their run and cancel unfinished siblings.
@@ -95,7 +97,8 @@ func findExhaustedExpiredLeases(ctx context.Context, transaction *sql.Tx) (nodes
 		FROM cord_nodes AS n JOIN cord_runs AS r ON r.id = n.run_id
 		WHERE n.status = ? AND julianday(n.lease_expires_at) <= julianday('now')
 			AND r.status = ? AND n.attempt >= r.max_attempts
-		ORDER BY n.run_id, n.node_id`, storage.NodeRunning, storage.RunRunning)
+		ORDER BY n.run_id, n.node_id
+		LIMIT ?`, storage.NodeRunning, storage.RunRunning, exhaustedLeaseRecoveryBatchSize)
 	if err != nil {
 		return nil, fmt.Errorf("find exhausted expired leases: %w", err)
 	}
