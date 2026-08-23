@@ -25,7 +25,13 @@ func ValidationRunPlanTests() []RunPlanValidationTest {
 
 func runValidationTests() []RunPlanValidationTest {
 	return []RunPlanValidationTest{
-		{Name: "valid", Mutate: func(*storage.RunPlan) {}, WantErr: ""},
+		{
+			Name: "valid",
+			Mutate: func(*storage.RunPlan) {
+				// The valid case intentionally leaves the plan unchanged.
+			},
+			WantErr: "",
+		},
 		{
 			Name:    "empty run ID",
 			Mutate:  func(plan *storage.RunPlan) { plan.Run.ID = "" },
