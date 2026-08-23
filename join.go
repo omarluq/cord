@@ -17,6 +17,8 @@ func Join[I, A, B any](left Workflow[I, A], right Workflow[I, B]) JoinResult[I, 
 
 	if left.runtime != right.runtime || left.graph != right.graph {
 		joined.err = errors.Join(joined.err, errors.New("cord: cannot join unrelated workflows"))
+	} else if left.graph != nil && left.tail == right.tail {
+		joined.err = errors.Join(joined.err, errors.New("cord: cannot join identical workflow tails"))
 	}
 
 	return joined
