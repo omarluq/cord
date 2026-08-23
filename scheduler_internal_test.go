@@ -662,12 +662,17 @@ type admissionTestBackend struct {
 	allowCreate   chan struct{}
 	created       chan storage.RunID
 	result        storage.RunResult
+	createPanic   any
 
 	startOnce sync.Once
 }
 
 func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
 	backend.startOnce.Do(func() { close(backend.createStarted) })
+
+	if backend.createPanic != nil {
+		panic(backend.createPanic)
+	}
 
 	select {
 	case <-backend.allowCreate:
@@ -704,6 +709,37 @@ func newAdmissionTestRuntime(backend storage.Backend) *Cord {
 }
 
 func admissionTestStep(_ context.Context, input int) (int, error) { return input + 1, nil }
+
+func TestWorkflowRunCreateRunPanicReleasesAdmission(t *testing.T) {
+	t.Parallel()
+
+	const panicValue = "create run panic"
+
+	backend := &admissionTestBackend{
+		createStarted: make(chan struct{}),
+		createPanic:   panicValue,
+	}
+	runtime := newAdmissionTestRuntime(backend)
+	flow := runtime.From("panic-during-create", admissionTestStep)
+
+	panicResult := make(chan any, 1)
+	go func() {
+		defer func() { panicResult <- recover() }()
+
+		_, _ = flow.Run(t.Context(), 1)
+	}()
+
+	select {
+	case recovered := <-panicResult:
+		require.Equal(t, panicValue, recovered)
+	case <-time.After(time.Second):
+		t.Fatal("CreateRun panic did not propagate")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	require.NoError(t, runtime.Shutdown(shutdownCtx))
+}
 
 func TestWorkflowRunRejectsSubmissionAfterShutdownBegins(t *testing.T) {
 	t.Parallel()
