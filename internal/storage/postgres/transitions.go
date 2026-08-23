@@ -66,7 +66,7 @@ func (s *Store) terminal(
 	payload storage.EncodedPayload,
 	success bool,
 ) (bool, error) {
-	retryCtx, cancel := leaseContext(ctx, lease.ExpiresAt)
+	retryCtx, cancel := leaseContext(ctx, lease.Remaining)
 	defer cancel()
 
 	accepted := false
@@ -344,7 +344,7 @@ func (s *Store) RetryNode(
 				SELECT 1 FROM cord_runs WHERE id = $3 AND status = 'running'
 			)`
 
-	retryCtx, cancel := leaseContext(ctx, lease.ExpiresAt)
+	retryCtx, cancel := leaseContext(ctx, lease.Remaining)
 	defer cancel()
 
 	accepted := false
@@ -390,20 +390,150 @@ func (s *Store) PromoteRetries(ctx context.Context) (int64, error) {
 	return s.update(ctx, query, "promote retries")
 }
 
-// RecoverExpiredLeases returns abandoned nodes to ready with a newer fence.
-func (s *Store) RecoverExpiredLeases(ctx context.Context) (int64, error) {
-	const query = `UPDATE cord_nodes
-		SET status = 'ready',
-			lease_owner = NULL,
-			lease_expires_at = NULL,
-			lease_generation = lease_generation + 1
-		WHERE status = 'running'
-			AND lease_expires_at <= clock_timestamp()
-			AND EXISTS (
-				SELECT 1 FROM cord_runs WHERE id = run_id AND status = 'running'
-			)`
+type expiredNode struct {
+	runID       storage.RunID
+	nodeID      storage.NodeID
+	functionKey string
+	attempt     int
+	maxAttempts int
+}
 
-	return s.update(ctx, query, "recover expired leases")
+// RecoverExpiredLeases recovers abandoned nodes with a newer fence. Nodes with
+// another attempt become ready; nodes whose final attempt expired atomically
+// fail their run and cancel unfinished siblings.
+func (s *Store) RecoverExpiredLeases(ctx context.Context) (count int64, err error) {
+	err = runTransaction(ctx, s.pool, "recover expired leases", func(transaction *sql.Tx) error {
+		count = 0
+
+		expired, loadErr := loadExpiredNodes(ctx, transaction)
+		if loadErr != nil {
+			return loadErr
+		}
+
+		for _, node := range expired {
+			affected, recoverErr := recoverExpiredNode(ctx, transaction, node)
+			if recoverErr != nil {
+				return recoverErr
+			}
+
+			count += affected
+		}
+
+		return nil
+	})
+
+	return count, err
+}
+
+func loadExpiredNodes(ctx context.Context, transaction *sql.Tx) (_ []expiredNode, err error) {
+	rows, err := transaction.QueryContext(ctx, `SELECT n.run_id, n.node_id,
+		n.function_key, n.attempt, r.max_attempts
+		FROM cord_nodes AS n JOIN cord_runs AS r ON r.id = n.run_id
+		WHERE n.status = 'running' AND n.lease_expires_at <= clock_timestamp()
+			AND r.status = 'running'
+		ORDER BY n.run_id, n.node_id
+		FOR UPDATE OF r, n SKIP LOCKED`)
+	if err != nil {
+		return nil, fmt.Errorf("find expired leases: %w", err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	expired := make([]expiredNode, 0)
+
+	for rows.Next() {
+		var node expiredNode
+		if scanErr := rows.Scan(
+			&node.runID, &node.nodeID, &node.functionKey, &node.attempt, &node.maxAttempts,
+		); scanErr != nil {
+			return nil, fmt.Errorf("scan expired lease: %w", scanErr)
+		}
+
+		expired = append(expired, node)
+	}
+
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate expired leases: %w", rowsErr)
+	}
+
+	return expired, nil
+}
+
+func recoverExpiredNode(ctx context.Context, transaction *sql.Tx, node expiredNode) (int64, error) {
+	if node.attempt < node.maxAttempts {
+		return recoverRetryableExpiredNode(ctx, transaction, node)
+	}
+
+	return recoverExhaustedNode(ctx, transaction, node)
+}
+
+func recoverRetryableExpiredNode(
+	ctx context.Context,
+	transaction *sql.Tx,
+	node expiredNode,
+) (int64, error) {
+	result, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
+		SET status = 'ready', lease_owner = NULL, lease_expires_at = NULL,
+			lease_generation = lease_generation + 1
+		WHERE run_id = $1 AND node_id = $2 AND status = 'running'
+			AND lease_expires_at <= clock_timestamp()
+			AND EXISTS (SELECT 1 FROM cord_runs
+				WHERE id = $1 AND status = 'running')`, node.runID, node.nodeID)
+	if err != nil {
+		return 0, fmt.Errorf("recover retryable expired lease: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("inspect retryable expired lease recovery: %w", err)
+	}
+
+	return affected, nil
+}
+
+func recoverExhaustedNode(ctx context.Context, transaction *sql.Tx, node expiredNode) (int64, error) {
+	failure := storage.EncodeLeaseExpiryFailure(
+		node.nodeID, node.functionKey, node.attempt, time.Now(),
+	)
+
+	result, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
+		SET status = 'failed', error_payload = $1, lease_owner = NULL,
+			lease_expires_at = NULL, lease_generation = lease_generation + 1,
+			completed_at = clock_timestamp()
+		WHERE run_id = $2 AND node_id = $3 AND status = 'running'
+			AND lease_expires_at <= clock_timestamp()
+			AND EXISTS (SELECT 1 FROM cord_runs
+				WHERE id = $2 AND status = 'running')`,
+		nullablePayload(failure), node.runID, node.nodeID)
+	if err != nil {
+		return 0, fmt.Errorf("fail exhausted node %q for run %q: %w", node.nodeID, node.runID, err)
+	}
+
+	transitioned, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("inspect exhausted node recovery: %w", err)
+	}
+
+	if transitioned == 0 {
+		return 0, nil
+	}
+
+	if cancelErr := cancelUnfinishedNodes(ctx, transaction, node.runID); cancelErr != nil {
+		return 0, cancelErr
+	}
+
+	runResult, err := transaction.ExecContext(ctx, `UPDATE cord_runs
+		SET status = 'failed', output_payload = NULL, error_payload = $1,
+			updated_at = clock_timestamp(), completed_at = clock_timestamp()
+		WHERE id = $2 AND status = 'running'`, nullablePayload(failure), node.runID)
+	if err != nil {
+		return 0, fmt.Errorf("fail run %q after exhausted lease: %w", node.runID, err)
+	}
+
+	if affectedErr := requireOneAffected(runResult, "exhausted lease run failure"); affectedErr != nil {
+		return 0, affectedErr
+	}
+
+	return 1, nil
 }
 
 func (s *Store) update(ctx context.Context, query, operation string) (int64, error) {
@@ -435,9 +565,9 @@ func (s *Store) HeartbeatNode(
 	nodeID storage.NodeID,
 	lease storage.Lease,
 	ttl time.Duration,
-) (bool, time.Time, error) {
+) (bool, time.Duration, error) {
 	if ttl <= 0 {
-		return false, time.Time{}, errors.New("heartbeat node lease: TTL must be positive")
+		return false, 0, errors.New("heartbeat node lease: TTL must be positive")
 	}
 
 	const query = `UPDATE cord_nodes
@@ -451,22 +581,23 @@ func (s *Store) HeartbeatNode(
 			AND EXISTS (
 				SELECT 1 FROM cord_runs WHERE id = $2 AND status = 'running'
 			)
-		RETURNING lease_expires_at`
+		RETURNING GREATEST(0,
+			(EXTRACT(EPOCH FROM (lease_expires_at - clock_timestamp())) * 1000000)::bigint)`
 
-	retryCtx, cancel := leaseContext(ctx, lease.ExpiresAt)
+	retryCtx, cancel := leaseContext(ctx, lease.Remaining)
 	defer cancel()
 
-	var expiry time.Time
+	var remainingMicros int64
 
 	accepted := false
 
 	err := runOperation(retryCtx, "heartbeat node lease", func() error {
 		accepted = false
-		expiry = time.Time{}
+		remainingMicros = 0
 
 		scanErr := s.pool.QueryRowContext(
 			retryCtx, query, ttl.Microseconds(), runID, nodeID, lease.Owner, lease.Generation,
-		).Scan(&expiry)
+		).Scan(&remainingMicros)
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			return nil
 		}
@@ -480,7 +611,7 @@ func (s *Store) HeartbeatNode(
 		return nil
 	})
 
-	return accepted, expiry, err
+	return accepted, time.Duration(remainingMicros) * time.Microsecond, err
 }
 
 // GetRunResult returns persisted run state and payloads.

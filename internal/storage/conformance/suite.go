@@ -4,6 +4,7 @@ package conformance
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -28,6 +29,18 @@ type Harness struct {
 	DeleteRun func(context.Context, *sql.DB, storage.RunID) error
 	// CountRunRows counts node and edge rows belonging to a run.
 	CountRunRows func(context.Context, *sql.DB, storage.RunID) (nodes int, edges int, err error)
+	// LoadNodeStates loads persisted node state for terminal-transition assertions.
+	LoadNodeStates func(context.Context, *sql.DB, storage.RunID) (map[storage.NodeID]NodeState, error)
+}
+
+// NodeState is the persisted node state observed by conformance tests.
+type NodeState struct {
+	Status          storage.NodeStatus
+	LeaseOwner      string
+	Error           storage.EncodedPayload
+	LeaseGeneration int64
+	Attempt         int
+	HasLeaseExpiry  bool
 }
 
 const (
@@ -61,6 +74,8 @@ func Run(t *testing.T, harness Harness) {
 		{name: "failure", run: runFailure},
 		{name: "cancellation", run: runCancellation},
 		{name: "heartbeat and recovery", run: runHeartbeatAndRecovery},
+		{name: "final attempt lease expiry", run: runFinalAttemptLeaseExpiry},
+		{name: "concurrent final attempt recovery", run: runConcurrentFinalAttemptRecovery},
 		{name: "restart and resume", run: runRestartAndResume},
 		{name: "migration idempotence", run: runMigrationIdempotence},
 		{name: "run deletion", run: runRunDeletion},
@@ -75,7 +90,7 @@ func validateHarness(t *testing.T, harness Harness) {
 
 	if harness.Open == nil || harness.Migrate == nil || harness.NewBackend == nil ||
 		harness.ExpireLease == nil || harness.CancelRun == nil || harness.DeleteRun == nil ||
-		harness.CountRunRows == nil {
+		harness.CountRunRows == nil || harness.LoadNodeStates == nil {
 		t.Fatal("conformance harness requires all lifecycle and operation callbacks")
 	}
 }
@@ -200,7 +215,7 @@ func runRetryAndPromotion(t *testing.T, harness Harness) {
 	requireAccepted(t, "retry node", accepted, err)
 
 	promoted, err := store.PromoteRetries(t.Context())
-	requireCount(t, "promote retries", promoted, 1, err)
+	requireSingleCount(t, "promote retries", promoted, err)
 
 	second := mustClaim(t, store, workerB)
 	if second.Attempt != 2 || second.Lease.Generation <= first.Lease.Generation {
@@ -284,20 +299,185 @@ func runHeartbeatAndRecovery(t *testing.T, harness Harness) {
 	accepted, expiry, err := store.HeartbeatNode(
 		t.Context(), first.RunID, first.NodeID, first.Lease, heartbeatExtension,
 	)
-	requireHeartbeat(t, accepted, expiry, first.Lease.ExpiresAt, err)
+	requireHeartbeat(t, accepted, expiry, first.Lease.Remaining, err)
 
 	if expireErr := harness.ExpireLease(t.Context(), database, first.RunID, first.NodeID); expireErr != nil {
 		t.Fatal(expireErr)
 	}
 
 	recovered, err := store.RecoverExpiredLeases(t.Context())
-	requireCount(t, "recover lease", recovered, 1, err)
+	requireSingleCount(t, "recover lease", recovered, err)
 
 	second := mustClaim(t, store, workerB)
 	requireRenewedClaim(t, second, first)
 
 	accepted, err = store.CompleteNode(t.Context(), first.RunID, first.NodeID, first.Lease, []byte(`"stale"`))
 	requireRejected(t, "expired lease completion", accepted, err)
+}
+
+func runFinalAttemptLeaseExpiry(t *testing.T, harness Harness) {
+	t.Helper()
+
+	opened := openStore(t, harness, "final-attempt-expiry")
+	plan := joinPlan("conformance-final-attempt-expiry")
+
+	plan.Run.MaxAttempts = 1
+	if err := opened.backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	exhausted := mustClaim(t, opened.backend, workerA)
+
+	sibling := mustClaim(t, opened.backend, workerB)
+	if err := harness.ExpireLease(t.Context(), opened.database, exhausted.RunID, exhausted.NodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := opened.backend.RecoverExpiredLeases(t.Context())
+	requireSingleCount(t, "recover exhausted lease", recovered, err)
+
+	result, err := opened.backend.GetRunResult(t.Context(), plan.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Status != storage.RunFailed {
+		t.Fatalf("exhausted run status = %q, want %q", result.Status, storage.RunFailed)
+	}
+
+	requireLeaseExpiryFailure(t, result.Error, exhausted)
+	requireFinalAttemptNodeStates(t, harness, opened, exhausted, sibling)
+	requireFinalAttemptFences(t, opened.backend, exhausted, sibling)
+}
+
+func requireFinalAttemptNodeStates(
+	t *testing.T,
+	harness Harness,
+	opened openedStore,
+	exhausted, sibling *storage.Claim,
+) {
+	t.Helper()
+
+	states, err := harness.LoadNodeStates(t.Context(), opened.database, exhausted.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exhaustedState := states[exhausted.NodeID]
+	if exhaustedState.Status != storage.NodeFailed || exhaustedState.LeaseOwner != "" ||
+		exhaustedState.HasLeaseExpiry || exhaustedState.LeaseGeneration <= exhausted.Lease.Generation {
+		t.Fatalf("exhausted node state = %#v, claim=%#v", exhaustedState, exhausted)
+	}
+
+	requireLeaseExpiryFailure(t, exhaustedState.Error, exhausted)
+
+	siblingState := states[sibling.NodeID]
+	if siblingState.Status != storage.NodeCanceled || siblingState.LeaseOwner != "" || siblingState.HasLeaseExpiry {
+		t.Fatalf("sibling node state = %#v", siblingState)
+	}
+}
+
+func requireFinalAttemptFences(t *testing.T, backend storage.Backend, exhausted, sibling *storage.Claim) {
+	t.Helper()
+
+	accepted, err := backend.CompleteNode(
+		t.Context(), exhausted.RunID, exhausted.NodeID, exhausted.Lease, []byte(`"late"`),
+	)
+	requireRejected(t, "expired exhausted completion", accepted, err)
+
+	accepted, err = backend.CompleteNode(
+		t.Context(), sibling.RunID, sibling.NodeID, sibling.Lease, []byte(`"late sibling"`),
+	)
+	requireRejected(t, "canceled sibling completion", accepted, err)
+}
+
+func runConcurrentFinalAttemptRecovery(t *testing.T, harness Harness) {
+	t.Helper()
+
+	opened := openStore(t, harness, "concurrent-final-attempt-expiry")
+	plan := singleNodePlan("conformance-concurrent-final-expiry", "concurrent-final-expiry")
+
+	plan.Run.MaxAttempts = 1
+	if err := opened.backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	claim := mustClaim(t, opened.backend, workerA)
+	if err := harness.ExpireLease(t.Context(), opened.database, claim.RunID, claim.NodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := harness.NewBackend(opened.database)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type recoveryResult struct {
+		err   error
+		count int64
+	}
+
+	const concurrentRecoveries = 2
+
+	start := make(chan struct{})
+	results := make(chan recoveryResult, concurrentRecoveries)
+
+	for _, backend := range []storage.Backend{opened.backend, restarted} {
+		go func(store storage.Backend) {
+			<-start
+
+			count, recoverErr := store.RecoverExpiredLeases(t.Context())
+			results <- recoveryResult{count: count, err: recoverErr}
+		}(backend)
+	}
+
+	close(start)
+
+	var total int64
+
+	for range concurrentRecoveries {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+
+		total += result.count
+	}
+
+	if total != 1 {
+		t.Fatalf("concurrent recovered count = %d, want 1", total)
+	}
+
+	runResult, err := restarted.GetRunResult(t.Context(), plan.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if runResult.Status != storage.RunFailed {
+		t.Fatalf("concurrently recovered run status = %q, want %q", runResult.Status, storage.RunFailed)
+	}
+
+	requireLeaseExpiryFailure(t, runResult.Error, claim)
+}
+
+func requireLeaseExpiryFailure(t *testing.T, payload storage.EncodedPayload, claim *storage.Claim) {
+	t.Helper()
+
+	var failure struct {
+		Message     string `json:"message"`
+		NodeID      string `json:"node_id"`
+		FunctionKey string `json:"function_key"`
+		Attempt     int    `json:"attempt"`
+		Retryable   bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(payload, &failure); err != nil {
+		t.Fatalf("decode lease-expiry failure %q: %v", payload, err)
+	}
+
+	if failure.Message == "" || failure.NodeID != string(claim.NodeID) ||
+		failure.FunctionKey != claim.FunctionKey || failure.Attempt != claim.Attempt || failure.Retryable {
+		t.Fatalf("lease-expiry failure = %#v, claim=%#v", failure, claim)
+	}
 }
 
 func runRestartAndResume(t *testing.T, harness Harness) {
@@ -322,7 +502,7 @@ func runRestartAndResume(t *testing.T, harness Harness) {
 	}
 
 	recovered, recoverErr := restarted.RecoverExpiredLeases(t.Context())
-	requireCount(t, "restart recovery", recovered, 1, recoverErr)
+	requireSingleCount(t, "restart recovery", recovered, recoverErr)
 
 	second := mustClaim(t, restarted, "resumed-worker")
 
@@ -469,19 +649,19 @@ func requireNotClaimed(t *testing.T, claim *storage.Claim, claimed bool, err err
 	}
 }
 
-func requireHeartbeat(t *testing.T, accepted bool, expiry, previous time.Time, err error) {
+func requireHeartbeat(t *testing.T, accepted bool, remaining, previous time.Duration, err error) {
 	t.Helper()
 
-	if err != nil || !accepted || !expiry.After(previous) {
-		t.Fatalf("heartbeat: accepted=%v expiry=%v previous=%v err=%v", accepted, expiry, previous, err)
+	if err != nil || !accepted || remaining <= 0 || remaining < previous/2 {
+		t.Fatalf("heartbeat: accepted=%v remaining=%v previous=%v err=%v", accepted, remaining, previous, err)
 	}
 }
 
-func requireCount(t *testing.T, operation string, got, want int64, err error) {
+func requireSingleCount(t *testing.T, operation string, got int64, err error) {
 	t.Helper()
 
-	if err != nil || got != want {
-		t.Fatalf("%s: count=%d want=%d err=%v", operation, got, want, err)
+	if err != nil || got != 1 {
+		t.Fatalf("%s: count=%d want=1 err=%v", operation, got, err)
 	}
 }
 

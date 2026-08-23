@@ -114,10 +114,10 @@ func isRetryable(err error) bool {
 	}
 }
 
-func leaseContext(ctx context.Context, leaseExpiry time.Time) (context.Context, context.CancelFunc) {
-	if leaseExpiry.IsZero() {
+func leaseContext(ctx context.Context, leaseRemaining time.Duration) (context.Context, context.CancelFunc) {
+	if leaseRemaining <= 0 {
 		return context.WithCancel(ctx)
 	}
 
-	return context.WithDeadline(ctx, leaseExpiry)
+	return context.WithTimeout(ctx, leaseRemaining)
 }
