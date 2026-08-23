@@ -137,6 +137,10 @@ func TestCompilationCallbackGuard(t *testing.T) {
 			name: "mount callback before bridge mount", generation: 3,
 			active: true, mounted: false, guardMount: false, want: true,
 		},
+		{
+			name: "compilation callback before bridge mount", generation: 3,
+			active: true, mounted: false, guardMount: true, want: false,
+		},
 	}
 
 	for _, test := range tests {
