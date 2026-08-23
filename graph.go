@@ -3,7 +3,7 @@ package cord
 import (
 	"errors"
 	"fmt"
-	"reflect"
+	"slices"
 	"sync"
 )
 
@@ -35,30 +35,14 @@ func (g *graph) appendNode(parents []nodeID, definition nodeDefinition) nodeID {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	parentNodes := make([]node, 0, len(parents))
 	for _, parent := range parents {
-		parentNode, ok := g.nodes[parent]
-		if !ok {
+		if _, ok := g.nodes[parent]; !ok {
 			definition.err = errors.Join(definition.err, fmt.Errorf(
 				"cord: workflow graph references unknown parent node %d",
 				parent,
 			))
-
-			continue
-		}
-
-		parentNodes = append(parentNodes, parentNode)
-	}
-
-	occurrence := 0
-
-	for _, existing := range g.nodes {
-		if existing.definition.functionKey == definition.functionKey && reflect.DeepEqual(existing.parents, parents) {
-			occurrence++
 		}
 	}
-
-	definition = assignLogicalID(definition, parentNodes, occurrence)
 
 	g.nextID++
 	nodeIdentifier := g.nextID
@@ -145,7 +129,7 @@ func compiledOccurrence(plan []node, index int) int {
 
 	for previous := range index {
 		if plan[previous].definition.functionKey == plan[index].definition.functionKey &&
-			reflect.DeepEqual(plan[previous].parents, plan[index].parents) {
+			slices.Equal(plan[previous].parents, plan[index].parents) {
 			occurrence++
 		}
 	}
