@@ -377,7 +377,7 @@ func TestStore_CancelRunFencesRunningWorkAndPreservesCompletedNodes(t *testing.T
 	require.NoError(t, store.CreateRun(t.Context(), &plan))
 	claim := claimNode(t, store)
 
-	accepted, err := store.CancelRun(t.Context(), claim.RunID)
+	accepted, err := sqlite.CancelRunForTest(t.Context(), store, claim.RunID)
 	require.NoError(t, err)
 	require.True(t, accepted)
 	assertNodeState(t, database, claim.RunID, claim.NodeID, storage.NodeCanceled, 0)
@@ -387,7 +387,7 @@ func TestStore_CancelRunFencesRunningWorkAndPreservesCompletedNodes(t *testing.T
 	completed, err := store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("late"))
 	require.NoError(t, err)
 	assert.False(t, completed)
-	accepted, err = store.CancelRun(t.Context(), claim.RunID)
+	accepted, err = sqlite.CancelRunForTest(t.Context(), store, claim.RunID)
 	require.NoError(t, err)
 	assert.False(t, accepted)
 }

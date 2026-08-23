@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,7 +84,7 @@ func TestStore_HeartbeatNodeRejectsInactiveRun(t *testing.T) {
 	require.NoError(t, store.CreateRun(t.Context(), &plan))
 	claim := claimNode(t, store)
 
-	accepted, err := store.CancelRun(t.Context(), claim.RunID)
+	accepted, err := sqlite.CancelRunForTest(t.Context(), store, claim.RunID)
 	require.NoError(t, err)
 	require.True(t, accepted)
 
