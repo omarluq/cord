@@ -21,7 +21,7 @@ func (s *Store) CancelRun(ctx context.Context, runID storage.RunID) (bool, error
 			return requestErr
 		}
 
-		if cancelErr := cancelRunNodes(ctx, transaction, runID); cancelErr != nil {
+		if cancelErr := cancelUnfinishedNodes(ctx, transaction, runID); cancelErr != nil {
 			return cancelErr
 		}
 
@@ -58,31 +58,6 @@ func requestRunCancellation(ctx context.Context, transaction *sql.Tx, runID stor
 	}
 
 	return count == 1, nil
-}
-
-func cancelRunNodes(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
-	const query = `UPDATE cord_nodes
-		SET status = $1,
-			lease_owner = NULL,
-			lease_expires_at = NULL,
-			completed_at = clock_timestamp()
-		WHERE run_id = $2 AND status IN ($3, $4, $5, $6)`
-
-	_, err := transaction.ExecContext(
-		ctx,
-		query,
-		storage.NodeCanceled,
-		runID,
-		storage.NodePending,
-		storage.NodeReady,
-		storage.NodeRunning,
-		storage.NodeRetryWait,
-	)
-	if err != nil {
-		return fmt.Errorf("cancel unfinished nodes for run %q: %w", runID, err)
-	}
-
-	return nil
 }
 
 func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {

@@ -259,13 +259,22 @@ func failRunPath(
 
 func cancelUnfinishedNodes(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
 	const query = `UPDATE cord_nodes
-		SET status = 'canceled',
+		SET status = $1,
 			lease_owner = NULL,
 			lease_expires_at = NULL,
 			completed_at = clock_timestamp()
-		WHERE run_id = $1 AND status IN ('pending', 'ready', 'running', 'retry_wait')`
-	if _, err := transaction.ExecContext(ctx, query, runID); err != nil {
-		return fmt.Errorf("cancel unfinished nodes: %w", err)
+		WHERE run_id = $2 AND status IN ($3, $4, $5, $6)`
+	if _, err := transaction.ExecContext(
+		ctx,
+		query,
+		storage.NodeCanceled,
+		runID,
+		storage.NodePending,
+		storage.NodeReady,
+		storage.NodeRunning,
+		storage.NodeRetryWait,
+	); err != nil {
+		return fmt.Errorf("cancel unfinished nodes for run %q: %w", runID, err)
 	}
 
 	return nil
