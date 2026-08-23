@@ -23,8 +23,6 @@ type Harness struct {
 	NewBackend func(*sql.DB) (storage.Backend, error)
 	// ExpireLease makes a claimed lease eligible for recovery.
 	ExpireLease func(context.Context, *sql.DB, storage.RunID, storage.NodeID) error
-	// CancelRun durably cancels a run.
-	CancelRun func(context.Context, storage.Backend, storage.RunID) (bool, error)
 	// DeleteRun deletes a run using the backend's native test mechanism.
 	DeleteRun func(context.Context, *sql.DB, storage.RunID) error
 	// CountRunRows counts node and edge rows belonging to a run.
@@ -117,11 +115,11 @@ func Run(t *testing.T, harness Harness) {
 		name string
 	}{
 		{name: "create and result", run: runCreateAndResult},
+		{name: "invalid run plans", run: runInvalidRunPlans},
 		{name: "join order and dependency release", run: runJoinOrder},
 		{name: "claim uniqueness and completion fence", run: runClaimAndCompletionFence},
 		{name: "retry and promotion", run: runRetryAndPromotion},
 		{name: "failure", run: runFailure},
-		{name: "cancellation", run: runCancellation},
 		{name: "heartbeat and recovery", run: runHeartbeatAndRecovery},
 		{name: "final attempt lease expiry", run: runFinalAttemptLeaseExpiry},
 		{name: "concurrent final attempt recovery", run: runConcurrentFinalAttemptRecovery},
@@ -138,7 +136,7 @@ func validateHarness(t *testing.T, harness Harness) {
 	t.Helper()
 
 	if harness.Open == nil || harness.Migrate == nil || harness.NewBackend == nil ||
-		harness.ExpireLease == nil || harness.CancelRun == nil || harness.DeleteRun == nil ||
+		harness.ExpireLease == nil || harness.DeleteRun == nil ||
 		harness.CountRunRows == nil || harness.LoadNodeStates == nil {
 		t.Fatal("conformance harness requires all lifecycle and operation callbacks")
 	}
@@ -179,6 +177,174 @@ func runCreateAndResult(t *testing.T, harness Harness) {
 	_, err = store.GetRunResult(t.Context(), "missing-run")
 	if !errors.Is(err, storage.ErrRunNotFound) {
 		t.Fatalf("missing result error = %v, want %v", err, storage.ErrRunNotFound)
+	}
+}
+
+type invalidRunPlanTest struct {
+	mutate  func(*storage.RunPlan)
+	name    string
+	wantErr string
+}
+
+func invalidRunPlanTests() []invalidRunPlanTest {
+	tests := invalidPlanStructureTests()
+	tests = append(tests, invalidPlanStateTests()...)
+
+	return tests
+}
+
+func invalidPlanStructureTests() []invalidRunPlanTest {
+	return []invalidRunPlanTest{
+		{
+			name:    "empty run ID",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.ID = "" },
+			wantErr: "validate run plan: run ID is empty",
+		},
+		{
+			name:    "empty workflow name",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.WorkflowName = "" },
+			wantErr: "validate run plan: workflow name is empty",
+		},
+		{
+			name:    "empty terminal node ID",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.TerminalNodeID = "" },
+			wantErr: "validate run plan: terminal node ID is empty",
+		},
+		{
+			name:    "empty node ID",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].ID = "" },
+			wantErr: "validate run plan: node ID is empty",
+		},
+		{
+			name:    "empty function key",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].FunctionKey = "" },
+			wantErr: `validate run plan: node "left" function key is empty`,
+		},
+		{
+			name:    "empty signature",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].SignatureHash = "" },
+			wantErr: `validate run plan: node "left" signature hash is empty`,
+		},
+		{
+			name:    "duplicate node",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[1].ID = leftNodeID },
+			wantErr: `validate run plan: duplicate node "left"`,
+		},
+		{name: "duplicate edge", mutate: func(plan *storage.RunPlan) {
+			plan.Edges = append(plan.Edges, plan.Edges[0])
+			plan.Nodes[2].RemainingDeps++
+		}, wantErr: `validate run plan: duplicate edge "right" -> "join"`},
+		{
+			name:    "negative parent order",
+			mutate:  func(plan *storage.RunPlan) { plan.Edges[0].ParentOrder = -1 },
+			wantErr: `validate run plan: edge "right" -> "join" parent order must be non-negative`,
+		},
+		{
+			name:    "duplicate parent order",
+			mutate:  func(plan *storage.RunPlan) { plan.Edges[1].ParentOrder = 0 },
+			wantErr: `validate run plan: node "join" has duplicate parent order 0`,
+		},
+		{
+			name:    "noncontiguous parent order",
+			mutate:  func(plan *storage.RunPlan) { plan.Edges[1].ParentOrder = 2 },
+			wantErr: `validate run plan: node "join" parent order values must be contiguous from zero (missing 1)`,
+		},
+	}
+}
+
+func invalidPlanStateTests() []invalidRunPlanTest {
+	return []invalidRunPlanTest{
+		{
+			name:    "invalid run status",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.Status = storage.RunFailed },
+			wantErr: `validate run plan: run must initially be "running"`,
+		},
+		{
+			name:    "invalid node status",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].Status = storage.NodeRunning },
+			wantErr: `validate run plan: node "left" must initially be "ready"`,
+		},
+		{
+			name:    "dependency mismatch",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[2].RemainingDeps = 1 },
+			wantErr: `validate run plan: node "join" dependency count does not match edges`,
+		},
+		{
+			name:    "initial run output",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.Output = []byte("output") },
+			wantErr: "validate run plan: run output must initially be unset",
+		},
+		{
+			name:    "initial run error",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.Error = []byte("error") },
+			wantErr: "validate run plan: run error must initially be unset",
+		},
+		{
+			name:    "initial run completion",
+			mutate:  func(plan *storage.RunPlan) { plan.Run.CompletedAt = new(time.Time) },
+			wantErr: "validate run plan: run completion time must initially be unset",
+		},
+		{
+			name:    "initial node output",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].Output = []byte("output") },
+			wantErr: `validate run plan: node "left" output must initially be unset`,
+		},
+		{
+			name:    "initial node error",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].Error = []byte("error") },
+			wantErr: `validate run plan: node "left" error must initially be unset`,
+		},
+		{
+			name:    "initial node timestamp",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].StartedAt = new(time.Time) },
+			wantErr: `validate run plan: node "left" start time must initially be unset`,
+		},
+		{
+			name:    "initial node lease",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].Lease.Owner = workerA },
+			wantErr: `validate run plan: node "left" lease owner must initially be empty`,
+		},
+		{
+			name:    "initial node attempt",
+			mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].Attempt = 1 },
+			wantErr: `validate run plan: node "left" attempt must initially be zero`,
+		},
+	}
+}
+
+func runInvalidRunPlans(t *testing.T, harness Harness) {
+	t.Helper()
+
+	opened := openStore(t, harness, "invalid-run-plans")
+
+	tests := invalidRunPlanTests()
+
+	for index, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			plan := joinPlan(storage.RunID(fmt.Sprintf("invalid-plan-%d", index)))
+			testCase.mutate(&plan)
+
+			err := opened.backend.CreateRun(t.Context(), &plan)
+			wantErr := "create run: " + testCase.wantErr
+
+			if err == nil || err.Error() != wantErr {
+				t.Fatalf("CreateRun() error = %v, want %q", err, wantErr)
+			}
+
+			_, resultErr := opened.backend.GetRunResult(t.Context(), plan.Run.ID)
+			if !errors.Is(resultErr, storage.ErrRunNotFound) {
+				t.Fatalf("GetRunResult() error = %v, want %v", resultErr, storage.ErrRunNotFound)
+			}
+
+			nodes, edges, countErr := harness.CountRunRows(t.Context(), opened.database, plan.Run.ID)
+			if countErr != nil {
+				t.Fatal(countErr)
+			}
+
+			if nodes != 0 || edges != 0 {
+				t.Fatalf("invalid plan persisted rows: nodes=%d edges=%d", nodes, edges)
+			}
+		})
 	}
 }
 
@@ -301,35 +467,6 @@ func runFailure(t *testing.T, harness Harness) {
 	if next, claimed, claimErr := claimAny(t.Context(), store, "other"); claimErr != nil || claimed {
 		t.Fatalf("claim after failure = %#v, claimed=%v err=%v", next, claimed, claimErr)
 	}
-}
-
-func runCancellation(t *testing.T, harness Harness) {
-	t.Helper()
-
-	backend := openStore(t, harness, "cancel").backend
-
-	plan := joinPlan("conformance-cancel")
-	if err := backend.CreateRun(t.Context(), &plan); err != nil {
-		t.Fatal(err)
-	}
-
-	claim := mustClaim(t, backend, "worker")
-	accepted, err := harness.CancelRun(t.Context(), backend, claim.RunID)
-	requireAccepted(t, "cancel run", accepted, err)
-
-	result, err := backend.GetRunResult(t.Context(), claim.RunID)
-	if err != nil || result.Status != storage.RunCanceled {
-		t.Fatalf("canceled result = %#v, err=%v", result, err)
-	}
-
-	accepted, err = backend.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`))
-	requireRejected(t, "completion after cancellation", accepted, err)
-
-	accepted, err = harness.CancelRun(t.Context(), backend, claim.RunID)
-	requireRejected(t, "repeat cancellation", accepted, err)
-
-	accepted, err = harness.CancelRun(t.Context(), backend, "missing-run")
-	requireRejected(t, "missing run cancellation", accepted, err)
 }
 
 func runHeartbeatAndRecovery(t *testing.T, harness Harness) {
