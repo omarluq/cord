@@ -64,7 +64,7 @@ func insertRun(ctx context.Context, transaction *sql.Tx, run *storage.Run) error
 		nullablePayload(run.Error),
 		run.CreatedAt,
 		run.UpdatedAt,
-		run.CompletedAt,
+		nullableTimePointer(run.CompletedAt),
 		run.MaxAttempts,
 		run.RetryBaseDelay.Nanoseconds(),
 		run.RetryMaxDelay.Nanoseconds(),
@@ -103,8 +103,8 @@ func insertNodes(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan
 			nullableTime(node.Lease.ExpiresAt),
 			nullablePayload(node.Output),
 			nullablePayload(node.Error),
-			node.StartedAt,
-			node.CompletedAt,
+			nullableTimePointer(node.StartedAt),
+			nullableTimePointer(node.CompletedAt),
 		)
 		if err != nil {
 			return fmt.Errorf("insert node %q for run %q: %w", node.ID, plan.Run.ID, err)
@@ -159,4 +159,12 @@ func nullableTime(value time.Time) any {
 	}
 
 	return value
+}
+
+func nullableTimePointer(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+
+	return *value
 }
