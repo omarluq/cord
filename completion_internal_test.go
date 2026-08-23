@@ -43,6 +43,29 @@ func (backend *resultWaitBackend) setResult(result storage.RunResult) {
 	backend.result = result
 }
 
+func newResultWaitRuntime(
+	t *testing.T,
+	result storage.RunResult,
+	readCapacity int,
+) (*Cord, *resultWaitBackend, serialization.JSONCodec[int]) {
+	t.Helper()
+
+	backend := &resultWaitBackend{
+		result: result,
+		reads:  make(chan struct{}, readCapacity),
+		mu:     sync.Mutex{},
+	}
+	runtime := &Cord{
+		store:             backend,
+		ctx:               t.Context(),
+		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
+	}
+	codec, err := serialization.NewJSONCodec[int]()
+	require.NoError(t, err)
+
+	return runtime, backend, codec
+}
+
 func TestCompletionNotificationWakesAllWaitersAndCleansUp(t *testing.T) {
 	t.Parallel()
 
@@ -74,18 +97,11 @@ func TestCompletionNotificationWakesAllWaitersAndCleansUp(t *testing.T) {
 func TestWorkflowWaitUsesLocalNotification(t *testing.T) {
 	t.Parallel()
 
-	backend := &resultWaitBackend{
-		result: storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
-		reads:  make(chan struct{}, 4),
-		mu:     sync.Mutex{},
-	}
-	runtime := &Cord{
-		store:             backend,
-		ctx:               t.Context(),
-		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
-	}
-	codec, err := serialization.NewJSONCodec[int]()
-	require.NoError(t, err)
+	runtime, backend, codec := newResultWaitRuntime(
+		t,
+		storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
+		4,
+	)
 
 	done := make(chan notifiedResult, 1)
 
@@ -118,18 +134,11 @@ func TestWorkflowWaitUsesLocalNotification(t *testing.T) {
 func TestWorkflowWaitNotificationBeforeSubscriptionFallsBackToDurableRead(t *testing.T) {
 	t.Parallel()
 
-	backend := &resultWaitBackend{
-		result: storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil},
-		reads:  make(chan struct{}, 1),
-		mu:     sync.Mutex{},
-	}
-	runtime := &Cord{
-		store:             backend,
-		ctx:               t.Context(),
-		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
-	}
-	codec, err := serialization.NewJSONCodec[int]()
-	require.NoError(t, err)
+	runtime, _, codec := newResultWaitRuntime(
+		t,
+		storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil},
+		1,
+	)
 
 	runtime.notifyCompletion("missed-run")
 	value, err := (Workflow[int, int]{runtime: runtime}).wait(t.Context(), "missed-run", codec, false)
@@ -141,18 +150,11 @@ func TestWorkflowWaitNotificationBeforeSubscriptionFallsBackToDurableRead(t *tes
 func TestWorkflowWaitPollsDurableRemoteCompletion(t *testing.T) {
 	t.Parallel()
 
-	backend := &resultWaitBackend{
-		result: storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
-		reads:  make(chan struct{}, 4),
-		mu:     sync.Mutex{},
-	}
-	runtime := &Cord{
-		store:             backend,
-		ctx:               t.Context(),
-		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
-	}
-	codec, err := serialization.NewJSONCodec[int]()
-	require.NoError(t, err)
+	runtime, backend, codec := newResultWaitRuntime(
+		t,
+		storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
+		4,
+	)
 
 	done := make(chan error, 1)
 

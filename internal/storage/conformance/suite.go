@@ -43,6 +43,55 @@ type NodeState struct {
 	HasLeaseExpiry  bool
 }
 
+// NewNodeStateLoader returns a harness function that loads persisted node state
+// using a backend-specific query with the run ID as its sole argument.
+func NewNodeStateLoader(
+	backend string,
+	query string,
+) func(context.Context, *sql.DB, storage.RunID) (map[storage.NodeID]NodeState, error) {
+	return func(
+		ctx context.Context,
+		database *sql.DB,
+		runID storage.RunID,
+	) (_ map[storage.NodeID]NodeState, err error) {
+		rows, err := database.QueryContext(ctx, query, runID)
+		if err != nil {
+			return nil, fmt.Errorf("load %s node states: %w", backend, err)
+		}
+		defer func() { err = errors.Join(err, rows.Close()) }()
+
+		states := make(map[storage.NodeID]NodeState)
+
+		for rows.Next() {
+			var (
+				identifier storage.NodeID
+				state      NodeState
+				failure    []byte
+			)
+			if scanErr := rows.Scan(
+				&identifier,
+				&state.Status,
+				&failure,
+				&state.LeaseOwner,
+				&state.LeaseGeneration,
+				&state.HasLeaseExpiry,
+				&state.Attempt,
+			); scanErr != nil {
+				return nil, fmt.Errorf("scan %s node state: %w", backend, scanErr)
+			}
+
+			state.Error = storage.EncodedPayload(failure)
+			states[identifier] = state
+		}
+
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, fmt.Errorf("iterate %s node states: %w", backend, rowsErr)
+		}
+
+		return states, nil
+	}
+}
+
 const (
 	conformanceNodeID  storage.NodeID = "node"
 	leftNodeID         storage.NodeID = "left"
