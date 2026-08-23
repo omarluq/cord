@@ -23,7 +23,7 @@ func (s *Store) LoadNodeInputs(
 	runID storage.RunID,
 	nodeID storage.NodeID,
 ) (_ []storage.EncodedPayload, err error) {
-	rows, err := s.database.QueryContext(ctx, parentOutputsQuery, runID, nodeID)
+	rows, err := s.pool.QueryContext(ctx, parentOutputsQuery, runID, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("load parent outputs: %w", err)
 	}
@@ -51,7 +51,7 @@ func (s *Store) LoadNodeInputs(
 	const runInputQuery = `SELECT input_payload FROM cord_runs WHERE id = $1`
 
 	var payload []byte
-	if err = s.database.QueryRowContext(ctx, runInputQuery, runID).Scan(&payload); err != nil {
+	if err = s.pool.QueryRowContext(ctx, runInputQuery, runID).Scan(&payload); err != nil {
 		return nil, fmt.Errorf("load run input: %w", err)
 	}
 
@@ -71,7 +71,7 @@ func (s *Store) terminal(
 
 	accepted := false
 
-	err := runTransaction(retryCtx, s.database, "transition node", func(transaction *sql.Tx) error {
+	err := runTransaction(retryCtx, s.pool, "transition node", func(transaction *sql.Tx) error {
 		accepted = false
 
 		terminalNodeID, running, transitionErr := lockRunningRun(retryCtx, transaction, runID)
@@ -351,7 +351,7 @@ func (s *Store) RetryNode(
 	err := runOperation(retryCtx, "schedule node retry", func() error {
 		accepted = false
 
-		result, execErr := s.database.ExecContext(
+		result, execErr := s.pool.ExecContext(
 			retryCtx,
 			query,
 			nullablePayload(payload),
@@ -410,7 +410,7 @@ func (s *Store) update(ctx context.Context, query, operation string) (int64, err
 	var count int64
 
 	err := runOperation(ctx, operation, func() error {
-		result, execErr := s.database.ExecContext(ctx, query)
+		result, execErr := s.pool.ExecContext(ctx, query)
 		if execErr != nil {
 			return fmt.Errorf("execute %s: %w", operation, execErr)
 		}
@@ -464,7 +464,7 @@ func (s *Store) HeartbeatNode(
 		accepted = false
 		expiry = time.Time{}
 
-		scanErr := s.database.QueryRowContext(
+		scanErr := s.pool.QueryRowContext(
 			retryCtx, query, ttl.Microseconds(), runID, nodeID, lease.Owner, lease.Generation,
 		).Scan(&expiry)
 		if errors.Is(scanErr, sql.ErrNoRows) {
@@ -495,7 +495,7 @@ func (s *Store) GetRunResult(
 		output, failure []byte
 	)
 
-	err := s.database.QueryRowContext(ctx, query, runID).Scan(&result.Status, &output, &failure)
+	err := s.pool.QueryRowContext(ctx, query, runID).Scan(&result.Status, &output, &failure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, fmt.Errorf("read run result %q: %w", runID, storage.ErrRunNotFound)
 	}

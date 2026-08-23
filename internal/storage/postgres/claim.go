@@ -64,7 +64,7 @@ func (s *Store) ClaimReadyNodeForFunctions(
 		return nil, false, err
 	}
 
-	claim, err := scanClaim(s.database.QueryRowContext(ctx, fmt.Sprintf(claimQuery, values), arguments...), owner)
+	claim, err := scanClaim(s.pool.QueryRowContext(ctx, fmt.Sprintf(claimQuery, values), arguments...), owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

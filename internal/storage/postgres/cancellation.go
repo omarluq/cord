@@ -13,7 +13,7 @@ import (
 func (s *Store) CancelRun(ctx context.Context, runID storage.RunID) (bool, error) {
 	accepted := false
 
-	err := runTransaction(ctx, s.database, "cancel run", func(transaction *sql.Tx) error {
+	err := runTransaction(ctx, s.pool, "cancel run", func(transaction *sql.Tx) error {
 		accepted = false
 
 		requested, requestErr := requestRunCancellation(ctx, transaction, runID)
