@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/maxence-charriere/go-app/v11 v11.0.5
-	github.com/samber/hot v0.13.0
+	github.com/samber/hot v0.13.1
 	github.com/stretchr/testify v1.12.1
 )
 
