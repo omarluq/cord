@@ -17,10 +17,18 @@ func retryContention(ctx context.Context, operation string, operationFunc func(c
 func retryFencedContention(
 	ctx context.Context,
 	operation string,
-	leaseExpiresAt time.Time,
+	leaseRemaining time.Duration,
 	operationFunc func(context.Context) error,
 ) error {
-	return retry(ctx, operation, leaseExpiresAt, IsBusy, operationFunc)
+	return retry(ctx, operation, monotonicDeadline(leaseRemaining), IsBusy, operationFunc)
+}
+
+func monotonicDeadline(remaining time.Duration) time.Time {
+	if remaining <= 0 {
+		return time.Time{}
+	}
+
+	return time.Now().Add(remaining)
 }
 
 func retry(

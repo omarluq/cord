@@ -80,8 +80,9 @@ func RunSQLite(t *testing.T, driver SQLiteDriver) {
 
 			return store.CancelRun(ctx, runID)
 		},
-		DeleteRun:    deleteSQLiteRun,
-		CountRunRows: countSQLiteRunRows,
+		DeleteRun:      deleteSQLiteRun,
+		CountRunRows:   countSQLiteRunRows,
+		LoadNodeStates: loadSQLiteNodeStates,
 	}
 
 	Run(t, harness)
@@ -146,6 +147,43 @@ func countSQLiteRunRows(
 	}
 
 	return nodes, edges, nil
+}
+
+func loadSQLiteNodeStates(
+	ctx context.Context,
+	database *sql.DB,
+	runID storage.RunID,
+) (_ map[storage.NodeID]NodeState, err error) {
+	rows, err := database.QueryContext(ctx, `SELECT node_id, status, error_payload,
+		COALESCE(lease_owner, ''), lease_generation, lease_expires_at IS NOT NULL, attempt
+		FROM cord_nodes WHERE run_id = ?`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load SQLite node states: %w", err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	states := make(map[storage.NodeID]NodeState)
+
+	for rows.Next() {
+		var (
+			identifier storage.NodeID
+			state      NodeState
+			failure    []byte
+		)
+		if scanErr := rows.Scan(&identifier, &state.Status, &failure, &state.LeaseOwner,
+			&state.LeaseGeneration, &state.HasLeaseExpiry, &state.Attempt); scanErr != nil {
+			return nil, fmt.Errorf("scan SQLite node state: %w", scanErr)
+		}
+
+		state.Error = storage.EncodedPayload(failure)
+		states[identifier] = state
+	}
+
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate SQLite node states: %w", rowsErr)
+	}
+
+	return states, nil
 }
 
 func runSQLiteWorkflow(t *testing.T, harness Harness) {

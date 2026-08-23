@@ -25,6 +25,6 @@ func RunTransactionForTest(
 }
 
 // LeaseContextForTest exposes lease-bounded context construction to external tests.
-func LeaseContextForTest(ctx context.Context, expiry time.Time) (context.Context, context.CancelFunc) {
-	return leaseContext(ctx, expiry)
+func LeaseContextForTest(ctx context.Context, remaining time.Duration) (context.Context, context.CancelFunc) {
+	return leaseContext(ctx, remaining)
 }

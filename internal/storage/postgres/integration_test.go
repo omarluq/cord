@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -139,6 +140,43 @@ func openPostgresPool(tb testing.TB, dsn string) *sql.DB {
 	return database
 }
 
+func loadPostgresNodeStates(
+	ctx context.Context,
+	database *sql.DB,
+	runID storage.RunID,
+) (_ map[storage.NodeID]conformance.NodeState, err error) {
+	rows, err := database.QueryContext(ctx, `SELECT node_id, status, error_payload,
+		COALESCE(lease_owner, ''), lease_generation, lease_expires_at IS NOT NULL, attempt
+		FROM cord_nodes WHERE run_id = $1`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load PostgreSQL node states: %w", err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	states := make(map[storage.NodeID]conformance.NodeState)
+
+	for rows.Next() {
+		var (
+			identifier storage.NodeID
+			state      conformance.NodeState
+			failure    []byte
+		)
+		if scanErr := rows.Scan(&identifier, &state.Status, &failure, &state.LeaseOwner,
+			&state.LeaseGeneration, &state.HasLeaseExpiry, &state.Attempt); scanErr != nil {
+			return nil, fmt.Errorf("scan PostgreSQL node state: %w", scanErr)
+		}
+
+		state.Error = storage.EncodedPayload(failure)
+		states[identifier] = state
+	}
+
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate PostgreSQL node states: %w", rowsErr)
+	}
+
+	return states, nil
+}
+
 func postgresHarness(dsn string) conformance.Harness {
 	openFixture := func(tb testing.TB, _ string) *sql.DB {
 		tb.Helper()
@@ -200,6 +238,7 @@ func postgresHarness(dsn string) conformance.Harness {
 
 			return nodes, edges, nil
 		},
+		LoadNodeStates: loadPostgresNodeStates,
 	}
 }
 

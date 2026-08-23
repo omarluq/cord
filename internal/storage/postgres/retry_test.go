@@ -98,29 +98,24 @@ func TestRetryHonorsCanceledContext(t *testing.T) {
 func TestLeaseContextUsesEarlierBound(t *testing.T) {
 	t.Parallel()
 
-	parentDeadline := time.Now().Add(time.Hour)
+	const leaseRemaining = time.Minute
 
-	parent, cancelParent := context.WithDeadline(t.Context(), parentDeadline)
-	defer cancelParent()
-
-	leaseExpiry := time.Now().Add(time.Minute)
-
-	ctx, cancel := postgresstore.LeaseContextForTest(parent, leaseExpiry)
+	ctx, cancel := postgresstore.LeaseContextForTest(t.Context(), leaseRemaining)
 	defer cancel()
 
 	deadline, hasDeadline := ctx.Deadline()
 	require.True(t, hasDeadline)
-	assert.Equal(t, leaseExpiry, deadline)
+	assert.WithinDuration(t, time.Now().Add(leaseRemaining), deadline, time.Second)
 
-	earlierParent, cancelEarlier := context.WithDeadline(t.Context(), time.Now().Add(time.Second))
+	earlierParent, cancelEarlier := context.WithTimeout(t.Context(), time.Second)
 	defer cancelEarlier()
 
-	ctx, cancel = postgresstore.LeaseContextForTest(earlierParent, leaseExpiry)
+	ctx, cancel = postgresstore.LeaseContextForTest(earlierParent, leaseRemaining)
 	defer cancel()
 
 	deadline, hasDeadline = ctx.Deadline()
 	require.True(t, hasDeadline)
-	parentDeadline, hasDeadline = earlierParent.Deadline()
+	parentDeadline, hasDeadline := earlierParent.Deadline()
 	require.True(t, hasDeadline)
 	assert.Equal(t, parentDeadline, deadline)
 }

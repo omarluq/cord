@@ -37,7 +37,9 @@ WHERE n.run_id = c.run_id
 	AND n.node_id = c.node_id
 	AND r.id = n.run_id
 RETURNING n.run_id, n.node_id, n.function_key, n.signature_hash, n.attempt,
-	n.lease_generation, n.lease_expires_at, r.max_attempts, r.retry_base_delay_ns,
+	n.lease_generation, n.lease_expires_at,
+	GREATEST(0, (EXTRACT(EPOCH FROM (n.lease_expires_at - clock_timestamp())) * 1000000)::bigint),
+	r.max_attempts, r.retry_base_delay_ns,
 	r.retry_max_delay_ns, r.retry_policy_version`
 
 // ClaimReadyNodeForFunctions claims one eligible node using PostgreSQL row locking.
@@ -113,7 +115,7 @@ type rowScanner interface {
 func scanClaim(row rowScanner, owner string) (*storage.Claim, error) {
 	claim := &storage.Claim{}
 
-	var baseDelay, maximumDelay int64
+	var baseDelay, maximumDelay, remainingMicros int64
 
 	err := row.Scan(
 		&claim.RunID,
@@ -123,6 +125,7 @@ func scanClaim(row rowScanner, owner string) (*storage.Claim, error) {
 		&claim.Attempt,
 		&claim.Lease.Generation,
 		&claim.Lease.ExpiresAt,
+		&remainingMicros,
 		&claim.MaxAttempts,
 		&baseDelay,
 		&maximumDelay,
@@ -133,6 +136,7 @@ func scanClaim(row rowScanner, owner string) (*storage.Claim, error) {
 	}
 
 	claim.Lease.Owner = owner
+	claim.Lease.Remaining = time.Duration(remainingMicros) * time.Microsecond
 	claim.RetryBaseDelay = time.Duration(baseDelay)
 	claim.RetryMaxDelay = time.Duration(maximumDelay)
 
