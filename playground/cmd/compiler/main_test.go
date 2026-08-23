@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -18,6 +19,23 @@ func TestHTTPServerSetsResponseDeadlineAfterCompilation(t *testing.T) {
 	require.Equal(t, serverHeaderTimeout, server.ReadHeaderTimeout)
 	require.Equal(t, serverHeaderTimeout, server.ReadTimeout)
 	require.Equal(t, serverIdleTimeout, server.IdleTimeout)
+}
+
+func TestParseConfigSetsWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := parseConfig([]string{"-write-timeout", "7s"})
+	require.NoError(t, err)
+	require.Equal(t, 7*time.Second, cfg.writeTimeout)
+}
+
+func TestValidateConfigRejectsNonpositiveWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.writeTimeout = 0
+
+	require.EqualError(t, validateConfig(&cfg), "timeouts and concurrency must be positive")
 }
 
 func TestValidateConfigRejectsMaximumWASMSizeOverflow(t *testing.T) {
