@@ -30,12 +30,17 @@ var (
 )
 
 // Options configures scheduler behavior. Zero-valued fields use Cord's
-// defaults. LeaseTTL and HeartbeatInterval must be at least one millisecond,
-// and HeartbeatInterval must be shorter than LeaseTTL.
+// defaults. Retry fields are defaulted independently, so callers may override
+// any subset of them. LeaseTTL and HeartbeatInterval must be at least one
+// millisecond, and HeartbeatInterval must be shorter than LeaseTTL.
 type Options struct {
-	// OnSchedulerError reports scheduler storage errors. Reporting uses a bounded
-	// queue: when the callback is busy, later errors may be coalesced. The callback
-	// must return promptly so Close can finish; Shutdown can bound the caller's wait.
+	// OnSchedulerError reports scheduler storage errors serially from one runtime-
+	// owned goroutine. A callback panic is recovered. The callback may call Close or
+	// Shutdown; lifecycle waits exclude the callback because Go cannot cancel user
+	// code. A callback that never returns therefore leaks that single reporter goroutine
+	// and may outlive shutdown. At most 16 errors are queued while it is busy; later errors are
+	// dropped and, if reporting resumes before shutdown, summarized by a later callback.
+	// Shutdown abandons queued reports; one delivery already racing shutdown may begin.
 	OnSchedulerError func(error)
 	// Concurrency limits the number of nodes executing across all workflows.
 	Concurrency int
@@ -45,11 +50,12 @@ type Options struct {
 	LeaseTTL time.Duration
 	// HeartbeatInterval controls how often workers extend active leases.
 	HeartbeatInterval time.Duration
-	// MaxAttempts limits how many times each node may execute.
+	// MaxAttempts limits how many times each node may execute. Zero uses three.
 	MaxAttempts int
-	// RetryBaseDelay is the initial delay used for retry backoff.
+	// RetryBaseDelay is the initial delay used for retry backoff. Zero uses
+	// 500 milliseconds.
 	RetryBaseDelay time.Duration
-	// RetryMaxDelay caps retry backoff.
+	// RetryMaxDelay caps retry backoff. Zero uses 30 seconds.
 	RetryMaxDelay time.Duration
 }
 
@@ -163,13 +169,17 @@ func validateSchedulerSettings(
 }
 
 func retrySettings(options Options) (retryPolicy, error) {
-	policy := retryPolicy{
-		maxAttempts: options.MaxAttempts,
-		baseDelay:   options.RetryBaseDelay,
-		maxDelay:    options.RetryMaxDelay,
+	policy := defaultRetryPolicy()
+	if options.MaxAttempts != 0 {
+		policy.maxAttempts = options.MaxAttempts
 	}
-	if policy == (retryPolicy{}) {
-		return defaultRetryPolicy(), nil
+
+	if options.RetryBaseDelay != 0 {
+		policy.baseDelay = options.RetryBaseDelay
+	}
+
+	if options.RetryMaxDelay != 0 {
+		policy.maxDelay = options.RetryMaxDelay
 	}
 
 	if err := policy.validate(); err != nil {
