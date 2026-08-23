@@ -166,14 +166,6 @@ func postgresHarness(dsn string) conformance.Harness {
 
 			return nil
 		},
-		CancelRun: func(ctx context.Context, backend storage.Backend, runID storage.RunID) (bool, error) {
-			store, ok := backend.(*postgresstore.Store)
-			if !ok {
-				return false, fmt.Errorf("cancel PostgreSQL run: backend type %T", backend)
-			}
-
-			return store.CancelRun(ctx, runID)
-		},
 		DeleteRun: func(ctx context.Context, database *sql.DB, runID storage.RunID) error {
 			if _, err := database.ExecContext(ctx, "DELETE FROM cord_runs WHERE id = $1", runID); err != nil {
 				return fmt.Errorf("delete PostgreSQL run: %w", err)
@@ -719,6 +711,41 @@ func postgresReadyPlan(runID storage.RunID, availableAt time.Time) storage.RunPl
 
 func postgresRegistrations() []storage.FunctionRegistration {
 	return []storage.FunctionRegistration{{Key: "postgres.test", Signature: "signature"}}
+}
+
+func TestCancelRunGroundwork(t *testing.T) {
+	t.Parallel()
+
+	database := openPostgres(t, startPostgres(t))
+	require.NoError(t, postgresstore.Migrate(t.Context(), database))
+	store, err := postgresstore.New(database)
+	require.NoError(t, err)
+
+	plan := postgresReadyPlan("cancel-groundwork", time.Now().UTC())
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	claim := claimPostgresNode(t, store, "worker", "postgres.test", "signature")
+
+	accepted, err := postgresstore.CancelRunForTest(t.Context(), store, claim.RunID)
+	require.NoError(t, err)
+	require.True(t, accepted)
+
+	result, err := store.GetRunResult(t.Context(), claim.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.RunCanceled, result.Status)
+
+	accepted, err = store.CompleteNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`),
+	)
+	require.NoError(t, err)
+	assert.False(t, accepted)
+
+	accepted, err = postgresstore.CancelRunForTest(t.Context(), store, claim.RunID)
+	require.NoError(t, err)
+	assert.False(t, accepted)
+
+	accepted, err = postgresstore.CancelRunForTest(t.Context(), store, "missing-run")
+	require.NoError(t, err)
+	assert.False(t, accepted)
 }
 
 func TestTerminalTransitionsSerializeOnRun(t *testing.T) {

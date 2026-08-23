@@ -9,9 +9,11 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
-// CancelRun durably cancels a running or canceling run and all unfinished nodes.
-// It returns false when the run is absent or already terminal.
-func (s *Store) CancelRun(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
+// cancelRun is quarantined groundwork for a possible future durable
+// cancellation API. It is deliberately absent from storage.Backend and kept
+// unexported so it does not become an extension contract before that API is
+// approved. It returns false when the run is absent or already terminal.
+func (s *Store) cancelRun(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
 	err = retryContention(ctx, "retry run cancellation", func(attemptCtx context.Context) error {
 		accepted, err = s.cancelRunOnce(attemptCtx, runID)
 
@@ -54,12 +56,8 @@ func (s *Store) cancelRunOnce(ctx context.Context, runID storage.RunID) (accepte
 		return false, cancelErr
 	}
 
-	_, err = transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-		completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ? AND status = ?`, storage.RunCanceled, runID, storage.RunCanceling)
-	if err != nil {
-		return false, fmt.Errorf("finish cancellation for run %q: %w", runID, err)
+	if finishErr := finishRunCancellation(ctx, transaction, runID); finishErr != nil {
+		return false, finishErr
 	}
 
 	if err = transaction.Commit(); err != nil {
@@ -67,6 +65,27 @@ func (s *Store) cancelRunOnce(ctx context.Context, runID storage.RunID) (accepte
 	}
 
 	return true, nil
+}
+
+func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
+	result, err := transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+		completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ? AND status = ?`, storage.RunCanceled, runID, storage.RunCanceling)
+	if err != nil {
+		return fmt.Errorf("finish cancellation for run %q: %w", runID, err)
+	}
+
+	finished, err := affectedOne(result)
+	if err != nil {
+		return fmt.Errorf("inspect finished run cancellation: %w", err)
+	}
+
+	if !finished {
+		return fmt.Errorf("finish cancellation for run %q: run is no longer canceling", runID)
+	}
+
+	return nil
 }
 
 func cancelUnfinishedNodes(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {

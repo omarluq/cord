@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -66,7 +67,7 @@ func TestStore_CancelRunCancelsEveryUnfinishedStateAndPreservesTerminalNodes(t *
 	require.NoError(t, err)
 	require.True(t, accepted)
 
-	accepted, err = store.CancelRun(t.Context(), plan.Run.ID)
+	accepted, err = sqlite.CancelRunForTest(t.Context(), store, plan.Run.ID)
 	require.NoError(t, err)
 	require.True(t, accepted)
 
@@ -76,6 +77,14 @@ func TestStore_CancelRunCancelsEveryUnfinishedStateAndPreservesTerminalNodes(t *
 	assertNodeState(t, database, plan.Run.ID, waitingNode, storage.NodeCanceled, 1)
 	assertNodeState(t, database, plan.Run.ID, "retry", storage.NodeCanceled, 0)
 	assertRunState(t, database, plan.Run.ID, storage.RunCanceled, nil)
+
+	accepted, err = sqlite.CancelRunForTest(t.Context(), store, plan.Run.ID)
+	require.NoError(t, err)
+	assert.False(t, accepted)
+
+	accepted, err = sqlite.CancelRunForTest(t.Context(), store, "missing-run")
+	require.NoError(t, err)
+	assert.False(t, accepted)
 }
 
 func TestStore_CancelRunRollsBackWhenNodeCancellationFails(t *testing.T) {
@@ -89,7 +98,7 @@ func TestStore_CancelRunRollsBackWhenNodeCancellationFails(t *testing.T) {
 		WHEN NEW.status = 'canceled' BEGIN SELECT RAISE(ABORT, 'cancel boundary'); END`)
 	require.NoError(t, err)
 
-	accepted, err := store.CancelRun(t.Context(), plan.Run.ID)
+	accepted, err := sqlite.CancelRunForTest(t.Context(), store, plan.Run.ID)
 	require.ErrorContains(t, err, "cancel boundary")
 	assert.False(t, accepted)
 	assertRunState(t, database, plan.Run.ID, storage.RunRunning, nil)
@@ -109,7 +118,7 @@ func TestStore_CancelRunRollsBackWhenFinalRunUpdateFails(t *testing.T) {
 		WHEN NEW.status = 'canceled' BEGIN SELECT RAISE(ABORT, 'final cancellation boundary'); END`)
 	require.NoError(t, err)
 
-	accepted, err := store.CancelRun(t.Context(), plan.Run.ID)
+	accepted, err := sqlite.CancelRunForTest(t.Context(), store, plan.Run.ID)
 	require.ErrorContains(t, err, "final cancellation boundary")
 	assert.False(t, accepted)
 	assertRunState(t, database, plan.Run.ID, storage.RunRunning, nil)
