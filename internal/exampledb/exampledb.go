@@ -15,7 +15,7 @@ import (
 
 // DB opens an in-memory SQLite database suitable for tests and examples.
 func DB() *sql.DB {
-	database, err := OpenSQLite()
+	database, err := OpenSQLite(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -24,7 +24,7 @@ func DB() *sql.DB {
 }
 
 // OpenSQLite opens an in-memory modernc SQLite database.
-func OpenSQLite() (*sql.DB, error) {
+func OpenSQLite(context.Context) (*sql.DB, error) {
 	database, err := sql.Open("sqlite", ":memory:?_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite: %w", err)
