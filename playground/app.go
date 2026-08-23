@@ -31,13 +31,15 @@ const (
 
 // App is the browser playground component.
 type App struct {
-	bridge browserBridge
+	bridge            browserBridge
+	compilationCancel context.CancelFunc
 	goapp.Compo
 	status          appStatus
 	output          string
 	compilerURL     string
 	selectedExample string
 	compilations    compilationCache
+	generation      uint64
 	active          bool
 	mounted         bool
 }
@@ -45,21 +47,25 @@ type App struct {
 // NewApp creates the browser playground component.
 func NewApp() *App {
 	return &App{
-		Compo:           goapp.Compo{},
-		bridge:          browserBridge{},
-		status:          statusLoading,
-		output:          "",
-		compilerURL:     defaultCompilerURL,
-		active:          false,
-		mounted:         false,
-		selectedExample: defaultExample,
-		compilations:    compilationCache{},
+		Compo:             goapp.Compo{},
+		bridge:            browserBridge{},
+		status:            statusLoading,
+		output:            "",
+		compilerURL:       defaultCompilerURL,
+		active:            false,
+		mounted:           false,
+		selectedExample:   defaultExample,
+		compilations:      compilationCache{},
+		compilationCancel: nil,
+		generation:        0,
 	}
 }
 
 // OnMount loads the editor and graph modules.
 func (app *App) OnMount(ctx goapp.Context) {
+	app.cancelCompilation()
 	app.active = true
+	generation := app.nextGeneration()
 
 	pageURL := ctx.Page().URL()
 	if endpoint, ok := compilerEndpoint(
@@ -73,7 +79,7 @@ func (app *App) OnMount(ctx goapp.Context) {
 	ctx.Async(func() {
 		loadBridge(func(bridge browserBridge, err error) {
 			ctx.Dispatch(func(goapp.Context) {
-				if !app.active {
+				if !app.callbackIsCurrent(generation, false) {
 					return
 				}
 
@@ -87,6 +93,10 @@ func (app *App) OnMount(ctx goapp.Context) {
 				app.status = statusReady
 
 				ctx.Defer(func(ctx goapp.Context) {
+					if !app.callbackIsCurrent(generation, false) {
+						return
+					}
+
 					app.bridge.mountEditor(editorID, linearSource)
 					app.bridge.mountGraph(graphID)
 					app.mounted = true
@@ -98,9 +108,12 @@ func (app *App) OnMount(ctx goapp.Context) {
 	})
 }
 
-// OnDismount stops the currently executing workflow module.
+// OnDismount cancels compilation and stops the executing workflow module.
 func (app *App) OnDismount() {
 	app.active = false
+	app.nextGeneration()
+	app.cancelCompilation()
+
 	if app.mounted {
 		app.bridge.destroy()
 		app.mounted = false
@@ -134,21 +147,25 @@ func (app *App) run(ctx goapp.Context, _ goapp.Event) {
 		return
 	}
 
+	app.cancelCompilation()
+	generation := app.nextGeneration()
 	app.status = statusCompiling
 	app.output = compilingMessage
 	source := app.bridge.source()
 
 	if artifact, ok := app.compilations.get(source); ok {
-		app.execute(ctx, artifact)
+		app.execute(ctx, artifact, generation)
 
 		return
 	}
 
+	compileContext, cancel := context.WithTimeout(
+		context.Background(),
+		compilationRequestTimeout,
+	)
+	app.compilationCancel = cancel
+
 	ctx.Async(func() {
-		compileContext, cancel := context.WithTimeout(
-			context.Background(),
-			compilationRequestTimeout,
-		)
 		defer cancel()
 
 		artifact, err := compile(
@@ -158,19 +175,36 @@ func (app *App) run(ctx goapp.Context, _ goapp.Event) {
 		)
 
 		ctx.Dispatch(func(goapp.Context) {
-			if err != nil {
-				app.fail(err)
-
-				return
-			}
-
-			app.compilations.put(source, artifact)
-			app.execute(ctx, artifact)
+			app.completeCompilation(generation, source, artifact, err, func() {
+				app.execute(ctx, artifact, generation)
+			})
 		})
 	})
 }
 
-func (app *App) execute(ctx goapp.Context, artifact compilationArtifact) {
+func (app *App) completeCompilation(
+	generation uint64,
+	source string,
+	artifact compilationArtifact,
+	err error,
+	execute func(),
+) {
+	if !app.callbackIsCurrent(generation, true) {
+		return
+	}
+
+	app.compilationCancel = nil
+	if err != nil {
+		app.fail(err)
+
+		return
+	}
+
+	app.compilations.put(source, artifact)
+	execute()
+}
+
+func (app *App) execute(ctx goapp.Context, artifact compilationArtifact, generation uint64) {
 	app.status = statusRunning
 	app.output = runningMessage
 	app.bridge.setGraph(artifact.graph)
@@ -180,12 +214,14 @@ func (app *App) execute(ctx goapp.Context, artifact compilationArtifact) {
 		ctx.Page().URL().ResolveReference(&url.URL{Path: "wasm_exec.js"}).String(),
 		func(message *workerEvent) {
 			ctx.Dispatch(func(goapp.Context) {
-				app.handleWorkerEvent(message)
+				if app.callbackIsCurrent(generation, true) {
+					app.handleWorkerEvent(message)
+				}
 			})
 		},
 		func() {
 			ctx.Dispatch(func(goapp.Context) {
-				if app.status == statusRunning {
+				if app.callbackIsCurrent(generation, true) && app.status == statusRunning {
 					app.status = statusReady
 				}
 			})
@@ -194,6 +230,8 @@ func (app *App) execute(ctx goapp.Context, artifact compilationArtifact) {
 }
 
 func (app *App) stop(_ goapp.Context, _ goapp.Event) {
+	app.nextGeneration()
+	app.cancelCompilation()
 	app.bridge.stopWasm()
 	app.bridge.setGraphState("queued")
 	app.status = statusReady
@@ -220,6 +258,25 @@ func (app *App) fail(err error) {
 
 	app.status = statusFailed
 	app.output = err.Error()
+}
+
+func (app *App) nextGeneration() uint64 {
+	app.generation++
+
+	return app.generation
+}
+
+func (app *App) callbackIsCurrent(generation uint64, requireMounted bool) bool {
+	return app.active && app.generation == generation && (!requireMounted || app.mounted)
+}
+
+func (app *App) cancelCompilation() {
+	if app.compilationCancel == nil {
+		return
+	}
+
+	app.compilationCancel()
+	app.compilationCancel = nil
 }
 
 func compilerEndpoint(pageURL *url.URL, endpoint, configuredEndpoint string) (string, bool) {
