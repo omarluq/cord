@@ -657,14 +657,12 @@ func TestCord_WakeDoesNotRunMaintenance(t *testing.T) {
 
 type admissionTestBackend struct {
 	storage.Backend
-
+	createPanic   any
 	createStarted chan struct{}
 	allowCreate   chan struct{}
 	created       chan storage.RunID
 	result        storage.RunResult
-	createPanic   any
-
-	startOnce sync.Once
+	startOnce     sync.Once
 }
 
 func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
@@ -723,10 +721,13 @@ func TestWorkflowRunCreateRunPanicReleasesAdmission(t *testing.T) {
 	flow := runtime.From("panic-during-create", admissionTestStep)
 
 	panicResult := make(chan any, 1)
+
 	go func() {
 		defer func() { panicResult <- recover() }()
 
-		_, _ = flow.Run(t.Context(), 1)
+		if _, err := flow.Run(t.Context(), 1); err != nil {
+			panic(err)
+		}
 	}()
 
 	select {
@@ -738,6 +739,7 @@ func TestWorkflowRunCreateRunPanicReleasesAdmission(t *testing.T) {
 
 	shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
+
 	require.NoError(t, runtime.Shutdown(shutdownCtx))
 }
 

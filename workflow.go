@@ -97,7 +97,6 @@ func (w Workflow[I, O]) Run(ctx context.Context, input I) (O, error) {
 
 		return w.runtime.store.CreateRun(ctx, runPlan)
 	}()
-
 	if persistErr != nil {
 		return zero, fmt.Errorf("cord: persist run: %w", persistErr)
 	}
