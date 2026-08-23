@@ -23,7 +23,9 @@ func run(ctx context.Context) (err error) {
 		return fmt.Errorf("run linear workflow: %w", err)
 	}
 
-	fmt.Println(result)
+	if _, err := fmt.Println(result); err != nil {
+		return fmt.Errorf("write result: %w", err)
+	}
 
 	return nil
 }
