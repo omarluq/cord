@@ -11,14 +11,16 @@ import (
 )
 
 const (
-	requiredVersion    = int64(1)
+	initialVersion     = int64(1)
+	requiredVersion    = int64(2)
 	schemaVersionTable = "cord_schema_migrations"
 	migrationLockKey   = int64(0x636f7264) // "cord"
 )
 
 func migrations() []*goose.Migration {
 	return []*goose.Migration{
-		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateV1}, nil),
+		goose.NewGoMigration(initialVersion, &goose.GoFunc{RunTx: migrateV1}, nil),
+		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateV2}, nil),
 	}
 }
 
@@ -84,6 +86,16 @@ func migrateV1(ctx context.Context, transaction *sql.Tx) error {
 		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("execute initial postgres schema statement: %w", err)
 		}
+	}
+
+	return nil
+}
+
+func migrateV2(ctx context.Context, transaction *sql.Tx) error {
+	const statement = `CREATE INDEX IF NOT EXISTS cord_edges_run_child_parent_order_idx
+		ON cord_edges(run_id, child_node_id, parent_order)`
+	if _, err := transaction.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("create parent-output lookup index: %w", err)
 	}
 
 	return nil

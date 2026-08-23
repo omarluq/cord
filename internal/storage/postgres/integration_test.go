@@ -166,12 +166,39 @@ func postgresHarness(dsn string) conformance.Harness {
 
 			return nil
 		},
+		CancelRun: func(ctx context.Context, backend storage.Backend, runID storage.RunID) (bool, error) {
+			store, ok := backend.(*postgresstore.Store)
+			if !ok {
+				return false, fmt.Errorf("cancel PostgreSQL run: backend type %T", backend)
+			}
+
+			return store.CancelRun(ctx, runID)
+		},
 		DeleteRun: func(ctx context.Context, database *sql.DB, runID storage.RunID) error {
 			if _, err := database.ExecContext(ctx, "DELETE FROM cord_runs WHERE id = $1", runID); err != nil {
 				return fmt.Errorf("delete PostgreSQL run: %w", err)
 			}
 
 			return nil
+		},
+		CountRunRows: func(
+			ctx context.Context,
+			database *sql.DB,
+			runID storage.RunID,
+		) (int, int, error) {
+			var nodes, edges int
+
+			if err := database.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM cord_nodes WHERE run_id = $1", runID).Scan(&nodes); err != nil {
+				return 0, 0, fmt.Errorf("count PostgreSQL node rows: %w", err)
+			}
+
+			if err := database.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM cord_edges WHERE run_id = $1", runID).Scan(&edges); err != nil {
+				return 0, 0, fmt.Errorf("count PostgreSQL edge rows: %w", err)
+			}
+
+			return nodes, edges, nil
 		},
 	}
 }
@@ -200,6 +227,9 @@ func TestSchemaVerification(t *testing.T) {
 		{"partial index", `DROP INDEX cord_nodes_lease_expires_at_idx;
 			CREATE INDEX cord_nodes_lease_expires_at_idx ON cord_nodes(lease_expires_at)
 			WHERE lease_expires_at IS NOT NULL`},
+		{"parent-output index columns", `DROP INDEX cord_edges_run_child_parent_order_idx;
+			CREATE INDEX cord_edges_run_child_parent_order_idx
+			ON cord_edges(child_node_id, run_id, parent_order)`},
 		{"foreign key delete action", `ALTER TABLE cord_nodes DROP CONSTRAINT cord_nodes_run_id_fkey;
 			ALTER TABLE cord_nodes ADD FOREIGN KEY (run_id) REFERENCES cord_runs(id)`},
 	}
@@ -224,6 +254,26 @@ func TestSchemaVerification(t *testing.T) {
 	require.NoError(t, postgresstore.Verify(t.Context(), database))
 }
 
+func TestMigrateAddsParentOutputIndexToVersionOneSchema(t *testing.T) {
+	t.Parallel()
+
+	database := openPostgres(t, startPostgres(t))
+	require.NoError(t, postgresstore.Migrate(t.Context(), database))
+	_, err := database.ExecContext(t.Context(), `DROP INDEX cord_edges_run_child_parent_order_idx;
+		DELETE FROM cord_schema_migrations WHERE version_id = 2`)
+	require.NoError(t, err)
+
+	require.NoError(t, postgresstore.Migrate(t.Context(), database))
+	require.NoError(t, postgresstore.Verify(t.Context(), database))
+
+	var indexExists bool
+
+	err = database.QueryRowContext(t.Context(), `SELECT to_regclass(
+		format('%I.%I', current_schema(), 'cord_edges_run_child_parent_order_idx')) IS NOT NULL`).Scan(&indexExists)
+	require.NoError(t, err)
+	assert.True(t, indexExists)
+}
+
 func TestMigratePreflightsNewerSchema(t *testing.T) {
 	t.Parallel()
 
@@ -233,7 +283,7 @@ func TestMigratePreflightsNewerSchema(t *testing.T) {
 		version_id BIGINT NOT NULL,
 		is_applied BOOLEAN NOT NULL,
 		tstamp TIMESTAMP NOT NULL DEFAULT now()
-	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (2, true)`)
+	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (3, true)`)
 	require.NoError(t, err)
 
 	err = postgresstore.Migrate(t.Context(), database)
