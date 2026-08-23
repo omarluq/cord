@@ -274,6 +274,12 @@ runtime, err := cord.New(ctx, database, cord.Options{
 })
 ```
 
+Each retry field is optional and defaults independently: `MaxAttempts` to 3,
+`RetryBaseDelay` to 500 milliseconds, and `RetryMaxDelay` to 30 seconds. For
+example, setting only `MaxAttempts` retains both default delays. Values must be
+positive after defaulting, and the maximum delay must be at least the base
+delay.
+
 The policy is stored with the run, so every worker applies the same retry
 semantics. Existing runs retain the policy with which they were submitted.
 
@@ -360,8 +366,9 @@ runtime, err := cord.New(ctx, db, cord.Options{
 })
 ```
 
-Omit `Options` to use Cord's defaults. The context passed to `New` controls
-schema migration and is bounded by Cord's migration timeout.
+Omit `Options` to use Cord's defaults; any zero-valued field in a supplied
+`Options` also uses its own default. The context passed to `New` controls schema
+migration and is bounded by Cord's migration timeout.
 See the [package reference](https://pkg.go.dev/github.com/omarluq/cord) for the
 complete API.
 
