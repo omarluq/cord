@@ -63,7 +63,9 @@ const schemaVerificationQuery = `WITH
 		('cord_nodes_function_status_available_at_idx', 'cord_nodes',
 			ARRAY['function_key', 'status', 'available_at']::text[]),
 		('cord_nodes_run_status_idx', 'cord_nodes', ARRAY['run_id', 'status']::text[]),
-		('cord_nodes_lease_expires_at_idx', 'cord_nodes', ARRAY['lease_expires_at']::text[])
+		('cord_nodes_lease_expires_at_idx', 'cord_nodes', ARRAY['lease_expires_at']::text[]),
+		('cord_edges_run_child_parent_order_idx', 'cord_edges',
+			ARRAY['run_id', 'child_node_id', 'parent_order']::text[])
 	),
 	required_foreign_keys(source_table, source_columns, target_table, target_columns) AS (VALUES
 		('cord_nodes', ARRAY['run_id']::text[], 'cord_runs', ARRAY['id']::text[]),
