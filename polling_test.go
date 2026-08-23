@@ -84,6 +84,21 @@ func TestScheduler_IdlePollingRemainsBounded(t *testing.T) {
 		"idle scheduler polled continuously")
 }
 
+func TestWorkflow_RunLocalCompletionLatencyIsIndependentOfSchedulerPolling(t *testing.T) {
+	t.Parallel()
+
+	const schedulerPollInterval = time.Hour
+
+	_, runtime := newRuntime(t, cord.Options{PollInterval: schedulerPollInterval})
+	flow := runtime.From("local-result-notification", passThrough)
+
+	started := time.Now()
+	result, err := flow.Run(t.Context(), 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, result)
+	assert.Less(t, time.Since(started), 5*time.Second)
+}
+
 func TestScheduler_PromotesRetryWithinPollingLatency(t *testing.T) {
 	t.Parallel()
 
