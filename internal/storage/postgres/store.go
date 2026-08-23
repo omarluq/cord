@@ -12,26 +12,27 @@ import (
 )
 
 // Store persists workflow state in a caller-owned PostgreSQL database.
-type Store struct{ database *sql.DB }
+type Store struct{ pool *sql.DB }
 
 var _ storage.Backend = (*Store)(nil)
 
 // New creates a PostgreSQL store for a caller-owned SQL database.
 func New(database *sql.DB) (*Store, error) {
-	if database == nil {
-		return nil, errors.New("create postgres store: database is nil")
+	if database != nil {
+		return &Store{pool: database}, nil
 	}
 
-	return &Store{database: database}, nil
+	return nil, errors.New("create postgres store: database is nil")
 }
 
 // CreateRun atomically persists a complete run plan.
 func (s *Store) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
-	if err := storage.ValidateRunPlan(plan); err != nil {
-		return fmt.Errorf("create run: %w", err)
+	validationErr := storage.ValidateRunPlan(plan)
+	if validationErr != nil {
+		return fmt.Errorf("create run: %w", validationErr)
 	}
 
-	return runTransaction(ctx, s.database, "create run", func(transaction *sql.Tx) error {
+	return runTransaction(ctx, s.pool, "create run", func(transaction *sql.Tx) error {
 		if err := insertRun(ctx, transaction, &plan.Run); err != nil {
 			return err
 		}
