@@ -11,7 +11,7 @@ import (
 	"github.com/gofrs/uuid/v5"
 
 	"github.com/omarluq/cord/internal/storage"
-	"github.com/omarluq/cord/internal/storage/sqlite"
+	"github.com/omarluq/cord/internal/storage/sqlstore"
 )
 
 const (
@@ -53,8 +53,8 @@ type Options struct {
 	RetryMaxDelay time.Duration
 }
 
-// New creates a workflow runtime using a caller-owned SQLite database. It
-// accepts at most one Options value and applies pending schema migrations.
+// New creates a workflow runtime using a caller-owned supported SQL database.
+// It accepts at most one Options value and applies pending schema migrations.
 func New(ctx context.Context, database *sql.DB, options ...Options) (*Cord, error) {
 	if len(options) > 1 {
 		return nil, errors.New("cord: New accepts at most one options value")
@@ -81,11 +81,7 @@ func New(ctx context.Context, database *sql.DB, options ...Options) (*Cord, erro
 		return nil, err
 	}
 
-	if err = sqlite.Migrate(ctx, database); err != nil {
-		return nil, publicMigrationError(err)
-	}
-
-	store, err := sqlite.New(database)
+	store, err := sqlstore.New(ctx, database)
 	if err != nil {
 		return nil, publicMigrationError(err)
 	}
