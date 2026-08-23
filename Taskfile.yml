@@ -215,7 +215,10 @@ tasks:
   test-coverage:
     desc: Run library tests and write a coverage profile
     cmds:
-      - go test -race -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
+      - |
+        module_path="$(go list .)"
+        coverpkg="$(go list ./... | awk -v examples="$module_path/examples" '$0 != examples && index($0, examples "/") != 1' | paste -sd, -)"
+        go test -race -shuffle=on -coverpkg="$coverpkg" -coverprofile=coverage.out -covermode=atomic ./...
 
   test-postgres:
     desc: Run mandatory PostgreSQL integration tests and pgx examples
