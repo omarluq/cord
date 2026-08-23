@@ -28,7 +28,7 @@ func TestDriverConformance(t *testing.T) {
 
 	databaseURL := startLibSQL(t)
 
-	conformance.Run(t, conformance.Driver{
+	conformance.RunSQLite(t, conformance.SQLiteDriver{
 		DataSource:          nil,
 		Name:                "",
 		Open:                libSQLOpener(databaseURL),
