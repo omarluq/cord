@@ -15,7 +15,7 @@ import (
 func TestCompilationCacheFirstWaiterCancellationDoesNotCancelSharedWork(t *testing.T) {
 	t.Parallel()
 
-	cache := newCompilationCache(t.Context(), testConfigPointer())
+	cache := newCompilationCache(testConfigPointer())
 	started := make(chan struct{})
 	release := make(chan struct{})
 	loaderContext := make(chan context.Context, 1)
@@ -41,7 +41,7 @@ func TestCompilationCacheFirstWaiterCancellationDoesNotCancelSharedWork(t *testi
 	first := make(chan error, 1)
 
 	go func() {
-		_, err := cache.load(firstContext, "source", loader)
+		_, err := cache.load(t.Context(), firstContext, "source", loader)
 		first <- err
 	}()
 
@@ -50,7 +50,7 @@ func TestCompilationCacheFirstWaiterCancellationDoesNotCancelSharedWork(t *testi
 	second := make(chan error, 1)
 
 	go func() {
-		_, err := cache.load(t.Context(), "source", loader)
+		_, err := cache.load(t.Context(), t.Context(), "source", loader)
 		second <- err
 	}()
 
@@ -66,7 +66,7 @@ func TestCompilationCacheFirstWaiterCancellationDoesNotCancelSharedWork(t *testi
 func TestCompilationCacheFinishesAfterAllWaitersCancel(t *testing.T) {
 	t.Parallel()
 
-	cache := newCompilationCache(t.Context(), testConfigPointer())
+	cache := newCompilationCache(testConfigPointer())
 	started := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
@@ -91,14 +91,14 @@ func TestCompilationCacheFinishesAfterAllWaitersCancel(t *testing.T) {
 	waiters := make(chan error, 2)
 
 	go func() {
-		_, err := cache.load(firstContext, "source", loader)
+		_, err := cache.load(t.Context(), firstContext, "source", loader)
 		waiters <- err
 	}()
 
 	<-started
 
 	go func() {
-		_, err := cache.load(secondContext, "source", loader)
+		_, err := cache.load(t.Context(), secondContext, "source", loader)
 		waiters <- err
 	}()
 
@@ -110,7 +110,7 @@ func TestCompilationCacheFinishesAfterAllWaitersCancel(t *testing.T) {
 	close(release)
 	<-finished
 
-	artifact, err := cache.load(t.Context(), "source", func(context.Context) (compilationArtifact, error) {
+	artifact, err := cache.load(t.Context(), t.Context(), "source", func(context.Context) (compilationArtifact, error) {
 		calls.Add(1)
 
 		return compilationArtifact{}, errors.New("cached artifact was not used")
@@ -125,9 +125,10 @@ func TestCompilationCacheServiceTimeout(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.compileTimeout = 10 * time.Millisecond
-	cache := newCompilationCache(t.Context(), &cfg)
+	cache := newCompilationCache(&cfg)
 
 	_, err := cache.load(
+		t.Context(),
 		t.Context(),
 		"source",
 		func(ctx context.Context) (compilationArtifact, error) {
@@ -143,13 +144,14 @@ func TestCompilationCacheServiceCancellation(t *testing.T) {
 	t.Parallel()
 
 	serviceContext, cancelService := context.WithCancel(t.Context())
-	cache := newCompilationCache(serviceContext, testConfigPointer())
+	cache := newCompilationCache(testConfigPointer())
 	started := make(chan struct{})
 
 	result := make(chan error, 1)
 
 	go func() {
 		_, err := cache.load(
+			serviceContext,
 			t.Context(),
 			"source",
 			func(ctx context.Context) (compilationArtifact, error) {
@@ -170,7 +172,7 @@ func TestCompilationCacheServiceCancellation(t *testing.T) {
 func TestCompilationCacheDoesNotCacheLoaderFailure(t *testing.T) {
 	t.Parallel()
 
-	cache := newCompilationCache(t.Context(), testConfigPointer())
+	cache := newCompilationCache(testConfigPointer())
 
 	var calls atomic.Int32
 
@@ -182,10 +184,10 @@ func TestCompilationCacheDoesNotCacheLoaderFailure(t *testing.T) {
 		return compilationArtifact{compression: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{}}, nil
 	}
 
-	_, err := cache.load(t.Context(), "source", loader)
+	_, err := cache.load(t.Context(), t.Context(), "source", loader)
 	require.ErrorContains(t, err, "loader failed")
 
-	artifact, err := cache.load(t.Context(), "source", loader)
+	artifact, err := cache.load(t.Context(), t.Context(), "source", loader)
 	require.NoError(t, err)
 	require.Equal(t, []byte("wasm"), artifact.wasm)
 	require.Equal(t, int32(2), calls.Load())
