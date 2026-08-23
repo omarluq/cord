@@ -54,6 +54,31 @@ func TestSQLiteQueryPlans_TimestampPredicates(t *testing.T) {
 	}
 }
 
+func TestSQLiteQueryPlan_OrderedParentInputs(t *testing.T) {
+	t.Parallel()
+
+	database, _ := newStore(t, true)
+	query := `SELECT p.output_payload FROM cord_edges AS e
+		JOIN cord_nodes AS p ON p.run_id = e.run_id AND p.node_id = e.parent_node_id
+		WHERE e.run_id = 'run' AND e.child_node_id = 'child' ORDER BY e.parent_order`
+
+	_, err := database.ExecContext(t.Context(), "DROP INDEX cord_edges_run_child_parent_order_idx")
+	require.NoError(t, err)
+
+	before := strings.Join(explainQueryPlan(t, database, query), "\n")
+	assert.Contains(t, before, "sqlite_autoindex_cord_edges_1 (run_id=?)")
+	assert.Contains(t, before, "USE TEMP B-TREE FOR ORDER BY")
+
+	_, err = database.ExecContext(t.Context(), `CREATE INDEX cord_edges_run_child_parent_order_idx
+		ON cord_edges(run_id, child_node_id, parent_order)`)
+	require.NoError(t, err)
+
+	after := strings.Join(explainQueryPlan(t, database, query), "\n")
+	assert.Contains(t, after,
+		"cord_edges_run_child_parent_order_idx (run_id=? AND child_node_id=?)")
+	assert.NotContains(t, after, "USE TEMP B-TREE FOR ORDER BY")
+}
+
 func explainQueryPlan(t *testing.T, database *sql.DB, query string) []string {
 	t.Helper()
 
@@ -81,24 +106,65 @@ func explainQueryPlan(t *testing.T, database *sql.DB, query string) []string {
 func BenchmarkStore_CreateRun(b *testing.B) {
 	for _, nodeCount := range []int{1, 10, 100, 1000} {
 		b.Run(fmt.Sprintf("nodes=%d", nodeCount), func(b *testing.B) {
-			store := newBenchmarkStore(b)
-
-			b.ReportAllocs()
-			b.ResetTimer()
-
-			for index := range b.N {
-				b.StopTimer()
-
-				plan := benchmarkLinearPlan(storage.RunID(fmt.Sprintf("run-%d", index)), nodeCount)
-
-				b.StartTimer()
-
-				if err := store.CreateRun(b.Context(), &plan); err != nil {
-					b.Fatalf("create %d-node run: %v", nodeCount, err)
-				}
-			}
+			benchmarkCreateRun(b, nodeCount, true)
 		})
 	}
+
+	for _, indexed := range []bool{false, true} {
+		b.Run(fmt.Sprintf("index-cost/nodes=1000/indexed=%t", indexed), func(b *testing.B) {
+			benchmarkCreateRun(b, 1000, indexed)
+		})
+	}
+}
+
+func benchmarkCreateRun(b *testing.B, nodeCount int, indexed bool) {
+	b.Helper()
+
+	store, database := newBenchmarkStoreWithDatabase(b)
+	if !indexed {
+		if _, err := database.ExecContext(b.Context(), "DROP INDEX cord_edges_run_child_parent_order_idx"); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	baselineBytes := benchmarkDatabaseBytes(b, database)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for index := range b.N {
+		b.StopTimer()
+
+		plan := benchmarkLinearPlan(storage.RunID(fmt.Sprintf("run-%d", index)), nodeCount)
+
+		b.StartTimer()
+
+		if err := store.CreateRun(b.Context(), &plan); err != nil {
+			b.Fatalf("create %d-node run: %v", nodeCount, err)
+		}
+	}
+
+	b.StopTimer()
+
+	growthBytes := benchmarkDatabaseBytes(b, database) - baselineBytes
+	b.ReportMetric(float64(growthBytes)/float64(b.N), "database-bytes/run")
+}
+
+func benchmarkDatabaseBytes(b *testing.B, database *sql.DB) int64 {
+	b.Helper()
+
+	var pageCount, freePages, pageSize int64
+	for pragma, target := range map[string]*int64{
+		"PRAGMA page_count":     &pageCount,
+		"PRAGMA freelist_count": &freePages,
+		"PRAGMA page_size":      &pageSize,
+	} {
+		if err := database.QueryRowContext(b.Context(), pragma).Scan(target); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	return (pageCount - freePages) * pageSize
 }
 
 func BenchmarkStore_PollingAndMaintenance(b *testing.B) {
@@ -279,6 +345,38 @@ func heartbeatBenchmarkTransition(b *testing.B, store *cordsqlite.Store, claim *
 func BenchmarkStore_LoadNodeInputs(b *testing.B) {
 	b.Run("root", func(b *testing.B) { benchmarkLoadNodeInputs(b, 1) })
 	b.Run("child", func(b *testing.B) { benchmarkLoadNodeInputs(b, 2) })
+
+	for _, edgeCount := range []int{100, 1000} {
+		for _, indexed := range []bool{false, true} {
+			name := fmt.Sprintf("ordered-child/edges=%d/indexed=%t", edgeCount, indexed)
+			b.Run(name, func(b *testing.B) { benchmarkOrderedChildInputs(b, edgeCount, indexed) })
+		}
+	}
+}
+
+func benchmarkOrderedChildInputs(b *testing.B, edgeCount int, indexed bool) {
+	b.Helper()
+
+	store, database := newBenchmarkStoreWithDatabase(b)
+	if !indexed {
+		if _, err := database.ExecContext(b.Context(), "DROP INDEX cord_edges_run_child_parent_order_idx"); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	plan := benchmarkFanInPlan("ordered-child-inputs", edgeCount)
+	if err := store.CreateRun(b.Context(), &plan); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, err := store.LoadNodeInputs(b.Context(), plan.Run.ID, plan.Run.TerminalNodeID); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func benchmarkLoadNodeInputs(b *testing.B, nodeCount int) {
@@ -343,6 +441,14 @@ func BenchmarkStore_GetRunResult(b *testing.B) {
 func newBenchmarkStore(b *testing.B) *cordsqlite.Store {
 	b.Helper()
 
+	store, _ := newBenchmarkStoreWithDatabase(b)
+
+	return store
+}
+
+func newBenchmarkStoreWithDatabase(b *testing.B) (*cordsqlite.Store, *sql.DB) {
+	b.Helper()
+
 	dsn := "file:" + filepath.Join(b.TempDir(), "performance.db") +
 		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 
@@ -368,7 +474,31 @@ func newBenchmarkStore(b *testing.B) *cordsqlite.Store {
 		b.Fatal(err)
 	}
 
-	return store
+	return store, database
+}
+
+func benchmarkFanInPlan(runID storage.RunID, parentCount int) storage.RunPlan {
+	now := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	plan := validPlan(now, runID)
+	terminalID := storage.NodeID("terminal")
+	plan.Run.TerminalNodeID = terminalID
+	plan.Nodes = make([]storage.Node, 0, parentCount+1)
+	plan.Edges = make([]storage.Edge, 0, parentCount)
+
+	for index := range parentCount {
+		parentID := storage.NodeID(fmt.Sprintf("parent-%04d", index))
+		parent := newNode(runID, parentID, "benchmark.Parent", "benchmark-signature", storage.NodeReady, now, 0)
+		plan.Nodes = append(plan.Nodes, parent)
+		plan.Edges = append(plan.Edges, storage.Edge{
+			RunID: runID, Parent: parentID, Child: terminalID, ParentOrder: index,
+		})
+	}
+
+	plan.Nodes = append(plan.Nodes, newNode(
+		runID, terminalID, "benchmark.Child", "benchmark-signature", storage.NodePending, now, parentCount,
+	))
+
+	return plan
 }
 
 func benchmarkLinearPlan(runID storage.RunID, nodeCount int) storage.RunPlan {

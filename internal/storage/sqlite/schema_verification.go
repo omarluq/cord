@@ -133,7 +133,9 @@ func requiredSchema() []schemaTable {
 				column("child_node_id", affinityText, true, "", thirdKey),
 				column("parent_order", affinityInteger, true, "0", 0),
 			},
-			indexes: nil,
+			indexes: []schemaIndex{
+				index("cord_edges_run_child_parent_order_idx", runIDColumn, "child_node_id", "parent_order"),
+			},
 			foreignKeys: []schemaForeignKey{
 				foreignKey("cord_nodes", []string{runIDColumn, "child_node_id"}, []string{runIDColumn, "node_id"}),
 				foreignKey("cord_nodes", []string{runIDColumn, "parent_node_id"}, []string{runIDColumn, "node_id"}),

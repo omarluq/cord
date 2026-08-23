@@ -72,14 +72,6 @@ func RunSQLite(t *testing.T, driver SQLiteDriver) {
 
 			return nil
 		},
-		CancelRun: func(ctx context.Context, backend storage.Backend, runID storage.RunID) (bool, error) {
-			store, ok := backend.(*sqlite.Store)
-			if !ok {
-				return false, fmt.Errorf("cancel SQLite run: backend type %T", backend)
-			}
-
-			return store.CancelRun(ctx, runID)
-		},
 		DeleteRun:    deleteSQLiteRun,
 		CountRunRows: countSQLiteRunRows,
 		LoadNodeStates: NewNodeStateLoader(
@@ -92,9 +84,58 @@ func RunSQLite(t *testing.T, driver SQLiteDriver) {
 
 	Run(t, harness)
 	t.Run("workflow", func(t *testing.T) { runSQLiteWorkflow(t, harness) })
+	t.Run("ordered-child index", func(t *testing.T) { runSQLiteOrderedChildIndex(t, harness) })
 
 	if !driver.SkipWriteContention {
 		t.Run("write contention", func(t *testing.T) { runSQLiteContention(t, openAt) })
+	}
+}
+
+func runSQLiteOrderedChildIndex(t *testing.T, harness Harness) {
+	t.Helper()
+
+	database := harness.Open(t, "ordered-child-index")
+	if err := harness.Migrate(t.Context(), database); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := harness.Migrate(t.Context(), database); err != nil {
+		t.Fatalf("second migration: %v", err)
+	}
+
+	if err := sqlite.Verify(t.Context(), database); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := database.QueryContext(t.Context(),
+		"SELECT name FROM pragma_index_info('cord_edges_run_child_parent_order_idx') ORDER BY seqno")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			t.Errorf("close ordered-child index columns: %v", closeErr)
+		}
+	}()
+
+	var columns []string
+
+	for rows.Next() {
+		var column string
+		if scanErr := rows.Scan(&column); scanErr != nil {
+			t.Fatal(scanErr)
+		}
+
+		columns = append(columns, column)
+	}
+
+	if rowsErr := rows.Err(); rowsErr != nil {
+		t.Fatal(rowsErr)
+	}
+
+	want := "[run_id child_node_id parent_order]"
+	if got := fmt.Sprint(columns); got != want {
+		t.Fatalf("ordered-child index columns = %s, want %s", got, want)
 	}
 }
 
