@@ -1,7 +1,6 @@
 package conformance
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -34,13 +33,6 @@ func runIdentityValidationTests() []RunPlanValidationTest {
 			Name: "valid",
 			Mutate: func(*storage.RunPlan) {
 				// The valid case intentionally leaves the plan unchanged.
-			},
-			WantErr: "",
-		},
-		{
-			Name: "valid legacy lifecycle fixture",
-			Mutate: func(plan *storage.RunPlan) {
-				setLifecycleVersion(plan, nil)
 			},
 			WantErr: "",
 		},
@@ -129,68 +121,7 @@ func idempotencyValidationTests() []RunPlanValidationTest {
 }
 
 func lifecycleMetadataValidationTests() []RunPlanValidationTest {
-	const unsupportedLifecycleVersion = 2
-
-	version1 := storage.LifecycleVersion1
-	unsupportedVersion := storage.LifecycleVersion(unsupportedLifecycleVersion)
-	tests := lifecycleVersionValidationTests(version1, unsupportedVersion)
-
-	return append(tests, lifecycleFieldValidationTests()...)
-}
-
-func lifecycleVersionValidationTests(
-	version1 storage.LifecycleVersion,
-	unsupportedVersion storage.LifecycleVersion,
-) []RunPlanValidationTest {
-	const inconsistentVersionError = "validate run plan: node %q lifecycle version " +
-		"must be consistently present with run lifecycle version"
-
-	return []RunPlanValidationTest{
-		{
-			Name: "valid initial lifecycle version 1 metadata",
-			Mutate: func(plan *storage.RunPlan) {
-				setLifecycleVersion(plan, &version1)
-			},
-			WantErr: "",
-		},
-		{
-			Name:    "unsupported run lifecycle version",
-			Mutate:  func(plan *storage.RunPlan) { plan.Run.LifecycleVersion = &unsupportedVersion },
-			WantErr: "validate run plan: unsupported run lifecycle version 2 (want 1)",
-		},
-		{
-			Name: "unsupported node lifecycle version",
-			Mutate: func(plan *storage.RunPlan) {
-				setLifecycleVersion(plan, &version1)
-				plan.Nodes[0].LifecycleVersion = &unsupportedVersion
-			},
-			WantErr: `validate run plan: node "left" has unsupported lifecycle version 2 (want 1)`,
-		},
-		{
-			Name: "versioned run with legacy nodes",
-			Mutate: func(plan *storage.RunPlan) {
-				for index := range plan.Nodes {
-					plan.Nodes[index].LifecycleVersion = nil
-				}
-			},
-			WantErr: fmt.Sprintf(inconsistentVersionError, "left"),
-		},
-		{
-			Name: "legacy run with versioned node",
-			Mutate: func(plan *storage.RunPlan) {
-				plan.Run.LifecycleVersion = nil
-			},
-			WantErr: fmt.Sprintf(inconsistentVersionError, "left"),
-		},
-		{
-			Name: "inconsistently versioned nodes",
-			Mutate: func(plan *storage.RunPlan) {
-				setLifecycleVersion(plan, &version1)
-				plan.Nodes[1].LifecycleVersion = nil
-			},
-			WantErr: fmt.Sprintf(inconsistentVersionError, "right"),
-		},
-	}
+	return lifecycleFieldValidationTests()
 }
 
 func lifecycleFieldValidationTests() []RunPlanValidationTest {
@@ -234,13 +165,6 @@ func lifecycleFieldValidationTests() []RunPlanValidationTest {
 			Mutate:  func(plan *storage.RunPlan) { plan.Nodes[0].TerminalReason = &reason },
 			WantErr: `validate run plan: node "left" terminal reason must initially be unset`,
 		},
-	}
-}
-
-func setLifecycleVersion(plan *storage.RunPlan, version *storage.LifecycleVersion) {
-	plan.Run.LifecycleVersion = version
-	for index := range plan.Nodes {
-		plan.Nodes[index].LifecycleVersion = version
 	}
 }
 
@@ -464,7 +388,7 @@ func ValidationJoinPlan(runID storage.RunID) storage.RunPlan {
 	plan := storage.RunPlan{
 		Run: storage.Run{
 			CreatedAt: now, UpdatedAt: now, CompletedAt: nil, StartedAt: nil,
-			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
+			TerminalReason: nil, TerminalRunnerID: nil,
 			ID: runID, WorkflowName: "join", DefinitionHash: "definition",
 			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: joinID,
 			Status: storage.RunRunning, Input: []byte("null"), Output: nil, Error: nil,
@@ -481,8 +405,6 @@ func ValidationJoinPlan(runID storage.RunID) storage.RunPlan {
 			{RunID: runID, Parent: "right", Child: joinID, ParentOrder: 1},
 		},
 	}
-	version := storage.LifecycleVersion1
-	setLifecycleVersion(&plan, &version)
 
 	return plan
 }
@@ -496,15 +418,9 @@ func validationNode(
 ) storage.Node {
 	return storage.Node{
 		AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil,
-		StateChangedAt: nil, LastStartedAt: nil, LifecycleVersion: initialLifecycleVersion(),
+		StateChangedAt: nil, LastStartedAt: nil,
 		LastRunnerID: nil, TerminalReason: nil,
 		FunctionKey: "function", RunID: runID, ID: nodeID, SignatureHash: "signature", Status: status,
 		Error: nil, Output: nil, Lease: storage.Lease{}, RemainingDeps: remainingDependencies, Attempt: 0,
 	}
-}
-
-func initialLifecycleVersion() *storage.LifecycleVersion {
-	version := storage.LifecycleVersion1
-
-	return &version
 }

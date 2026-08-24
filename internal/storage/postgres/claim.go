@@ -35,13 +35,9 @@ SET status = 'running',
 	lease_expires_at = $3 + ($2 * interval '1 microsecond'),
 	attempt = n.attempt + 1,
 	started_at = COALESCE(n.started_at, $3),
-	state_changed_at = CASE WHEN n.lifecycle_version IS NULL OR n.lifecycle_version = 1
-		THEN $3 ELSE n.state_changed_at END,
-	last_started_at = CASE WHEN n.lifecycle_version IS NULL OR n.lifecycle_version = 1
-		THEN $3 ELSE n.last_started_at END,
-	last_runner_id = CASE WHEN n.lifecycle_version IS NULL OR n.lifecycle_version = 1
-		THEN $1 ELSE n.last_runner_id END,
-	lifecycle_version = COALESCE(n.lifecycle_version, 1)
+	state_changed_at = $3,
+	last_started_at = $3,
+	last_runner_id = $1
 FROM candidate c, cord_runs r
 WHERE n.run_id = c.run_id
 	AND n.node_id = c.node_id
@@ -97,11 +93,10 @@ func (s *Store) ClaimReadyNodeForFunctions(
 
 		_, valuesErr = transaction.ExecContext(ctx, `UPDATE cord_runs
 			SET started_at = COALESCE(started_at,
-				(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = $1)),
-				lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE id = $1
-				AND (started_at IS NULL OR lifecycle_version IS NULL)
-				AND (lifecycle_version IS NULL OR lifecycle_version = 1)`, claim.RunID)
+				(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = $1))
+							WHERE id = $1
+				AND started_at IS NULL
+				`, claim.RunID)
 		if valuesErr != nil {
 			return fmt.Errorf("record run start: %w", valuesErr)
 		}

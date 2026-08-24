@@ -33,11 +33,9 @@ func migrateV5(ctx context.Context, transaction *sql.Tx) error {
 	columns := []struct {
 		table, name, statement string
 	}{
-		{runsTable, "lifecycle_version", "ALTER TABLE cord_runs ADD COLUMN lifecycle_version INTEGER"},
 		{runsTable, "started_at", "ALTER TABLE cord_runs ADD COLUMN started_at TEXT"},
 		{runsTable, "terminal_reason", "ALTER TABLE cord_runs ADD COLUMN terminal_reason TEXT"},
 		{runsTable, "terminal_runner_id", "ALTER TABLE cord_runs ADD COLUMN terminal_runner_id TEXT"},
-		{nodesTable, "lifecycle_version", "ALTER TABLE cord_nodes ADD COLUMN lifecycle_version INTEGER"},
 		{nodesTable, "state_changed_at", "ALTER TABLE cord_nodes ADD COLUMN state_changed_at TEXT"},
 		{nodesTable, "last_started_at", "ALTER TABLE cord_nodes ADD COLUMN last_started_at TEXT"},
 		{nodesTable, "last_runner_id", "ALTER TABLE cord_nodes ADD COLUMN last_runner_id TEXT"},

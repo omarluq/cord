@@ -13,8 +13,7 @@ func IsBusyForTest(err error) bool {
 	return IsBusy(err)
 }
 
-// CancelRunForTest preserves the legacy test adapter while cancellation tests
-// migrate to the backend contract.
+// CancelRunForTest exposes cancellation to external adapter tests.
 func CancelRunForTest(ctx context.Context, store *Store, runID storage.RunID) (bool, error) {
 	outcome, err := store.CancelRun(ctx, runID)
 

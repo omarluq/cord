@@ -818,7 +818,7 @@ func singleNodePlan(runID storage.RunID, name string) storage.RunPlan {
 		Edges: nil,
 		Run: storage.Run{
 			CreatedAt: now, UpdatedAt: now, CompletedAt: nil, StartedAt: nil,
-			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
+			TerminalReason: nil, TerminalRunnerID: nil,
 			ID: runID, WorkflowName: name, DefinitionHash: "definition",
 			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: conformanceNodeID,
 			Status: storage.RunRunning, Input: []byte(`"input"`), Output: nil, Error: nil,
@@ -860,7 +860,7 @@ func conformanceNode(
 ) storage.Node {
 	return storage.Node{
 		AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil,
-		StateChangedAt: nil, LastStartedAt: nil, LifecycleVersion: nil,
+		StateChangedAt: nil, LastStartedAt: nil,
 		LastRunnerID: nil, TerminalReason: nil,
 		FunctionKey: functionKey, RunID: runID, ID: identifier, SignatureHash: signature,
 		Status: status, Error: nil, Output: nil, Lease: storage.Lease{},

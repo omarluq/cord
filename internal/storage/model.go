@@ -68,23 +68,6 @@ func (status RunStatus) AllowsReason(reason TerminalReason) bool {
 	}
 }
 
-// LegacyReason returns the only safe terminal-reason mapping for a legacy run
-// status. It returns false for nonterminal and unknown statuses.
-func (status RunStatus) LegacyReason() (TerminalReason, bool) {
-	switch status {
-	case RunCompleted:
-		return ReasonSucceeded, true
-	case RunFailed:
-		return ReasonLegacyUnknown, true
-	case RunCanceled:
-		return ReasonCanceledByRequest, true
-	case RunRunning, RunCanceling:
-		return "", false
-	default:
-		return "", false
-	}
-}
-
 // NodeStatus is the persisted state of a node.
 type NodeStatus string
 
@@ -143,41 +126,6 @@ func (status NodeStatus) AllowsReason(reason TerminalReason) bool {
 	}
 }
 
-// LegacyReason returns the only safe terminal-reason mapping for a legacy node
-// status. The run status is used only to prove cancellation by run failure. It
-// returns false for nonterminal and unknown node statuses.
-func (status NodeStatus) LegacyReason(runStatus RunStatus) (TerminalReason, bool) {
-	switch status {
-	case NodeCompleted:
-		return ReasonSucceeded, true
-	case NodeFailed:
-		return ReasonLegacyUnknown, true
-	case NodeCanceled:
-		if runStatus == RunFailed {
-			return ReasonCanceledByRunFailure, true
-		}
-
-		return ReasonLegacyUnknown, true
-	case NodePending, NodeReady, NodeRunning, NodeRetryWait:
-		return "", false
-	default:
-		return "", false
-	}
-}
-
-// LifecycleVersion identifies the lifecycle metadata semantics of a row.
-type LifecycleVersion int
-
-const (
-	// LifecycleVersion1 identifies the first stable lifecycle snapshot model.
-	LifecycleVersion1 LifecycleVersion = 1
-)
-
-// IsKnown reports whether version is supported by this runtime.
-func (version LifecycleVersion) IsKnown() bool {
-	return version == LifecycleVersion1
-}
-
 // TerminalReason is the persisted reason for a terminal lifecycle state.
 type TerminalReason string
 
@@ -194,8 +142,6 @@ const (
 	ReasonFailureAttemptsExhausted TerminalReason = "failure_attempts_exhausted"
 	// ReasonFailureLeaseExpired indicates that the final claim's lease expired.
 	ReasonFailureLeaseExpired TerminalReason = "failure_lease_expired"
-	// ReasonLegacyUnknown indicates that a legacy terminal cause cannot be known safely.
-	ReasonLegacyUnknown TerminalReason = "legacy_unknown"
 )
 
 // IsKnown reports whether reason is a supported nonempty terminal reason.
@@ -203,7 +149,7 @@ func (reason TerminalReason) IsKnown() bool {
 	switch reason {
 	case ReasonSucceeded, ReasonCanceledByRequest, ReasonCanceledByRunFailure,
 		ReasonFailureNonRetryable, ReasonFailureAttemptsExhausted,
-		ReasonFailureLeaseExpired, ReasonLegacyUnknown:
+		ReasonFailureLeaseExpired:
 		return true
 	default:
 		return false
@@ -213,14 +159,12 @@ func (reason TerminalReason) IsKnown() bool {
 func (reason TerminalReason) isFailure() bool {
 	return reason == ReasonFailureNonRetryable ||
 		reason == ReasonFailureAttemptsExhausted ||
-		reason == ReasonFailureLeaseExpired ||
-		reason == ReasonLegacyUnknown
+		reason == ReasonFailureLeaseExpired
 }
 
 func (reason TerminalReason) isCancellation() bool {
 	return reason == ReasonCanceledByRequest ||
-		reason == ReasonCanceledByRunFailure ||
-		reason == ReasonLegacyUnknown
+		reason == ReasonCanceledByRunFailure
 }
 
 // Run is the storage representation of a run.
@@ -229,7 +173,6 @@ type Run struct {
 	UpdatedAt             time.Time
 	CompletedAt           *time.Time
 	StartedAt             *time.Time
-	LifecycleVersion      *LifecycleVersion
 	TerminalReason        *TerminalReason
 	TerminalRunnerID      *RunnerID
 	ID                    RunID
@@ -250,24 +193,23 @@ type Run struct {
 
 // Node is the storage representation of a node.
 type Node struct {
-	AvailableAt      time.Time
-	CompletedAt      *time.Time
-	StartedAt        *time.Time
-	StateChangedAt   *time.Time
-	LastStartedAt    *time.Time
-	LifecycleVersion *LifecycleVersion
-	LastRunnerID     *RunnerID
-	TerminalReason   *TerminalReason
-	FunctionKey      string
-	RunID            RunID
-	ID               NodeID
-	SignatureHash    string
-	Status           NodeStatus
-	Error            EncodedPayload
-	Output           EncodedPayload
-	Lease            Lease
-	RemainingDeps    int
-	Attempt          int
+	AvailableAt    time.Time
+	CompletedAt    *time.Time
+	StartedAt      *time.Time
+	StateChangedAt *time.Time
+	LastStartedAt  *time.Time
+	LastRunnerID   *RunnerID
+	TerminalReason *TerminalReason
+	FunctionKey    string
+	RunID          RunID
+	ID             NodeID
+	SignatureHash  string
+	Status         NodeStatus
+	Error          EncodedPayload
+	Output         EncodedPayload
+	Lease          Lease
+	RemainingDeps  int
+	Attempt        int
 }
 
 // NodeStateCounts contains an explicit count for every node state.

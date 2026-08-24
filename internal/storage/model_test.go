@@ -60,16 +60,11 @@ func TestPersistedLifecycleVocabulary(t *testing.T) {
 		{reason: storage.ReasonFailureNonRetryable, value: "failure_non_retryable"},
 		{reason: storage.ReasonFailureAttemptsExhausted, value: "failure_attempts_exhausted"},
 		{reason: storage.ReasonFailureLeaseExpired, value: "failure_lease_expired"},
-		{reason: storage.ReasonLegacyUnknown, value: "legacy_unknown"},
 	}
 	for _, testCase := range reasons {
 		assert.Equal(t, testCase.value, string(testCase.reason))
 		assert.True(t, testCase.reason.IsKnown())
 	}
-
-	assert.True(t, storage.LifecycleVersion1.IsKnown())
-	assert.False(t, storage.LifecycleVersion(0).IsKnown())
-	assert.False(t, storage.LifecycleVersion(2).IsKnown())
 }
 
 func TestStorageLifecycleUnknownValuesFailClosed(t *testing.T) {
@@ -81,8 +76,6 @@ func TestStorageLifecycleUnknownValuesFailClosed(t *testing.T) {
 		assert.False(t, terminal)
 		assert.False(t, known)
 		assert.False(t, status.AllowsReason(""))
-		_, mapped := status.LegacyReason()
-		assert.False(t, mapped)
 	}
 
 	for _, status := range []storage.NodeStatus{"", "blocked", "COMPLETED"} {
@@ -91,8 +84,6 @@ func TestStorageLifecycleUnknownValuesFailClosed(t *testing.T) {
 		assert.False(t, terminal)
 		assert.False(t, known)
 		assert.False(t, status.AllowsReason(""))
-		_, mapped := status.LegacyReason(storage.RunFailed)
-		assert.False(t, mapped)
 	}
 
 	for _, reason := range []storage.TerminalReason{"", "unknown", "SUCCEEDED"} {
@@ -113,7 +104,6 @@ func TestStorageStateReasonPairs(t *testing.T) {
 			storage.ReasonFailureNonRetryable:      true,
 			storage.ReasonFailureAttemptsExhausted: true,
 			storage.ReasonFailureLeaseExpired:      true,
-			storage.ReasonLegacyUnknown:            true,
 		},
 		storage.RunCanceled: {storage.ReasonCanceledByRequest: true},
 	}
@@ -133,70 +123,16 @@ func TestStorageStateReasonPairs(t *testing.T) {
 			storage.ReasonFailureNonRetryable:      true,
 			storage.ReasonFailureAttemptsExhausted: true,
 			storage.ReasonFailureLeaseExpired:      true,
-			storage.ReasonLegacyUnknown:            true,
 		},
 		storage.NodeCanceled: {
 			storage.ReasonCanceledByRequest:    true,
 			storage.ReasonCanceledByRunFailure: true,
-			storage.ReasonLegacyUnknown:        true,
 		},
 	}
 	for status, legal := range nodeLegal {
 		for _, reason := range reasons {
 			assert.Equal(t, legal[reason], status.AllowsReason(reason), "%s/%s", status, reason)
 		}
-	}
-}
-
-func TestLegacyReasonMappings(t *testing.T) {
-	t.Parallel()
-
-	runCases := []struct {
-		status storage.RunStatus
-		reason storage.TerminalReason
-		mapped bool
-	}{
-		{status: storage.RunRunning, reason: "", mapped: false},
-		{status: storage.RunCanceling, reason: "", mapped: false},
-		{status: storage.RunCompleted, reason: storage.ReasonSucceeded, mapped: true},
-		{status: storage.RunFailed, reason: storage.ReasonLegacyUnknown, mapped: true},
-		{status: storage.RunCanceled, reason: storage.ReasonCanceledByRequest, mapped: true},
-	}
-	for _, testCase := range runCases {
-		reason, mapped := testCase.status.LegacyReason()
-		assert.Equal(t, testCase.reason, reason)
-		assert.Equal(t, testCase.mapped, mapped)
-	}
-
-	nodeCases := []struct {
-		status    storage.NodeStatus
-		runStatus storage.RunStatus
-		reason    storage.TerminalReason
-		mapped    bool
-	}{
-		{status: storage.NodePending, runStatus: storage.RunRunning, reason: "", mapped: false},
-		{status: storage.NodeReady, runStatus: storage.RunRunning, reason: "", mapped: false},
-		{status: storage.NodeRunning, runStatus: storage.RunRunning, reason: "", mapped: false},
-		{status: storage.NodeRetryWait, runStatus: storage.RunRunning, reason: "", mapped: false},
-		{status: storage.NodeCompleted, runStatus: storage.RunCompleted, reason: storage.ReasonSucceeded, mapped: true},
-		{status: storage.NodeFailed, runStatus: storage.RunFailed, reason: storage.ReasonLegacyUnknown, mapped: true},
-		{
-			status: storage.NodeCanceled, runStatus: storage.RunFailed,
-			reason: storage.ReasonCanceledByRunFailure, mapped: true,
-		},
-		{
-			status: storage.NodeCanceled, runStatus: storage.RunCanceled,
-			reason: storage.ReasonLegacyUnknown, mapped: true,
-		},
-		{
-			status: storage.NodeCanceled, runStatus: storage.RunRunning,
-			reason: storage.ReasonLegacyUnknown, mapped: true,
-		},
-	}
-	for _, testCase := range nodeCases {
-		reason, mapped := testCase.status.LegacyReason(testCase.runStatus)
-		assert.Equal(t, testCase.reason, reason)
-		assert.Equal(t, testCase.mapped, mapped)
 	}
 }
 
@@ -209,7 +145,6 @@ func allStorageReasons() []storage.TerminalReason {
 		storage.ReasonFailureNonRetryable,
 		storage.ReasonFailureAttemptsExhausted,
 		storage.ReasonFailureLeaseExpired,
-		storage.ReasonLegacyUnknown,
 		"future_reason",
 	}
 }

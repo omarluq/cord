@@ -130,12 +130,9 @@ func finishRunCancellation(
 ) error {
 	result, err := transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
 		updated_at = ?, completed_at = ?,
-		terminal_reason = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
-		terminal_runner_id = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN NULL ELSE terminal_runner_id END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE id = ? AND status = ?`, storage.RunCanceled, instant, instant,
+		terminal_reason = ?,
+		terminal_runner_id = NULL
+				WHERE id = ? AND status = ?`, storage.RunCanceled, instant, instant,
 		storage.ReasonCanceledByRequest, runID, storage.RunCanceling)
 	if err != nil {
 		return fmt.Errorf("finish cancellation for run %q: %w", runID, err)
@@ -162,12 +159,9 @@ func cancelUnfinishedNodes(
 ) error {
 	_, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
 		SET status = ?, lease_owner = NULL, lease_expires_at = NULL, completed_at = ?,
-			state_changed_at = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
-			terminal_reason = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = ? AND status IN (?, ?, ?, ?)`,
+			state_changed_at = ?,
+			terminal_reason = ?
+				WHERE run_id = ? AND status IN (?, ?, ?, ?)`,
 		storage.NodeCanceled, instant, instant, reason, runID,
 		storage.NodePending, storage.NodeReady, storage.NodeRunning, storage.NodeRetryWait)
 	if err != nil {

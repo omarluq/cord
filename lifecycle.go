@@ -57,8 +57,7 @@ func (state RunState) AllowsReason(reason TerminalReason) bool {
 	case RunStateFailed:
 		return reason == ReasonFailureNonRetryable ||
 			reason == ReasonFailureAttemptsExhausted ||
-			reason == ReasonFailureLeaseExpired ||
-			reason == ReasonLegacyUnknown
+			reason == ReasonFailureLeaseExpired
 	case RunStateCanceled:
 		return reason == ReasonCanceledByRequest
 	default:
@@ -122,8 +121,7 @@ func (state NodeState) AllowsReason(reason TerminalReason) bool {
 		return isFailureReason(reason)
 	case NodeStateCanceled:
 		return reason == ReasonCanceledByRequest ||
-			reason == ReasonCanceledByRunFailure ||
-			reason == ReasonLegacyUnknown
+			reason == ReasonCanceledByRunFailure
 	default:
 		return false
 	}
@@ -132,8 +130,7 @@ func (state NodeState) AllowsReason(reason TerminalReason) bool {
 func isFailureReason(reason TerminalReason) bool {
 	return reason == ReasonFailureNonRetryable ||
 		reason == ReasonFailureAttemptsExhausted ||
-		reason == ReasonFailureLeaseExpired ||
-		reason == ReasonLegacyUnknown
+		reason == ReasonFailureLeaseExpired
 }
 
 // TerminalReason describes why a terminal lifecycle transition was selected.
@@ -153,8 +150,6 @@ const (
 	ReasonFailureAttemptsExhausted TerminalReason = "failure_attempts_exhausted"
 	// ReasonFailureLeaseExpired indicates that the final claim's lease expired.
 	ReasonFailureLeaseExpired TerminalReason = "failure_lease_expired"
-	// ReasonLegacyUnknown indicates that a legacy terminal cause cannot be known safely.
-	ReasonLegacyUnknown TerminalReason = "legacy_unknown"
 )
 
 // IsKnown reports whether reason is a nonempty member of the stable lifecycle
@@ -163,7 +158,7 @@ func (reason TerminalReason) IsKnown() bool {
 	switch reason {
 	case ReasonSucceeded, ReasonCanceledByRequest, ReasonCanceledByRunFailure,
 		ReasonFailureNonRetryable, ReasonFailureAttemptsExhausted,
-		ReasonFailureLeaseExpired, ReasonLegacyUnknown:
+		ReasonFailureLeaseExpired:
 		return true
 	default:
 		return false

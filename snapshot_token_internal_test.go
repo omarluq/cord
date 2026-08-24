@@ -43,7 +43,7 @@ func FuzzDecodeNodePageToken(f *testing.F) {
 func FuzzNodePageTokenRoundTrip(f *testing.F) {
 	f.Add(snapshotRunID, "ready", "", snapshotNodeID)
 	f.Add("run/with spaces", "failed", "failure_lease_expired", "node/with spaces")
-	f.Add("run-世界", "canceled", "legacy_unknown", "node-世界")
+	f.Add("run-世界", "canceled", "future_reason", "node-世界")
 
 	f.Fuzz(func(t *testing.T, runID, state, reason, nodeID string) {
 		if !allValidUTF8(runID, state, reason, nodeID) {

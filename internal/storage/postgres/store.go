@@ -121,8 +121,8 @@ func insertRun(
 		id, workflow_name, definition_hash, status, input_payload, output_payload,
 		terminal_node_id, error_payload, created_at, updated_at, completed_at,
 		max_attempts, retry_base_delay_ns, retry_max_delay_ns, retry_policy_version,
-		idempotency_key, submission_fingerprint, lifecycle_version
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+		idempotency_key, submission_fingerprint
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16)`
 	if attach && run.IdempotencyKey != nil {
 		query += ` ON CONFLICT (workflow_name, idempotency_key) DO NOTHING`
 	}
@@ -150,7 +150,6 @@ func insertRun(
 		run.RetryPolicyVersion,
 		nullableStringPointer(run.IdempotencyKey),
 		nullableStringPointer(run.SubmissionFingerprint),
-		storage.LifecycleVersion1,
 	).Scan(&insertedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -207,8 +206,8 @@ func insertNodes(
 		run_id, node_id, function_key, signature_hash, status, remaining_deps,
 		attempt, available_at, lease_owner, lease_generation, lease_expires_at,
 		output_payload, error_payload, started_at, completed_at,
-		lifecycle_version, state_changed_at
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+		state_changed_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`
 
 	for index := range plan.Nodes {
 		node := &plan.Nodes[index]
@@ -231,7 +230,6 @@ func insertNodes(
 			nullablePayload(node.Error),
 			nullableTimePointer(node.StartedAt),
 			nullableTimePointer(node.CompletedAt),
-			storage.LifecycleVersion1,
 			createdAt,
 		)
 		if err != nil {

@@ -19,7 +19,7 @@ const (
 // node-state counts.
 func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.RunReport, error) {
 	const query = `SELECT
-		r.id, r.workflow_name, r.status, r.lifecycle_version, r.terminal_reason,
+		r.id, r.workflow_name, r.status, r.terminal_reason,
 		r.created_at, r.started_at, r.updated_at, r.completed_at, r.terminal_runner_id,
 		counts.pending, counts.ready, counts.running, counts.retry_wait,
 		counts.completed, counts.failed, counts.canceled, counts.total
@@ -41,7 +41,6 @@ func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.Ru
 
 	var (
 		report         storage.RunReport
-		version        sql.NullInt64
 		reason         sql.NullString
 		firstStartedAt sql.NullTime
 		finishedAt     sql.NullTime
@@ -53,7 +52,6 @@ func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.Ru
 		&report.ID,
 		&report.WorkflowName,
 		&report.State,
-		&version,
 		&reason,
 		&report.SubmittedAt,
 		&firstStartedAt,
@@ -90,7 +88,7 @@ func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.Ru
 
 	report.TerminalRunnerID = runnerID(terminalRunner)
 
-	if err = validateRunReport(&report, version, reason, totalNodes); err != nil {
+	if err = validateRunReport(&report, reason, totalNodes); err != nil {
 		return storage.RunReport{}, fmt.Errorf("inspect run %q: %w", runID, err)
 	}
 
@@ -154,14 +152,13 @@ func readNodePageRun(
 	transaction *sql.Tx,
 	runID storage.RunID,
 ) (storage.RunStatus, error) {
-	const query = `SELECT status, lifecycle_version, max_attempts FROM cord_runs WHERE id = $1`
+	const query = `SELECT status, max_attempts FROM cord_runs WHERE id = $1`
 
 	var (
 		status      storage.RunStatus
-		version     sql.NullInt64
 		maxAttempts int
 	)
-	if err := transaction.QueryRowContext(ctx, query, runID).Scan(&status, &version, &maxAttempts); err != nil {
+	if err := transaction.QueryRowContext(ctx, query, runID).Scan(&status, &maxAttempts); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("list nodes for run %q: %w", runID, storage.ErrRunNotFound)
 		}
@@ -171,10 +168,6 @@ func readNodePageRun(
 
 	if !status.IsKnown() || maxAttempts < 1 {
 		return "", incompatible("invalid run metadata for node page")
-	}
-
-	if version.Valid && storage.LifecycleVersion(version.Int64) != storage.LifecycleVersion1 {
-		return "", incompatible("unsupported run lifecycle version %d", version.Int64)
 	}
 
 	return status, nil
@@ -189,7 +182,7 @@ func queryNodePage(
 	limit int,
 ) (_ storage.NodePage, err error) {
 	const statement = `SELECT
-		n.run_id, n.node_id, n.function_key, n.status, n.lifecycle_version, n.terminal_reason,
+		n.run_id, n.node_id, n.function_key, n.status, n.terminal_reason,
 		n.attempt, r.max_attempts, n.available_at, n.started_at, n.last_started_at,
 		n.state_changed_at, n.completed_at, n.last_runner_id,
 		n.lease_owner, n.lease_generation, n.lease_expires_at
@@ -198,14 +191,7 @@ func queryNodePage(
 	WHERE n.run_id = $1
 		AND n.node_id > $2
 		AND ($3::text IS NULL OR n.status = $3)
-		AND ($4::text IS NULL OR CASE
-			WHEN n.lifecycle_version IS NOT NULL THEN n.terminal_reason
-			WHEN n.status = 'completed' THEN 'succeeded'
-			WHEN n.status = 'failed' THEN 'legacy_unknown'
-			WHEN n.status = 'canceled' AND r.status = 'failed' THEN 'canceled_by_run_failure'
-			WHEN n.status = 'canceled' THEN 'legacy_unknown'
-			ELSE NULL
-		END = $4)
+		AND ($4::text IS NULL OR n.terminal_reason = $4)
 	ORDER BY n.node_id
 	LIMIT $5`
 
@@ -256,7 +242,6 @@ func queryNodePage(
 func scanNodeReport(rows *sql.Rows, runStatus storage.RunStatus) (storage.NodeReport, error) {
 	var (
 		report          storage.NodeReport
-		version         sql.NullInt64
 		reason          sql.NullString
 		firstStartedAt  sql.NullTime
 		lastStartedAt   sql.NullTime
@@ -273,7 +258,6 @@ func scanNodeReport(rows *sql.Rows, runStatus storage.RunStatus) (storage.NodeRe
 		&report.NodeID,
 		&report.FunctionKey,
 		&report.State,
-		&version,
 		&reason,
 		&report.Attempt,
 		&report.MaxAttempts,
@@ -307,15 +291,10 @@ func scanNodeReport(rows *sql.Rows, runStatus storage.RunStatus) (storage.NodeRe
 			RunnerID:   storage.RunnerID(leaseOwner.String),
 			Generation: leaseGeneration,
 		}
-		if !version.Valid {
-			legacyRunner := storage.RunnerID(leaseOwner.String)
-			report.RunnerID = &legacyRunner
-		}
 	}
 
 	validation := nodeValidation{
 		runStatus:      runStatus,
-		version:        version,
 		reason:         reason,
 		lastRunner:     lastRunner,
 		leaseOwner:     leaseOwner,
@@ -330,7 +309,6 @@ func scanNodeReport(rows *sql.Rows, runStatus storage.RunStatus) (storage.NodeRe
 
 func validateRunReport(
 	report *storage.RunReport,
-	version sql.NullInt64,
 	reason sql.NullString,
 	totalNodes int,
 ) error {
@@ -339,13 +317,6 @@ func validateRunReport(
 	}
 
 	terminal, _ := report.State.Terminal()
-	if !version.Valid {
-		return validateLegacyRun(report, reason, terminal)
-	}
-
-	if storage.LifecycleVersion(version.Int64) != storage.LifecycleVersion1 {
-		return incompatible("unsupported run lifecycle version %d", version.Int64)
-	}
 
 	if reason.Valid {
 		report.Reason = storage.TerminalReason(reason.String)
@@ -369,27 +340,6 @@ func validateRunMetadata(report *storage.RunReport, totalNodes int) error {
 
 	if totalNodes == 0 || totalNodes != sumNodeCounts(report.NodeCounts) {
 		return incompatible("node-state counts are incomplete")
-	}
-
-	return nil
-}
-
-func validateLegacyRun(report *storage.RunReport, reason sql.NullString, terminal bool) error {
-	if reason.Valid || report.TerminalRunnerID != nil || report.FirstStartedAt != nil {
-		return incompatible("legacy run contains versioned metadata")
-	}
-
-	if terminal {
-		mapped, ok := report.State.LegacyReason()
-		if !ok {
-			return incompatible("legacy terminal run has no safe reason mapping")
-		}
-
-		report.Reason = mapped
-	}
-
-	if terminal != (report.FinishedAt != nil) {
-		return incompatible("run terminal state and finish time disagree")
 	}
 
 	return nil
@@ -421,8 +371,6 @@ func validateTerminalRunner(reason storage.TerminalReason, claimed bool) error {
 		}
 	case storage.ReasonCanceledByRunFailure:
 		return incompatible("run has node-only terminal reason")
-	case storage.ReasonLegacyUnknown:
-		return incompatible("versioned run has a legacy terminal reason")
 	}
 
 	return nil
@@ -459,7 +407,6 @@ type nodeValidation struct {
 	reason         sql.NullString
 	lastRunner     sql.NullString
 	leaseOwner     sql.NullString
-	version        sql.NullInt64
 }
 
 func validateNodeReport(report *storage.NodeReport, validation *nodeValidation) error {
@@ -468,14 +415,6 @@ func validateNodeReport(report *storage.NodeReport, validation *nodeValidation) 
 	}
 
 	terminal, _ := report.State.Terminal()
-	if !validation.version.Valid {
-		return validateLegacyNode(report, validation, terminal)
-	}
-
-	if storage.LifecycleVersion(validation.version.Int64) != storage.LifecycleVersion1 {
-		return incompatible("unsupported node lifecycle version %d", validation.version.Int64)
-	}
-
 	if validation.reason.Valid {
 		report.Reason = storage.TerminalReason(validation.reason.String)
 	}
@@ -484,7 +423,7 @@ func validateNodeReport(report *storage.NodeReport, validation *nodeValidation) 
 		return err
 	}
 
-	return validateNodeStateFields(report, validation, terminal, true)
+	return validateNodeStateFields(report, validation, terminal)
 }
 
 func validateNodeMetadata(report *storage.NodeReport) error {
@@ -497,24 +436,6 @@ func validateNodeMetadata(report *storage.NodeReport) error {
 	}
 
 	return nil
-}
-
-func validateLegacyNode(report *storage.NodeReport, validation *nodeValidation, terminal bool) error {
-	if validation.reason.Valid || report.StateChangedAt != nil ||
-		report.LastStartedAt != nil || validation.lastRunner.Valid {
-		return incompatible("legacy node contains versioned metadata")
-	}
-
-	if terminal {
-		mapped, ok := report.State.LegacyReason(validation.runStatus)
-		if !ok {
-			return incompatible("legacy terminal node has no safe reason mapping")
-		}
-
-		report.Reason = mapped
-	}
-
-	return validateNodeStateFields(report, validation, terminal, false)
 }
 
 func validateVersionedNodeReason(
@@ -537,24 +458,19 @@ func validateNodeStateFields(
 	report *storage.NodeReport,
 	validation *nodeValidation,
 	terminal bool,
-	versioned bool,
 ) error {
 	if terminal != (report.FinishedAt != nil) {
 		return incompatible("node terminal state and finish time disagree")
 	}
 
-	if err := validateNodeLease(report, validation, versioned); err != nil {
+	if err := validateNodeLease(report, validation); err != nil {
 		return err
-	}
-
-	if !versioned {
-		return nil
 	}
 
 	return validateNodeTimestamps(report, terminal)
 }
 
-func validateNodeLease(report *storage.NodeReport, validation *nodeValidation, versioned bool) error {
+func validateNodeLease(report *storage.NodeReport, validation *nodeValidation) error {
 	if report.State != storage.NodeRunning {
 		if validation.leaseOwner.Valid || validation.leaseExpiresAt.Valid {
 			return incompatible("non-running node retains an active lease")
@@ -567,7 +483,7 @@ func validateNodeLease(report *storage.NodeReport, validation *nodeValidation, v
 		return incompatible("running node has no complete lease")
 	}
 
-	if versioned && !nodeRunnerMatchesLease(report) {
+	if !nodeRunnerMatchesLease(report) {
 		return incompatible("running node lease and latest runner disagree")
 	}
 

@@ -1177,7 +1177,7 @@ func TestWorkflowPersistRunWakesSchedulerAfterAttach(t *testing.T) {
 		Nodes: nil, Edges: nil,
 		Run: storage.Run{
 			CreatedAt: time.Time{}, UpdatedAt: time.Time{}, CompletedAt: nil, StartedAt: nil,
-			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
+			TerminalReason: nil, TerminalRunnerID: nil,
 			ID: "attached-run", WorkflowName: "", DefinitionHash: "",
 			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: "",
 			Status: "", Input: nil, Output: nil, Error: nil,

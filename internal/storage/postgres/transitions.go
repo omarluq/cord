@@ -174,14 +174,9 @@ func transitionNode(
 			lease_owner = NULL,
 			lease_expires_at = NULL,
 			completed_at = $8,
-			state_changed_at = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $8 ELSE state_changed_at
-			END,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $9 ELSE terminal_reason
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = $4
+			state_changed_at = $8,
+			terminal_reason = $9
+				WHERE run_id = $4
 			AND node_id = $5
 			AND status = 'running'
 			AND lease_owner = $6
@@ -240,11 +235,10 @@ func completeRunPath(
 			END,
 			state_changed_at = CASE
 				WHEN remaining_deps = 1
-					AND (lifecycle_version IS NULL OR lifecycle_version = 1) THEN $3
+					 THEN $3
 				ELSE state_changed_at
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = $1
+			END
+				WHERE run_id = $1
 			AND status = 'pending'
 			AND remaining_deps > 0
 			AND node_id IN (
@@ -267,14 +261,9 @@ func completeRunPath(
 			error_payload = NULL,
 			updated_at = $5,
 			completed_at = $5,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $6 ELSE terminal_reason
-			END,
-			terminal_runner_id = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $7 ELSE terminal_runner_id
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE id = $3 AND status = 'running' AND terminal_node_id = $4`
+			terminal_reason = $6,
+			terminal_runner_id = $7
+				WHERE id = $3 AND status = 'running' AND terminal_node_id = $4`
 
 	result, err := transaction.ExecContext(
 		ctx, completeRun, storage.RunCompleted, nullablePayload(params.payload),
@@ -314,14 +303,9 @@ func failRunPath(
 			error_payload = $2,
 			updated_at = $4,
 			completed_at = $4,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $5 ELSE terminal_reason
-			END,
-			terminal_runner_id = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $6 ELSE terminal_runner_id
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE id = $3 AND status = 'running'`
+			terminal_reason = $5,
+			terminal_runner_id = $6
+				WHERE id = $3 AND status = 'running'`
 
 	result, err := transaction.ExecContext(
 		ctx, failRun, storage.RunFailed, nullablePayload(payload), runID,
@@ -346,14 +330,9 @@ func cancelUnfinishedNodes(
 			lease_owner = NULL,
 			lease_expires_at = NULL,
 			completed_at = $7,
-			state_changed_at = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $7 ELSE state_changed_at
-			END,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $8 ELSE terminal_reason
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = $2 AND status IN ($3, $4, $5, $6)`
+			state_changed_at = $7,
+			terminal_reason = $8
+				WHERE run_id = $2 AND status IN ($3, $4, $5, $6)`
 	if _, err := transaction.ExecContext(
 		ctx,
 		query,
@@ -427,11 +406,8 @@ func (s *Store) RetryNode(
 			available_at = $7::timestamptz + ($2 * interval '1 microsecond'),
 			lease_owner = NULL,
 			lease_expires_at = NULL,
-			state_changed_at = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $7 ELSE state_changed_at
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = $3
+			state_changed_at = $7
+				WHERE run_id = $3
 			AND node_id = $4
 			AND status = 'running'
 			AND lease_owner = $5
@@ -491,11 +467,8 @@ func (s *Store) PromoteRetries(ctx context.Context) (count int64, err error) {
 
 		result, execErr := transaction.ExecContext(ctx, `UPDATE cord_nodes
 			SET status = 'ready',
-				state_changed_at = CASE
-					WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $1 ELSE state_changed_at
-				END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE status = 'retry_wait' AND available_at <= $1
+				state_changed_at = $1
+						WHERE status = 'retry_wait' AND available_at <= $1
 				AND EXISTS (SELECT 1 FROM cord_runs
 					WHERE id = run_id AND status = 'running')`, transitionedAt)
 		if execErr != nil {
@@ -612,11 +585,8 @@ func recoverRetryableExpiredNode(
 	result, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
 		SET status = 'ready', lease_owner = NULL, lease_expires_at = NULL,
 			lease_generation = lease_generation + 1,
-			state_changed_at = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $3 ELSE state_changed_at
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = $1 AND node_id = $2 AND status = 'running'
+			state_changed_at = $3
+				WHERE run_id = $1 AND node_id = $2 AND status = 'running'
 			AND lease_expires_at <= $3
 			AND EXISTS (SELECT 1 FROM cord_runs
 				WHERE id = $1 AND status = 'running')`, node.runID, node.nodeID, transitionedAt)
@@ -646,14 +616,9 @@ func recoverExhaustedNode(
 		SET status = 'failed', error_payload = $1, lease_owner = NULL,
 			lease_expires_at = NULL, lease_generation = lease_generation + 1,
 			completed_at = $4,
-			state_changed_at = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $4 ELSE state_changed_at
-			END,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $5 ELSE terminal_reason
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE run_id = $2 AND node_id = $3 AND status = 'running'
+			state_changed_at = $4,
+			terminal_reason = $5
+				WHERE run_id = $2 AND node_id = $3 AND status = 'running'
 			AND lease_expires_at <= $4
 			AND EXISTS (SELECT 1 FROM cord_runs
 				WHERE id = $2 AND status = 'running')`,
@@ -681,14 +646,9 @@ func recoverExhaustedNode(
 	runResult, err := transaction.ExecContext(ctx, `UPDATE cord_runs
 		SET status = 'failed', output_payload = NULL, error_payload = $1,
 			updated_at = $3, completed_at = $3,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $4 ELSE terminal_reason
-			END,
-			terminal_runner_id = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN NULL ELSE terminal_runner_id
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE id = $2 AND status = 'running'`, nullablePayload(failure), node.runID,
+			terminal_reason = $4,
+			terminal_runner_id = NULL
+				WHERE id = $2 AND status = 'running'`, nullablePayload(failure), node.runID,
 		transitionedAt, storage.ReasonFailureLeaseExpired)
 	if err != nil {
 		return 0, fmt.Errorf("fail run %q after exhausted lease: %w", node.runID, err)

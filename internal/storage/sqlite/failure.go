@@ -47,10 +47,8 @@ func (s *Store) RetryNode(
 
 			result, execErr := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes SET status = ?, error_payload = ?,
 			available_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?, ?), lease_owner = NULL, lease_expires_at = NULL,
-			state_changed_at = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
+			state_changed_at = ?
+						WHERE run_id = ? AND node_id = ? AND status = ? AND lease_owner = ? AND lease_generation = ?
 			AND julianday(lease_expires_at) > julianday('now')
 			AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`,
 				storage.NodeRetryWait, nullPayload(failure), instant, modifier, instant,
@@ -95,10 +93,8 @@ func (s *Store) PromoteRetries(ctx context.Context) (count int64, err error) {
 		instant := formatTime(transitionedAt)
 
 		result, execErr := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
-			SET status = ?, state_changed_at = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE status = ? AND julianday(available_at) <= julianday(?)
+			SET status = ?, state_changed_at = ?
+						WHERE status = ? AND julianday(available_at) <= julianday(?)
 			AND EXISTS (SELECT 1 FROM cord_runs WHERE id = run_id AND status = ?)`,
 			storage.NodeReady, instant, storage.NodeRetryWait, instant, storage.RunRunning)
 		if execErr != nil {
@@ -142,12 +138,9 @@ func (s *Store) FailNode(
 			result, err := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET status = ?, error_payload = ?, lease_owner = NULL, lease_expires_at = NULL,
 				completed_at = ?,
-				state_changed_at = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
-				terminal_reason = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE run_id = ? AND node_id = ? AND status = ?
+				state_changed_at = ?,
+				terminal_reason = ?
+						WHERE run_id = ? AND node_id = ? AND status = ?
 				AND lease_owner = ? AND lease_generation = ?
 				AND julianday(lease_expires_at) > julianday('now')
 				AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`,
@@ -176,12 +169,9 @@ func (s *Store) FailNode(
 
 			_, err = transaction.ExecContext(attemptCtx, `UPDATE cord_runs
 			SET status = ?, error_payload = ?, updated_at = ?, completed_at = ?,
-				terminal_reason = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
-				terminal_runner_id = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_runner_id END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE id = ? AND status = ?`, storage.RunFailed, nullPayload(failure), instant, instant,
+				terminal_reason = ?,
+				terminal_runner_id = ?
+						WHERE id = ? AND status = ?`, storage.RunFailed, nullPayload(failure), instant, instant,
 				reason, lease.Owner, runID, storage.RunRunning)
 			if err != nil {
 				return fmt.Errorf("fail run %q: %w", runID, err)
