@@ -221,18 +221,41 @@ func TestStore_ListRunNodesRejectsInvalidFilters(t *testing.T) {
 	t.Parallel()
 
 	_, store := newStore(t, true)
-	unknown := storage.NodeStatus("unknown")
-	_, err := store.ListRunNodes(t.Context(), "run", storage.NodeQuery{
-		State: &unknown, Reason: nil, ContinuationToken: "", PageSize: 0,
-	})
-	require.Error(t, err)
+	plan := validPlan(time.Now().UTC(), "invalid-filters")
+	requireCreateRun(t.Context(), t, store, &plan)
 
+	unknown := storage.NodeStatus("unknown")
 	state := storage.NodeReady
 	reason := storage.ReasonSucceeded
-	_, err = store.ListRunNodes(t.Context(), "run", storage.NodeQuery{
-		State: &state, Reason: &reason, ContinuationToken: "", PageSize: 0,
-	})
-	require.Error(t, err)
+	tests := []struct {
+		name      string
+		wantError string
+		query     storage.NodeQuery
+	}{
+		{
+			name: "unknown state",
+			query: storage.NodeQuery{
+				State: &unknown, Reason: nil, ContinuationToken: "", PageSize: 0,
+			},
+			wantError: `list run nodes: unknown state "unknown"`,
+		},
+		{
+			name: "state reason mismatch",
+			query: storage.NodeQuery{
+				State: &state, Reason: &reason, ContinuationToken: "", PageSize: 0,
+			},
+			wantError: `list run nodes: reason "succeeded" is invalid for state "ready"`,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := store.ListRunNodes(t.Context(), plan.Run.ID, testCase.query)
+			require.EqualError(t, err, testCase.wantError)
+		})
+	}
 }
 
 func inspectionLinearPlan(runID storage.RunID, count int) storage.RunPlan {
