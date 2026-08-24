@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"database/sql"
 	"reflect"
 	"testing"
 
@@ -31,6 +32,8 @@ type terminalRaceExpectation struct {
 
 func runConcurrentClaimWinnerMetadata(t *testing.T, harness Harness) {
 	t.Helper()
+
+	runMigratedRunFirstStart(t, harness)
 
 	opened := openStore(t, harness, "concurrent-claim-metadata")
 
@@ -75,6 +78,61 @@ func runConcurrentClaimWinnerMetadata(t *testing.T, harness Harness) {
 	report := mustInspectRun(t, opened.backend, plan.Run.ID)
 	if report.FirstStartedAt == nil {
 		t.Fatalf("concurrently claimed run report = %#v", report)
+	}
+}
+
+func runMigratedRunFirstStart(t *testing.T, harness Harness) {
+	t.Helper()
+
+	opened := openStore(t, harness, "migrated-run-first-start")
+
+	plan := joinPlan("conformance-migrated-run-first-start")
+	if err := opened.backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	leftClaim := mustClaim(t, opened.backend, workerA)
+	rightClaim := mustClaim(t, opened.backend, workerB)
+
+	if leftClaim.NodeID != leftNodeID || rightClaim.NodeID != rightNodeID {
+		t.Fatalf("claimed nodes = %q, %q, want %q, %q",
+			leftClaim.NodeID, rightClaim.NodeID, leftNodeID, rightNodeID)
+	}
+
+	left := mustFindNode(t, opened.backend, plan.Run.ID, leftNodeID)
+	if left.FirstStartedAt == nil {
+		t.Fatal("first claimed node has no first-start timestamp")
+	}
+
+	migrateClaimedRunFixture(t, opened.database)
+
+	claim := mustClaim(t, opened.backend, workerA)
+	if claim.NodeID != rightNodeID {
+		t.Fatalf("migrated claimed node = %q, want %q", claim.NodeID, rightNodeID)
+	}
+
+	report := mustInspectRun(t, opened.backend, plan.Run.ID)
+	if report.FirstStartedAt == nil || !report.FirstStartedAt.Equal(*left.FirstStartedAt) {
+		t.Fatalf("migrated run first start = %v, want %v", report.FirstStartedAt, left.FirstStartedAt)
+	}
+}
+
+func migrateClaimedRunFixture(t *testing.T, database *sql.DB) {
+	t.Helper()
+
+	statements := []string{
+		`UPDATE cord_nodes SET lifecycle_version = NULL
+			WHERE run_id = 'conformance-migrated-run-first-start'`,
+		`UPDATE cord_nodes SET status = 'ready', lease_owner = NULL, lease_expires_at = NULL
+			WHERE run_id = 'conformance-migrated-run-first-start' AND node_id = 'right'`,
+		`UPDATE cord_runs SET started_at = NULL, lifecycle_version = NULL
+			WHERE id = 'conformance-migrated-run-first-start'`,
+	}
+
+	for _, statement := range statements {
+		if _, err := database.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

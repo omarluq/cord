@@ -139,10 +139,10 @@ func (s *Store) claimReadyNodeOnce(
 
 	if _, err = transaction.ExecContext(ctx, `UPDATE cord_runs
 		SET started_at = COALESCE(started_at,
-			(SELECT started_at FROM cord_nodes WHERE run_id = ? AND node_id = ?)),
+			(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = ?)),
 			lifecycle_version = COALESCE(lifecycle_version, ?)
-		WHERE id = ? AND started_at IS NULL`,
-		claim.RunID, claim.NodeID, storage.LifecycleVersion1, claim.RunID); err != nil {
+		WHERE id = ? AND (started_at IS NULL OR lifecycle_version IS NULL)`,
+		claim.RunID, storage.LifecycleVersion1, claim.RunID); err != nil {
 		return nil, false, fmt.Errorf("record run start: %w", err)
 	}
 
