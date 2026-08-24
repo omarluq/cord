@@ -118,6 +118,59 @@ func TestPostgresInspectionLegacyAndFailClosed(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrRunIncompatible)
 }
 
+// TestPostgresInspectionLegacyRunningNode verifies legacy running-node runner metadata.
+func TestPostgresInspectionLegacyRunningNode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		lastRunner any
+		name       string
+		wantError  bool
+	}{
+		{name: "lease owner supplies report runner", lastRunner: nil, wantError: false},
+		{name: "persisted last runner is incompatible", lastRunner: "runner", wantError: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			database := openInspectionPostgres(t)
+			store, err := postgresstore.New(database)
+			require.NoError(t, err)
+
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			insertInspectionRun(t, database, &inspectionRun{
+				runID: "legacy-running", status: storage.RunRunning, reason: nil,
+				finishedAt: nil, now: now, version: 0,
+			})
+
+			_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
+				run_id, node_id, function_key, signature_hash, status, remaining_deps,
+				attempt, available_at, lease_owner, lease_generation, lease_expires_at,
+				started_at, last_runner_id
+			) VALUES (
+				'legacy-running', 'node', 'inspection.node', 'signature', 'running', 0,
+				1, $1, 'runner', 1, $2, $1, $3
+			)`, now, now.Add(time.Minute), testCase.lastRunner)
+			require.NoError(t, err)
+
+			page, err := store.ListRunNodes(t.Context(), "legacy-running", storage.NodeQuery{})
+			if testCase.wantError {
+				require.ErrorIs(t, err, storage.ErrRunIncompatible)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, page.Nodes, 1)
+			require.NotNil(t, page.Nodes[0].RunnerID)
+			assert.Equal(t, storage.RunnerID("runner"), *page.Nodes[0].RunnerID)
+			require.NotNil(t, page.Nodes[0].CurrentLease)
+			assert.Equal(t, storage.RunnerID("runner"), page.Nodes[0].CurrentLease.RunnerID)
+		})
+	}
+}
+
 func TestPostgresInspectionUsesRunScopedCountPlan(t *testing.T) {
 	t.Parallel()
 
