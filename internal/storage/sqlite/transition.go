@@ -34,9 +34,7 @@ func (s *Store) fencedTerminalTransitionOnce(
 	}
 
 	defer func() {
-		if rollbackErr := transaction.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			err = errors.Join(err, fmt.Errorf("rollback fenced transition: %w", rollbackErr))
-		}
+		err = joinRollbackError(transaction.Rollback(), "rollback fenced transition", err)
 	}()
 
 	transitionErr := transition(ctx, transaction)

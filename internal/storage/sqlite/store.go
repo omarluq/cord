@@ -59,11 +59,7 @@ func (s *Store) createRunOnlyOnce(ctx context.Context, plan *storage.RunPlan) er
 	}
 
 	if err != nil {
-		if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-			return fmt.Errorf("persist run plan: %w", errors.Join(err, rollbackErr))
-		}
-
-		return err
+		return joinRollbackError(transaction.Rollback(), "persist run plan", err)
 	}
 
 	if err = transaction.Commit(); err != nil {
