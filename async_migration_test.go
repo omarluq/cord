@@ -78,24 +78,43 @@ func assertLegacyActiveSnapshot(t *testing.T, runtime *cord.Cord) cord.Workflow[
 func assertLegacyTerminalSnapshots(t *testing.T, runtime *cord.Cord) {
 	t.Helper()
 
-	completed, err := runtime.InspectRun(t.Context(), "legacy-completed")
-	require.NoError(t, err)
-	assert.Equal(t, cord.RunStateCompleted, completed.State)
-	assert.Equal(t, cord.ReasonSucceeded, completed.Reason)
+	tests := []struct {
+		runID     cord.RunID
+		state     cord.RunState
+		reason    cord.TerminalReason
+		nodeState cord.NodeState
+	}{
+		{runID: "legacy-completed", state: cord.RunStateCompleted, reason: cord.ReasonSucceeded},
+		{
+			runID:     "legacy-failed",
+			state:     cord.RunStateFailed,
+			reason:    cord.ReasonLegacyUnknown,
+			nodeState: cord.NodeStateFailed,
+		},
+		{
+			runID:     "legacy-canceled",
+			state:     cord.RunStateCanceled,
+			reason:    cord.ReasonCanceledByRequest,
+			nodeState: cord.NodeStateCanceled,
+		},
+	}
 
-	failed, err := runtime.InspectRun(t.Context(), "legacy-failed")
-	require.NoError(t, err)
-	assert.Equal(t, cord.RunStateFailed, failed.State)
-	assert.Equal(t, cord.ReasonLegacyUnknown, failed.Reason,
-		"legacy failures must not be classified by parsing their message")
+	for _, test := range tests {
+		snapshot, err := runtime.InspectRun(t.Context(), test.runID)
+		require.NoError(t, err)
+		assert.Equal(t, test.state, snapshot.State)
 
-	canceled, err := runtime.InspectRun(t.Context(), "legacy-canceled")
-	require.NoError(t, err)
-	assert.Equal(t, cord.RunStateCanceled, canceled.State)
-	assert.Equal(t, cord.ReasonCanceledByRequest, canceled.Reason)
+		if test.reason == cord.ReasonLegacyUnknown {
+			assert.Equal(t, test.reason, snapshot.Reason,
+				"legacy failures must not be classified by parsing their message")
+		} else {
+			assert.Equal(t, test.reason, snapshot.Reason)
+		}
 
-	assertLegacyTerminalNode(t, runtime, "legacy-failed", cord.NodeStateFailed)
-	assertLegacyTerminalNode(t, runtime, "legacy-canceled", cord.NodeStateCanceled)
+		if test.nodeState != "" {
+			assertLegacyTerminalNode(t, runtime, test.runID, test.nodeState)
+		}
+	}
 }
 
 func assertLegacyTerminalNode(t *testing.T, runtime *cord.Cord, runID cord.RunID, state cord.NodeState) {
