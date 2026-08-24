@@ -49,6 +49,42 @@ func ExampleCord_From() {
 	// Output: result: 42
 }
 
+func ExampleWorkflow_Submit() {
+	database := exampledb.DB()
+
+	runtime, err := cord.New(context.Background(), database)
+	if err != nil {
+		fmt.Println(errors.Join(err, database.Close()))
+
+		return
+	}
+	defer func() {
+		if closeErr := closeExample(runtime, database); closeErr != nil {
+			fmt.Println(closeErr)
+		}
+	}()
+
+	flow := runtime.From("async-double", exampleDouble)
+
+	runID, submitErr := flow.Submit(context.Background(), 21, "order-21")
+	if submitErr != nil {
+		fmt.Println(submitErr)
+
+		return
+	}
+
+	// Persist runID in application state; it can retrieve the result later.
+	result, getErr := flow.Get(context.Background(), runID)
+	if getErr != nil {
+		fmt.Println(getErr)
+
+		return
+	}
+
+	fmt.Println(result)
+	// Output: 42
+}
+
 func ExamplePermanent() {
 	database := exampledb.DB()
 
