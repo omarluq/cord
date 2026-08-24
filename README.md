@@ -86,6 +86,72 @@ func main() {
 The name passed to `From` is the durable workflow identity. Keep it stable when
 renaming or refactoring the root function.
 
+## Submit and retrieve runs asynchronously
+
+`Submit` persists the complete run plan and returns its generated UUIDv7
+`cord.RunID` without waiting for execution. `Get` blocks until that run reaches a
+durable terminal state and decodes the typed result:
+
+```go
+runID, err := flow.Submit(ctx, input)
+if err != nil {
+    return err
+}
+
+// Persist runID in application state or pass it to another process.
+result, err := flow.Get(waitCtx, runID)
+if err != nil {
+    return err
+}
+_ = result
+```
+
+`RunID` has `string` as its underlying type, so applications can store, transfer,
+and convert known IDs to it. Such conversion does not create a durable run; only
+Cord generates IDs for submitted runs. To make submission retries converge on
+one retained run, pass one caller-chosen idempotency key:
+
+```go
+runID, err := flow.Submit(ctx, input, "order:1234")
+```
+
+The variadic argument is optional but accepts at most one non-empty key. Reusing
+a key with the same workflow definition and encoded input returns the original
+run ID; reusing it for different work returns an error matching
+`cord.ErrRunConflict`. An unkeyed retry creates a new run. The caller must retain
+the key until submission is unambiguously resolved. Key reservations last only
+as long as the associated run row—and therefore its idempotency data—is retained.
+
+`Get` is typed and definition-compatibility checked. Reconstruct the workflow's
+persisted name, input type, reachable topology, function identities and
+signatures, and terminal node before retrieving a run, including in a different
+process. Cord recomputes that definition with the run's persisted retry policy;
+a mismatch returns an error matching `cord.ErrRunIncompatible`.
+Canceling `waitCtx` stops only that `Get`; it does not cancel the workflow.
+Use `Cancel` for explicit durable cancellation:
+
+```go
+if err := flow.Cancel(ctx, runID); err != nil &&
+    !errors.Is(err, cord.ErrRunFinished) {
+    return err
+}
+```
+
+`Cancel` is keyed only by run ID and does not perform `Get`'s workflow
+compatibility check. It is idempotent for an already canceled run. Missing IDs
+return an error matching `cord.ErrRunNotFound`, and cancellation that loses to
+successful or failed completion returns one matching `cord.ErrRunFinished`.
+Cancellation durably fences future Cord writes. An active attempt in the runtime
+that calls `Cancel` is signaled promptly; attempts in other runtimes observe the
+lost lease through heartbeat and are then canceled cooperatively. `Cancel` cannot
+forcibly stop arbitrary Go code, guarantee when a remote attempt observes
+cancellation, or undo external side effects already in progress.
+
+These sentinel outcomes describe durable state, not authorization: for example,
+`ErrRunNotFound` can reveal whether an ID exists. A `RunID` is not an
+authorization credential. Applications must authenticate callers and enforce
+tenant ownership before passing an untrusted run ID to `Get` or `Cancel`.
+
 ## PostgreSQL with pgx
 
 Register pgx's `database/sql` driver in the application, configure and health-check
@@ -292,9 +358,9 @@ Go functions
      │  From / Then / Join
      ▼
 typed workflow graph
-     │  Run(ctx, input)
+     │  Run(ctx, input) or Submit(ctx, input[, key])
      ▼
-SQLite: run + nodes + edges + retry policy
+SQL: run + nodes + edges + retry policy + optional idempotency key
      │
      ├──────────────┬──────────────┐
      ▼              ▼              ▼
@@ -315,13 +381,16 @@ SQLite: run + nodes + edges + retry policy
 4. **Recover** — expired claims become available to another runtime. Recreating
    the workflow definitions registers the functions needed to continue pending
    runs.
-5. **Complete** — the terminal node's persisted output is decoded into the
-   workflow's Go result type.
+5. **Complete** — `Run` or `Get` decodes the terminal node's persisted output
+   into the workflow's Go result type.
 
-Multiple Cord runtimes may coordinate through the same SQLite database. Durable
-state—not the process that submitted or executed a run—is authoritative.
-Workflow inputs, intermediate values, outputs, and failures cross the storage
-boundary as JSON.
+Multiple compatible Cord runtimes may coordinate through the same database.
+`Submit` wakes its local scheduler, while other runtimes discover work by normal
+polling. Any runtime with matching function registrations may execute the run;
+a different compatible runtime may later call `Get` or `Cancel`. Closing the
+submitter does not cancel durable work. Durable state—not the process that
+submitted or executed a run—is authoritative. Workflow inputs, intermediate
+values, outputs, and failures cross the storage boundary as JSON.
 
 ## Side effects and idempotency
 
@@ -332,9 +401,21 @@ side-effecting steps must use business identifiers, destination-supported
 idempotency keys, unique constraints, or another application-level deduplication
 mechanism.
 
-Workflow-submission deduplication is a separate concern from retry identity and
-external side-effect idempotency. Cord does not currently provide either a
-caller-selected run ID or exactly-once external effects.
+Workflow-submission deduplication is separate from node retry identity and
+external side-effect idempotency. A caller-provided `Submit` idempotency key can
+deduplicate creation of a retained run, but it does not make node execution or
+external effects exactly once. Cord generates run IDs; callers do not select
+them.
+
+A database commit can succeed even when the submitting or completing process
+receives an error. After any ambiguous unkeyed `Submit`, retrying can create a
+second run. For retry-safe submission, choose and durably retain an idempotency
+key before the first attempt, then retry with the same workflow definition,
+exact encoded input, and key until Cord returns a run ID or a definitive
+conflict. Do not discard or reuse the key merely because an attempt returned a
+transport, timeout, context, or other persistence error: the commit may have
+succeeded. Node functions must still make their own external effects idempotent
+because Cord executes nodes at least once.
 
 ## Runtime lifecycle
 
@@ -350,9 +431,12 @@ defer runtime.Close() // close the runtime before db
 ```
 
 Canceling the context passed to `Run` stops submission or waiting, but does not
-cancel a run that was already persisted. The durable workflow continues and can
-complete in any compatible Cord process. Closing a runtime similarly stops its
-local workers without closing the database or canceling persisted runs.
+cancel a run that was already persisted. A `Submit` context controls validation
+and persistence only; after a successful return, its cancellation does not
+cancel the run. A `Get` context controls only that caller's wait. Use `Cancel`
+for durable cancellation. The durable workflow can otherwise complete in any
+compatible Cord process. Closing a runtime similarly stops its local workers
+without closing the database or canceling persisted runs.
 
 For scheduler tuning, pass an `Options` value to `New`:
 
@@ -369,6 +453,14 @@ runtime, err := cord.New(ctx, db, cord.Options{
 Omit `Options` to use Cord's defaults; any zero-valued field in a supplied
 `Options` also uses its own default. The context passed to `New` controls schema
 migration and is bounded by Cord's migration timeout.
+
+`Concurrency` limits executing node functions, not SQL connections. Size the
+caller-owned pool for application queries, Cord's concurrent scheduler and
+worker transitions, migration overhead, and blocking `Get` polling. Remote
+Turso migrations require at least two open connections. In every deployment,
+monitor `sql.DB.Stats`—especially waits—and increase the pool or reduce runtime
+concurrency when the database is saturated.
+
 See the [package reference](https://pkg.go.dev/github.com/omarluq/cord) for the
 complete API.
 
