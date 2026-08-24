@@ -9,10 +9,14 @@ import (
 )
 
 const (
+	runsTable  = "cord_runs"
+	nodesTable = "cord_nodes"
+
 	schemaV1 = 1
 	schemaV2 = 2
 	schemaV3 = 3
 	schemaV4 = 4
+	schemaV5 = 5
 )
 
 func migrations() []*goose.Migration {
@@ -21,7 +25,41 @@ func migrations() []*goose.Migration {
 		goose.NewGoMigration(schemaV2, &goose.GoFunc{RunTx: migrateV2}, nil),
 		goose.NewGoMigration(schemaV3, &goose.GoFunc{RunTx: migrateV3}, nil),
 		goose.NewGoMigration(schemaV4, &goose.GoFunc{RunTx: migrateV4}, nil),
+		goose.NewGoMigration(schemaV5, &goose.GoFunc{RunTx: migrateV5}, nil),
 	}
+}
+
+func migrateV5(ctx context.Context, transaction *sql.Tx) error {
+	columns := []struct {
+		table, name, statement string
+	}{
+		{runsTable, "lifecycle_version", "ALTER TABLE cord_runs ADD COLUMN lifecycle_version INTEGER"},
+		{runsTable, "started_at", "ALTER TABLE cord_runs ADD COLUMN started_at TEXT"},
+		{runsTable, "terminal_reason", "ALTER TABLE cord_runs ADD COLUMN terminal_reason TEXT"},
+		{runsTable, "terminal_runner_id", "ALTER TABLE cord_runs ADD COLUMN terminal_runner_id TEXT"},
+		{nodesTable, "lifecycle_version", "ALTER TABLE cord_nodes ADD COLUMN lifecycle_version INTEGER"},
+		{nodesTable, "state_changed_at", "ALTER TABLE cord_nodes ADD COLUMN state_changed_at TEXT"},
+		{nodesTable, "last_started_at", "ALTER TABLE cord_nodes ADD COLUMN last_started_at TEXT"},
+		{nodesTable, "last_runner_id", "ALTER TABLE cord_nodes ADD COLUMN last_runner_id TEXT"},
+		{nodesTable, "terminal_reason", "ALTER TABLE cord_nodes ADD COLUMN terminal_reason TEXT"},
+	}
+
+	for _, column := range columns {
+		exists, err := columnExists(ctx, transaction, column.table, column.name)
+		if err != nil {
+			return err
+		}
+
+		if exists {
+			continue
+		}
+
+		if _, err = transaction.ExecContext(ctx, column.statement); err != nil {
+			return fmt.Errorf("add lifecycle column %q.%q: %w", column.table, column.name, err)
+		}
+	}
+
+	return nil
 }
 
 func migrateV4(ctx context.Context, transaction *sql.Tx) error {

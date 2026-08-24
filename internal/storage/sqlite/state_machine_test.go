@@ -356,12 +356,18 @@ func TestStore_FailNodeIsFencedAndAtomic(t *testing.T) {
 	stale := claim.Lease
 	stale.Generation--
 
-	accepted, err := store.FailNode(t.Context(), claim.RunID, claim.NodeID, stale, []byte("stale"))
+	accepted, err := store.FailNode(
+		t.Context(), claim.RunID, claim.NodeID, stale, []byte("stale"),
+		storage.ReasonFailureNonRetryable,
+	)
 	require.NoError(t, err)
 	assert.False(t, accepted)
 	assertRunState(t, database, claim.RunID, storage.RunRunning, nil)
 
-	accepted, err = store.FailNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("permanent"))
+	accepted, err = store.FailNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("permanent"),
+		storage.ReasonFailureNonRetryable,
+	)
 	require.NoError(t, err)
 	require.True(t, accepted)
 	assertNodeState(t, database, claim.RunID, claim.NodeID, storage.NodeFailed, 0)

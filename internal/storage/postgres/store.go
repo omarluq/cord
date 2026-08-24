@@ -34,7 +34,12 @@ func (s *Store) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
 	}
 
 	return runTransaction(ctx, s.pool, "create run", func(transaction *sql.Tx) error {
-		inserted, err := insertRun(ctx, transaction, &plan.Run, false)
+		createdAt, err := databaseInstant(ctx, transaction)
+		if err != nil {
+			return err
+		}
+
+		inserted, err := insertRun(ctx, transaction, &plan.Run, false, createdAt)
 		if err != nil {
 			return err
 		}
@@ -43,7 +48,7 @@ func (s *Store) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
 			return fmt.Errorf("insert run %q: no row returned", plan.Run.ID)
 		}
 
-		if nodesErr := insertNodes(ctx, transaction, plan); nodesErr != nil {
+		if nodesErr := insertNodes(ctx, transaction, plan, createdAt); nodesErr != nil {
 			return nodesErr
 		}
 
@@ -65,7 +70,12 @@ func (s *Store) CreateOrAttachRun(
 	err = runTransaction(ctx, s.pool, "create run", func(transaction *sql.Tx) error {
 		runID, created = "", false
 
-		inserted, insertErr := insertRun(ctx, transaction, &plan.Run, true)
+		createdAt, timeErr := databaseInstant(ctx, transaction)
+		if timeErr != nil {
+			return timeErr
+		}
+
+		inserted, insertErr := insertRun(ctx, transaction, &plan.Run, true, createdAt)
 		if insertErr != nil {
 			return insertErr
 		}
@@ -81,7 +91,7 @@ func (s *Store) CreateOrAttachRun(
 			return nil
 		}
 
-		if nodesErr := insertNodes(ctx, transaction, plan); nodesErr != nil {
+		if nodesErr := insertNodes(ctx, transaction, plan, createdAt); nodesErr != nil {
 			return nodesErr
 		}
 
@@ -105,13 +115,14 @@ func insertRun(
 	transaction *sql.Tx,
 	run *storage.Run,
 	attach bool,
+	createdAt time.Time,
 ) (bool, error) {
 	query := `INSERT INTO cord_runs (
 		id, workflow_name, definition_hash, status, input_payload, output_payload,
 		terminal_node_id, error_payload, created_at, updated_at, completed_at,
 		max_attempts, retry_base_delay_ns, retry_max_delay_ns, retry_policy_version,
-		idempotency_key, submission_fingerprint
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+		idempotency_key, submission_fingerprint, lifecycle_version
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
 	if attach && run.IdempotencyKey != nil {
 		query += ` ON CONFLICT (workflow_name, idempotency_key) DO NOTHING`
 	}
@@ -131,8 +142,7 @@ func insertRun(
 		nullablePayload(run.Output),
 		run.TerminalNodeID,
 		nullablePayload(run.Error),
-		run.CreatedAt,
-		run.UpdatedAt,
+		createdAt,
 		nullableTimePointer(run.CompletedAt),
 		run.MaxAttempts,
 		run.RetryBaseDelay.Nanoseconds(),
@@ -140,6 +150,7 @@ func insertRun(
 		run.RetryPolicyVersion,
 		nullableStringPointer(run.IdempotencyKey),
 		nullableStringPointer(run.SubmissionFingerprint),
+		storage.LifecycleVersion1,
 	).Scan(&insertedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -186,12 +197,18 @@ func attachRun(
 	return retainedID, nil
 }
 
-func insertNodes(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan) error {
+func insertNodes(
+	ctx context.Context,
+	transaction *sql.Tx,
+	plan *storage.RunPlan,
+	createdAt time.Time,
+) error {
 	const query = `INSERT INTO cord_nodes (
 		run_id, node_id, function_key, signature_hash, status, remaining_deps,
 		attempt, available_at, lease_owner, lease_generation, lease_expires_at,
-		output_payload, error_payload, started_at, completed_at
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
+		output_payload, error_payload, started_at, completed_at,
+		lifecycle_version, state_changed_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$8)`
 
 	for index := range plan.Nodes {
 		node := &plan.Nodes[index]
@@ -206,7 +223,7 @@ func insertNodes(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan
 			node.Status,
 			node.RemainingDeps,
 			node.Attempt,
-			node.AvailableAt,
+			createdAt,
 			nullableString(node.Lease.Owner),
 			node.Lease.Generation,
 			nullableTime(node.Lease.ExpiresAt),
@@ -214,6 +231,7 @@ func insertNodes(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan
 			nullablePayload(node.Error),
 			nullableTimePointer(node.StartedAt),
 			nullableTimePointer(node.CompletedAt),
+			storage.LifecycleVersion1,
 		)
 		if err != nil {
 			return fmt.Errorf("insert node %q for run %q: %w", node.ID, plan.Run.ID, err)
@@ -221,6 +239,15 @@ func insertNodes(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan
 	}
 
 	return nil
+}
+
+func databaseInstant(ctx context.Context, transaction *sql.Tx) (time.Time, error) {
+	var instant time.Time
+	if err := transaction.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&instant); err != nil {
+		return time.Time{}, fmt.Errorf("read database time: %w", err)
+	}
+
+	return instant.UTC(), nil
 }
 
 func insertEdges(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan) error {

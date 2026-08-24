@@ -45,12 +45,17 @@ func (s *Store) createRunOnlyOnce(ctx context.Context, plan *storage.RunPlan) er
 		return fmt.Errorf("begin run-plan transaction: %w", err)
 	}
 
+	var createdAt time.Time
 	if err = requireForeignKeys(ctx, transaction); err == nil {
-		err = insertRun(ctx, transaction, &plan.Run)
+		createdAt, err = databaseInstant(ctx, transaction)
 	}
 
 	if err == nil {
-		err = s.createRunContents(ctx, transaction, plan)
+		err = insertRun(ctx, transaction, &plan.Run, createdAt)
+	}
+
+	if err == nil {
+		err = s.createRunContents(ctx, transaction, plan, createdAt)
 	}
 
 	if err != nil {
@@ -99,34 +104,30 @@ func (s *Store) createRunOnce(
 		return "", false, fmt.Errorf("begin run-plan transaction: %w", err)
 	}
 
-	if err := requireForeignKeys(ctx, transaction); err != nil {
-		if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-			return "", false, fmt.Errorf("validate run-plan transaction: %w", errors.Join(err, rollbackErr))
-		}
+	defer func() { err = rollbackError(transaction, "rollback run-plan transaction", err) }()
 
+	validationErr := requireForeignKeys(ctx, transaction)
+	if validationErr != nil {
+		return "", false, validationErr
+	}
+
+	createdAt, err := databaseInstant(ctx, transaction)
+	if err != nil {
 		return "", false, err
 	}
 
 	created = true
 
-	if insertErr := insertRun(ctx, transaction, &plan.Run); insertErr != nil {
+	if insertErr := insertRun(ctx, transaction, &plan.Run, createdAt); insertErr != nil {
 		runID, insertErr = attachCompatibleRun(ctx, transaction, plan, insertErr)
 		created = false
 
 		if insertErr != nil {
-			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-				return "", false, fmt.Errorf("persist run plan: %w", errors.Join(insertErr, rollbackErr))
-			}
-
 			return "", false, insertErr
 		}
 	} else {
 		runID = plan.Run.ID
-		if createErr := s.createRunContents(ctx, transaction, plan); createErr != nil {
-			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-				return "", false, fmt.Errorf("persist run plan: %w", errors.Join(createErr, rollbackErr))
-			}
-
+		if createErr := s.createRunContents(ctx, transaction, plan, createdAt); createErr != nil {
 			return "", false, createErr
 		}
 	}
@@ -151,9 +152,14 @@ func requireForeignKeys(ctx context.Context, transaction *sql.Tx) error {
 	return nil
 }
 
-func (s *Store) createRunContents(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan) error {
+func (s *Store) createRunContents(
+	ctx context.Context,
+	transaction *sql.Tx,
+	plan *storage.RunPlan,
+	createdAt time.Time,
+) error {
 	for index := range plan.Nodes {
-		if err := insertNode(ctx, transaction, plan.Run.ID, &plan.Nodes[index]); err != nil {
+		if err := insertNode(ctx, transaction, plan.Run.ID, &plan.Nodes[index], createdAt); err != nil {
 			return err
 		}
 	}
@@ -207,7 +213,12 @@ func attachCompatibleRun(
 	return existingID, nil
 }
 
-func insertRun(ctx context.Context, transaction *sql.Tx, run *storage.Run) error {
+func insertRun(
+	ctx context.Context,
+	transaction *sql.Tx,
+	run *storage.Run,
+	createdAt time.Time,
+) error {
 	_, err := transaction.ExecContext(
 		ctx,
 		insertRunStatement,
@@ -219,8 +230,8 @@ func insertRun(ctx context.Context, transaction *sql.Tx, run *storage.Run) error
 		nullPayload(run.Output),
 		run.TerminalNodeID,
 		nullPayload(run.Error),
-		formatTime(run.CreatedAt),
-		formatTime(run.UpdatedAt),
+		formatTime(createdAt),
+		formatTime(createdAt),
 		nullTimePointer(run.CompletedAt),
 		run.MaxAttempts,
 		run.RetryBaseDelay.Nanoseconds(),
@@ -228,6 +239,7 @@ func insertRun(ctx context.Context, transaction *sql.Tx, run *storage.Run) error
 		run.RetryPolicyVersion,
 		nullStringPointer(run.IdempotencyKey),
 		nullStringPointer(run.SubmissionFingerprint),
+		storage.LifecycleVersion1,
 	)
 	if err != nil {
 		return fmt.Errorf("insert run %q: %w", run.ID, err)
@@ -241,6 +253,7 @@ func insertNode(
 	transaction *sql.Tx,
 	runID storage.RunID,
 	node *storage.Node,
+	createdAt time.Time,
 ) error {
 	_, err := transaction.ExecContext(
 		ctx,
@@ -260,6 +273,8 @@ func insertNode(
 		nullPayload(node.Error),
 		nullTimePointer(node.StartedAt),
 		nullTimePointer(node.CompletedAt),
+		storage.LifecycleVersion1,
+		formatTime(createdAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert node %q for run %q: %w", node.ID, runID, err)
@@ -337,4 +352,21 @@ func nullTimePointer(value *time.Time) any {
 
 func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func databaseInstant(ctx context.Context, transaction *sql.Tx) (time.Time, error) {
+	var value string
+	if err := transaction.QueryRowContext(
+		ctx,
+		`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+	).Scan(&value); err != nil {
+		return time.Time{}, fmt.Errorf("read database time: %w", err)
+	}
+
+	instant, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse database time: %w", err)
+	}
+
+	return instant.UTC(), nil
 }

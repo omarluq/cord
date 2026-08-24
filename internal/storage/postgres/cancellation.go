@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 )
@@ -17,6 +18,11 @@ func (s *Store) CancelRun(
 ) (outcome storage.CancellationOutcome, err error) {
 	err = runTransaction(ctx, s.pool, "cancel run", func(transaction *sql.Tx) error {
 		outcome = ""
+
+		transitionedAt, timeErr := databaseInstant(ctx, transaction)
+		if timeErr != nil {
+			return timeErr
+		}
 
 		status, lockErr := lockRunForCancellation(ctx, transaction, runID)
 		if lockErr != nil {
@@ -34,15 +40,21 @@ func (s *Store) CancelRun(
 			return nil
 		}
 
-		if requestErr := requestRunCancellation(ctx, transaction, runID); requestErr != nil {
+		if requestErr := requestRunCancellation(
+			ctx, transaction, runID, transitionedAt,
+		); requestErr != nil {
 			return requestErr
 		}
 
-		if cancelErr := cancelUnfinishedNodes(ctx, transaction, runID); cancelErr != nil {
+		if cancelErr := cancelUnfinishedNodes(
+			ctx, transaction, runID, storage.ReasonCanceledByRequest, transitionedAt,
+		); cancelErr != nil {
 			return cancelErr
 		}
 
-		if finishErr := finishRunCancellation(ctx, transaction, runID); finishErr != nil {
+		if finishErr := finishRunCancellation(
+			ctx, transaction, runID, transitionedAt,
+		); finishErr != nil {
 			return finishErr
 		}
 
@@ -94,13 +106,19 @@ func lockRunForCancellation(
 	return status, nil
 }
 
-func requestRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
+func requestRunCancellation(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+	transitionedAt time.Time,
+) error {
 	const query = `UPDATE cord_runs
-		SET status = $1, updated_at = clock_timestamp()
+		SET status = $1, updated_at = $5
 		WHERE id = $2 AND status IN ($3, $4)`
 
 	result, err := transaction.ExecContext(
 		ctx, query, storage.RunCanceling, runID, storage.RunRunning, storage.RunCanceling,
+		transitionedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("request cancellation for run %q: %w", runID, err)
@@ -109,15 +127,28 @@ func requestRunCancellation(ctx context.Context, transaction *sql.Tx, runID stor
 	return requireOneAffected(result, "run cancellation request")
 }
 
-func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
+func finishRunCancellation(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+	transitionedAt time.Time,
+) error {
 	const query = `UPDATE cord_runs
 		SET status = $1,
-			updated_at = clock_timestamp(),
-			completed_at = clock_timestamp()
+			updated_at = $4,
+			completed_at = $4,
+			terminal_reason = CASE
+				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $5 ELSE terminal_reason
+			END,
+			terminal_runner_id = CASE
+				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN NULL ELSE terminal_runner_id
+			END,
+		lifecycle_version = COALESCE(lifecycle_version, 1)
 		WHERE id = $2 AND status = $3`
 
 	result, err := transaction.ExecContext(
 		ctx, query, storage.RunCanceled, runID, storage.RunCanceling,
+		transitionedAt, storage.ReasonCanceledByRequest,
 	)
 	if err != nil {
 		return fmt.Errorf("finish cancellation for run %q: %w", runID, err)

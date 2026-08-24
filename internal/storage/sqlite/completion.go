@@ -70,16 +70,28 @@ func (s *Store) CompleteNode(
 ) (bool, error) {
 	return s.fencedTerminalTransition(
 		ctx, lease.Remaining, func(attemptCtx context.Context, transaction *sql.Tx) error {
+			transitionedAt, err := databaseInstant(attemptCtx, transaction)
+			if err != nil {
+				return err
+			}
+
+			instant := formatTime(transitionedAt)
+
 			result, err := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET status = ?, output_payload = ?, error_payload = NULL,
-				lease_owner = NULL, lease_expires_at = NULL,
-				completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				lease_owner = NULL, lease_expires_at = NULL, completed_at = ?,
+				state_changed_at = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
+				terminal_reason = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
+			lifecycle_version = COALESCE(lifecycle_version, 1)
 			WHERE run_id = ? AND node_id = ? AND status = ?
 				AND lease_owner = ? AND lease_generation = ?
 				AND julianday(lease_expires_at) > julianday('now')
 				AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`,
-				storage.NodeCompleted, nullPayload(output), runID, nodeID, storage.NodeRunning,
-				lease.Owner, lease.Generation, runID, storage.RunRunning)
+				storage.NodeCompleted, nullPayload(output), instant, instant, storage.ReasonSucceeded,
+				runID, nodeID, storage.NodeRunning, lease.Owner, lease.Generation,
+				runID, storage.RunRunning)
 			if err != nil {
 				return fmt.Errorf("complete node %q for run %q: %w", nodeID, runID, err)
 			}
@@ -96,22 +108,30 @@ func (s *Store) CompleteNode(
 			_, err = transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET remaining_deps = remaining_deps - 1,
 				status = CASE WHEN remaining_deps = 1 THEN ? ELSE status END,
-				available_at = CASE WHEN remaining_deps = 1
-					THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE available_at END
+				available_at = CASE WHEN remaining_deps = 1 THEN ? ELSE available_at END,
+				state_changed_at = CASE WHEN remaining_deps = 1
+					AND (lifecycle_version IS NULL OR lifecycle_version = 1)
+					THEN ? ELSE state_changed_at END,
+				lifecycle_version = COALESCE(lifecycle_version, 1)
 			WHERE run_id = ? AND status = ? AND remaining_deps > 0
 				AND node_id IN (SELECT child_node_id FROM cord_edges
 					WHERE run_id = ? AND parent_node_id = ?)`,
-				storage.NodeReady, runID, storage.NodePending, runID, nodeID)
+				storage.NodeReady, instant, instant, runID, storage.NodePending, runID, nodeID)
 			if err != nil {
 				return fmt.Errorf("release children of node %q for run %q: %w", nodeID, runID, err)
 			}
 
 			_, err = transaction.ExecContext(attemptCtx, `UPDATE cord_runs
 			SET status = ?, output_payload = ?, error_payload = NULL,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-				completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = ?, completed_at = ?,
+				terminal_reason = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
+				terminal_runner_id = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_runner_id END,
+			lifecycle_version = COALESCE(lifecycle_version, 1)
 			WHERE id = ? AND status = ? AND terminal_node_id = ?`,
-				storage.RunCompleted, nullPayload(output), runID, storage.RunRunning, nodeID)
+				storage.RunCompleted, nullPayload(output), instant, instant,
+				storage.ReasonSucceeded, lease.Owner, runID, storage.RunRunning, nodeID)
 			if err != nil {
 				return fmt.Errorf("complete run %q: %w", runID, err)
 			}

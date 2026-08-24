@@ -121,6 +121,10 @@ func Run(t *testing.T, harness Harness) {
 		name string
 	}{
 		{name: "create and result", run: runCreateAndResult},
+		{name: "inspection snapshots", run: runInspectionSnapshots},
+		{name: "inspection is read-only", run: runInspectionIsReadOnly},
+		{name: "node pagination", run: runNodePagination},
+		{name: "node pagination validation", run: runNodePaginationValidation},
 		{name: "idempotent create or attach", run: runIdempotentCreateOrAttach},
 		{name: "idempotent create conflict", run: runIdempotentCreateConflict},
 		{name: "concurrent idempotent create", run: runConcurrentIdempotentCreate},
@@ -128,9 +132,14 @@ func Run(t *testing.T, harness Harness) {
 		{name: "invalid run plans", run: runInvalidRunPlans},
 		{name: "join order and dependency release", run: runJoinOrder},
 		{name: "claim uniqueness and completion fence", run: runClaimAndCompletionFence},
+		{name: "concurrent claim winner metadata", run: runConcurrentClaimWinnerMetadata},
+		{name: "completion cancellation race", run: runCompletionCancellationRace},
+		{name: "failure cancellation race", run: runFailureCancellationRace},
+		{name: "terminal lifecycle absorption", run: runTerminalLifecycleAbsorption},
 		{name: "retry and promotion", run: runRetryAndPromotion},
 		{name: "failure", run: runFailure},
 		{name: "heartbeat and recovery", run: runHeartbeatAndRecovery},
+		{name: "stale heartbeat metadata fence", run: runStaleHeartbeatMetadataFence},
 		{name: "final attempt lease expiry", run: runFinalAttemptLeaseExpiry},
 		{name: "concurrent final attempt recovery", run: runConcurrentFinalAttemptRecovery},
 		{name: "restart and resume", run: runRestartAndResume},
@@ -349,7 +358,10 @@ func runFailure(t *testing.T, harness Harness) {
 	claim := mustClaim(t, store, "worker")
 	failure := []byte(`{"message":"permanent"}`)
 
-	accepted, err := store.FailNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, failure)
+	accepted, err := store.FailNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, failure,
+		storage.ReasonFailureNonRetryable,
+	)
 	requireAccepted(t, "fail node", accepted, err)
 
 	result, err := store.GetRunResult(t.Context(), claim.RunID)
@@ -795,10 +807,11 @@ func singleNodePlan(runID storage.RunID, name string) storage.RunPlan {
 	return storage.RunPlan{
 		Edges: nil,
 		Run: storage.Run{
-			CompletedAt: nil, Output: nil, Error: nil,
+			CreatedAt: now, UpdatedAt: now, CompletedAt: nil, StartedAt: nil,
+			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
 			ID: runID, WorkflowName: name, DefinitionHash: "definition",
 			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: conformanceNodeID,
-			Status: storage.RunRunning, Input: []byte(`"input"`), CreatedAt: now, UpdatedAt: now,
+			Status: storage.RunRunning, Input: []byte(`"input"`), Output: nil, Error: nil,
 			MaxAttempts: maxAttempts, RetryBaseDelay: time.Millisecond,
 			RetryMaxDelay: time.Second, RetryPolicyVersion: 1,
 		},
@@ -836,8 +849,11 @@ func conformanceNode(
 	remainingDependencies int,
 ) storage.Node {
 	return storage.Node{
-		CompletedAt: nil, StartedAt: nil, Lease: storage.Lease{}, Error: nil, Output: nil,
-		RunID: runID, ID: identifier, FunctionKey: functionKey, SignatureHash: signature,
-		Status: status, AvailableAt: availableAt, RemainingDeps: remainingDependencies, Attempt: 0,
+		AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil,
+		StateChangedAt: nil, LastStartedAt: nil, LifecycleVersion: nil,
+		LastRunnerID: nil, TerminalReason: nil,
+		FunctionKey: functionKey, RunID: runID, ID: identifier, SignatureHash: signature,
+		Status: status, Error: nil, Output: nil, Lease: storage.Lease{},
+		RemainingDeps: remainingDependencies, Attempt: 0,
 	}
 }

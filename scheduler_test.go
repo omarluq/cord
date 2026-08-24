@@ -124,6 +124,19 @@ func TestScheduler_PermanentErrorSkipsRetries(t *testing.T) {
 	_, err := runtime.From("test-workflow", failsPermanently).Run(t.Context(), 4)
 	require.EqualError(t, err, "marked failure: step failed")
 	assertNodeAttempt(t, database, 1)
+	assertTerminalReasons(t, database, "failure_non_retryable")
+}
+
+func TestScheduler_ExhaustedFailureRecordsReason(t *testing.T) {
+	t.Parallel()
+
+	database, runtime := newRuntime(t, cord.Options{
+		MaxAttempts: 1, RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Millisecond,
+	})
+
+	_, err := runtime.From("test-workflow", alwaysFails).Run(t.Context(), 4)
+	require.EqualError(t, err, "still failing")
+	assertTerminalReasons(t, database, "failure_attempts_exhausted")
 }
 
 func TestScheduler_RetrySurvivesRuntimeRestart(t *testing.T) {
@@ -302,4 +315,16 @@ func assertNodeAttempt(t *testing.T, database *sql.DB, expected int) {
 	require.NoError(t, database.QueryRowContext(t.Context(),
 		"SELECT attempt FROM cord_nodes ORDER BY node_id LIMIT 1").Scan(&attempt))
 	assert.Equal(t, expected, attempt)
+}
+
+func assertTerminalReasons(t *testing.T, database *sql.DB, expected string) {
+	t.Helper()
+
+	var runReason, nodeReason string
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		"SELECT terminal_reason FROM cord_runs").Scan(&runReason))
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		"SELECT terminal_reason FROM cord_nodes").Scan(&nodeReason))
+	assert.Equal(t, expected, runReason)
+	assert.Equal(t, expected, nodeReason)
 }

@@ -83,10 +83,11 @@ const (
 
 type rejectedTransitionBackend struct {
 	storage.Backend
-	resultErr     error
-	transitionErr error
-	transition    string
-	result        storage.RunResult
+	resultErr      error
+	transitionErr  error
+	transition     string
+	terminalReason storage.TerminalReason
+	result         storage.RunResult
 }
 
 func (backend *rejectedTransitionBackend) CompleteNode(
@@ -102,13 +103,15 @@ func (backend *rejectedTransitionBackend) CompleteNode(
 }
 
 func (backend *rejectedTransitionBackend) FailNode(
-	context.Context,
-	storage.RunID,
-	storage.NodeID,
-	storage.Lease,
-	storage.EncodedPayload,
+	_ context.Context,
+	_ storage.RunID,
+	_ storage.NodeID,
+	_ storage.Lease,
+	_ storage.EncodedPayload,
+	reason storage.TerminalReason,
 ) (bool, error) {
 	backend.transition = failTransition
+	backend.terminalReason = reason
 
 	return false, backend.transitionErr
 }
@@ -131,6 +134,52 @@ func (backend *rejectedTransitionBackend) GetRunResult(
 	storage.RunID,
 ) (storage.RunResult, error) {
 	return backend.result, backend.resultErr
+}
+
+func TestCord_TerminalFailureReason(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		err        error
+		name       string
+		wantReason storage.TerminalReason
+		attempt    int
+	}{
+		{
+			name: "permanent before final attempt", err: Permanent(errors.New("permanent")), attempt: 1,
+			wantReason: storage.ReasonFailureNonRetryable,
+		},
+		{
+			name: "retryable final attempt", err: errors.New("exhausted"), attempt: 3,
+			wantReason: storage.ReasonFailureAttemptsExhausted,
+		},
+		{
+			name: "permanent final attempt", err: Permanent(errors.New("permanent and exhausted")), attempt: 3,
+			wantReason: storage.ReasonFailureNonRetryable,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &rejectedTransitionBackend{result: storage.RunResult{
+				WorkflowName: "", DefinitionHash: "", TerminalSignatureHash: "",
+				Status: storage.RunFailed, Output: nil, Error: nil,
+				MaxAttempts: 0, RetryBaseDelay: 0, RetryMaxDelay: 0, RetryPolicyVersion: 0,
+			}}
+			runtime := &Cord{store: backend}
+			claim := &storage.Claim{
+				RunID: raceRunID, NodeID: raceNodeID, FunctionKey: "", SignatureHash: "",
+				Lease: storage.Lease{}, Attempt: testCase.attempt, MaxAttempts: 3,
+				RetryBaseDelay: time.Second, RetryMaxDelay: time.Second, RetryPolicyVersion: 0,
+			}
+
+			require.Error(t, runtime.handleFailure(t.Context(), claim, testCase.err))
+			require.Equal(t, failTransition, backend.transition)
+			require.Equal(t, testCase.wantReason, backend.terminalReason)
+		})
+	}
 }
 
 func (backend heartbeatTestBackend) HeartbeatNode(
@@ -1127,7 +1176,8 @@ func TestWorkflowPersistRunWakesSchedulerAfterAttach(t *testing.T) {
 	plan := &storage.RunPlan{
 		Nodes: nil, Edges: nil,
 		Run: storage.Run{
-			CreatedAt: time.Time{}, UpdatedAt: time.Time{}, CompletedAt: nil,
+			CreatedAt: time.Time{}, UpdatedAt: time.Time{}, CompletedAt: nil, StartedAt: nil,
+			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
 			ID: "attached-run", WorkflowName: "", DefinitionHash: "",
 			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: "",
 			Status: "", Input: nil, Output: nil, Error: nil,
