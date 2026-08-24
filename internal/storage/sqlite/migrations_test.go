@@ -300,20 +300,43 @@ func TestMigrateV5PreservesRowsFromEveryPriorSchema(t *testing.T) {
 
 type priorSchemaLifecycleState struct {
 	runStatus  storage.RunStatus
+	runReason  storage.TerminalReason
 	nodeStatus storage.NodeStatus
+	nodeReason storage.TerminalReason
 }
 
 func priorSchemaLifecycleStates() []priorSchemaLifecycleState {
+	reasons := struct {
+		succeeded, canceledByRequest, canceledByRunFailure, legacyUnknown storage.TerminalReason
+	}{
+		succeeded:            "succeeded",
+		canceledByRequest:    "canceled_by_request",
+		canceledByRunFailure: "canceled_by_run_failure",
+		legacyUnknown:        "legacy_unknown",
+	}
+
 	return []priorSchemaLifecycleState{
-		{runStatus: storage.RunRunning, nodeStatus: storage.NodePending},
-		{runStatus: storage.RunRunning, nodeStatus: storage.NodeReady},
-		{runStatus: storage.RunRunning, nodeStatus: storage.NodeRunning},
-		{runStatus: storage.RunRunning, nodeStatus: storage.NodeRetryWait},
-		{runStatus: storage.RunCanceling, nodeStatus: storage.NodeRunning},
-		{runStatus: storage.RunCompleted, nodeStatus: storage.NodeCompleted},
-		{runStatus: storage.RunFailed, nodeStatus: storage.NodeFailed},
-		{runStatus: storage.RunFailed, nodeStatus: storage.NodeCanceled},
-		{runStatus: storage.RunCanceled, nodeStatus: storage.NodeCanceled},
+		{runStatus: storage.RunRunning, runReason: "", nodeStatus: storage.NodePending, nodeReason: ""},
+		{runStatus: storage.RunRunning, runReason: "", nodeStatus: storage.NodeReady, nodeReason: ""},
+		{runStatus: storage.RunRunning, runReason: "", nodeStatus: storage.NodeRunning, nodeReason: ""},
+		{runStatus: storage.RunRunning, runReason: "", nodeStatus: storage.NodeRetryWait, nodeReason: ""},
+		{runStatus: storage.RunCanceling, runReason: "", nodeStatus: storage.NodeRunning, nodeReason: ""},
+		{
+			runStatus: storage.RunCompleted, runReason: reasons.succeeded,
+			nodeStatus: storage.NodeCompleted, nodeReason: reasons.succeeded,
+		},
+		{
+			runStatus: storage.RunFailed, runReason: reasons.legacyUnknown,
+			nodeStatus: storage.NodeFailed, nodeReason: reasons.legacyUnknown,
+		},
+		{
+			runStatus: storage.RunFailed, runReason: reasons.legacyUnknown,
+			nodeStatus: storage.NodeCanceled, nodeReason: reasons.canceledByRunFailure,
+		},
+		{
+			runStatus: storage.RunCanceled, runReason: reasons.canceledByRequest,
+			nodeStatus: storage.NodeCanceled, nodeReason: reasons.legacyUnknown,
+		},
 	}
 }
 
@@ -342,24 +365,12 @@ func testMigrateV5PreservesPriorRow(t *testing.T, version int64, state priorSche
 	report, err := store.InspectRun(t.Context(), "legacy-run")
 	require.NoError(t, err)
 	assert.Equal(t, state.runStatus, report.State)
-	assert.Equal(t, legacyRunReason(state.runStatus), report.Reason)
+	assert.Equal(t, state.runReason, report.Reason)
 	page, err := store.ListRunNodes(t.Context(), "legacy-run", storage.NodeQuery{})
 	require.NoError(t, err)
 	require.Len(t, page.Nodes, 1)
 	assert.Equal(t, state.nodeStatus, page.Nodes[0].State)
-	assert.Equal(t, legacyNodeReason(state), page.Nodes[0].Reason)
-}
-
-func legacyRunReason(status storage.RunStatus) storage.TerminalReason {
-	reason, _ := status.LegacyReason()
-
-	return reason
-}
-
-func legacyNodeReason(state priorSchemaLifecycleState) storage.TerminalReason {
-	reason, _ := state.nodeStatus.LegacyReason(state.runStatus)
-
-	return reason
+	assert.Equal(t, state.nodeReason, page.Nodes[0].Reason)
 }
 
 func insertPriorSchemaRow(t *testing.T, database *sql.DB, state priorSchemaLifecycleState) {

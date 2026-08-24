@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestSQLiteQueryPlans_TimestampPredicates verifies timestamp predicates use the expected indexes.
 func TestSQLiteQueryPlans_TimestampPredicates(t *testing.T) {
 	t.Parallel()
 
@@ -54,6 +55,7 @@ func TestSQLiteQueryPlans_TimestampPredicates(t *testing.T) {
 	}
 }
 
+// TestSQLiteQueryPlans_NodeInspectionPages verifies node inspection pages use keyset indexes.
 func TestSQLiteQueryPlans_NodeInspectionPages(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +105,7 @@ func TestSQLiteQueryPlans_NodeInspectionPages(t *testing.T) {
 	}
 }
 
+// TestSQLiteQueryPlan_RunInspectionCounts verifies run inspection counts use run and status indexes.
 func TestSQLiteQueryPlan_RunInspectionCounts(t *testing.T) {
 	t.Parallel()
 
@@ -134,6 +137,7 @@ func TestSQLiteQueryPlan_RunInspectionCounts(t *testing.T) {
 	assert.NotContains(t, details, "USE TEMP B-TREE")
 }
 
+// TestSQLiteQueryPlan_OrderedParentInputs verifies ordered parent inputs avoid a temporary sort.
 func TestSQLiteQueryPlan_OrderedParentInputs(t *testing.T) {
 	t.Parallel()
 
@@ -183,6 +187,7 @@ func explainQueryPlan(t *testing.T, database *sql.DB, query string) []string {
 	return details
 }
 
+// BenchmarkStore_CreateRun measures run creation across plan sizes and index configurations.
 func BenchmarkStore_CreateRun(b *testing.B) {
 	for _, nodeCount := range []int{1, 10, 100, 1000} {
 		b.Run(fmt.Sprintf("nodes=%d", nodeCount), func(b *testing.B) {
@@ -247,6 +252,7 @@ func benchmarkDatabaseBytes(b *testing.B, database *sql.DB) int64 {
 	return (pageCount - freePages) * pageSize
 }
 
+// BenchmarkStore_PollingAndMaintenance measures idle polling and maintenance operations.
 func BenchmarkStore_PollingAndMaintenance(b *testing.B) {
 	benchmarks := []struct {
 		run  func(*cordsqlite.Store) error
@@ -301,6 +307,7 @@ func BenchmarkStore_PollingAndMaintenance(b *testing.B) {
 	}
 }
 
+// BenchmarkStore_RegisteredEmptyClaim measures empty claims across registration counts.
 func BenchmarkStore_RegisteredEmptyClaim(b *testing.B) {
 	for _, registrationCount := range []int{1, 10, 1000} {
 		b.Run(fmt.Sprintf("registrations=%d", registrationCount), func(b *testing.B) {
@@ -332,6 +339,7 @@ func BenchmarkStore_RegisteredEmptyClaim(b *testing.B) {
 	}
 }
 
+// BenchmarkStore_ClaimAndTransitions measures claiming and common node transitions.
 func BenchmarkStore_ClaimAndTransitions(b *testing.B) {
 	benchmarks := []struct {
 		run          func(*testing.B, *cordsqlite.Store, *storage.Claim) error
@@ -422,6 +430,7 @@ func heartbeatBenchmarkTransition(b *testing.B, store *cordsqlite.Store, claim *
 	return nil
 }
 
+// BenchmarkStore_LoadNodeInputs measures loading root and ordered child inputs.
 func BenchmarkStore_LoadNodeInputs(b *testing.B) {
 	b.Run("root", func(b *testing.B) { benchmarkLoadNodeInputs(b, 1) })
 	b.Run("child", func(b *testing.B) { benchmarkLoadNodeInputs(b, 2) })
@@ -500,6 +509,7 @@ func completeBenchmarkRoot(b *testing.B, store *cordsqlite.Store) {
 	}
 }
 
+// BenchmarkStore_GetRunResult measures polling for a run result.
 func BenchmarkStore_GetRunResult(b *testing.B) {
 	store := newBenchmarkStore(b)
 
@@ -518,6 +528,7 @@ func BenchmarkStore_GetRunResult(b *testing.B) {
 	}
 }
 
+// BenchmarkStore_InspectRun measures run inspection across plan sizes.
 func BenchmarkStore_InspectRun(b *testing.B) {
 	for _, nodeCount := range []int{1, 100, 1000} {
 		b.Run(fmt.Sprintf("nodes=%d", nodeCount), func(b *testing.B) {
@@ -540,6 +551,7 @@ func BenchmarkStore_InspectRun(b *testing.B) {
 	}
 }
 
+// BenchmarkStore_ListRunNodes measures paginated node inspection.
 func BenchmarkStore_ListRunNodes(b *testing.B) {
 	for _, pageSize := range []int{1, 50, 200} {
 		b.Run(fmt.Sprintf("first-page/size=%d", pageSize), func(b *testing.B) {

@@ -16,6 +16,7 @@ type reasonProperties struct {
 	reasonKnown bool
 }
 
+// FuzzPersistedLifecycleVocabulary verifies persisted lifecycle values remain internally consistent.
 func FuzzPersistedLifecycleVocabulary(f *testing.F) {
 	seeds := []string{
 		"",
