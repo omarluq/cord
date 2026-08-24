@@ -99,7 +99,9 @@ func (s *Store) ClaimReadyNodeForFunctions(
 			SET started_at = COALESCE(started_at,
 				(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = $1)),
 				lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE id = $1 AND (lifecycle_version IS NULL OR lifecycle_version = 1)`, claim.RunID)
+			WHERE id = $1
+				AND (started_at IS NULL OR lifecycle_version IS NULL)
+				AND (lifecycle_version IS NULL OR lifecycle_version = 1)`, claim.RunID)
 		if valuesErr != nil {
 			return fmt.Errorf("record run start: %w", valuesErr)
 		}
