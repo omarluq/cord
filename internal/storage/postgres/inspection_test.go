@@ -174,17 +174,7 @@ func TestPostgresInspectionLegacyRunningNode(t *testing.T) {
 func TestPostgresInspectionUsesRunScopedCountPlan(t *testing.T) {
 	t.Parallel()
 
-	database := openInspectionPostgres(t)
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	insertInspectionRun(t, database, &inspectionRun{
-		runID: "plan", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil, version: 1,
-	})
-
-	for index := range 20 {
-		insertInspectionNode(t, database, "plan", fmt.Sprintf("node-%03d", index), storage.NodeReady, 1, now)
-	}
-
-	analyzeInspectionTables(t, database)
+	database := prepareInspectionPlanDatabase(t)
 
 	const explain = `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT
 		r.id, r.workflow_name, r.status, r.lifecycle_version, r.terminal_reason,
@@ -217,17 +207,7 @@ func TestPostgresInspectionUsesRunScopedCountPlan(t *testing.T) {
 func TestPostgresNodePageUsesPrimaryKeyKeysetPlan(t *testing.T) {
 	t.Parallel()
 
-	database := openInspectionPostgres(t)
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	insertInspectionRun(t, database, &inspectionRun{
-		runID: "plan", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil, version: 1,
-	})
-
-	for index := range 20 {
-		insertInspectionNode(t, database, "plan", fmt.Sprintf("node-%03d", index), storage.NodeReady, 1, now)
-	}
-
-	analyzeInspectionTables(t, database)
+	database := prepareInspectionPlanDatabase(t)
 
 	const explain = `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT
 		n.run_id, n.node_id, n.function_key, n.status, n.lifecycle_version, n.terminal_reason,
@@ -292,6 +272,24 @@ func explainPostgres(t *testing.T, database *sql.DB, statement string, arguments
 	require.NoError(t, rows.Err())
 
 	return plan.String()
+}
+
+func prepareInspectionPlanDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+
+	database := openInspectionPostgres(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	insertInspectionRun(t, database, &inspectionRun{
+		runID: "plan", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil, version: 1,
+	})
+
+	for index := range 20 {
+		insertInspectionNode(t, database, "plan", fmt.Sprintf("node-%03d", index), storage.NodeReady, 1, now)
+	}
+
+	analyzeInspectionTables(t, database)
+
+	return database
 }
 
 func analyzeInspectionTables(t *testing.T, database *sql.DB) {
