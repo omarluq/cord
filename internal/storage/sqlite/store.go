@@ -27,32 +27,33 @@ func New(database *sql.DB) (*Store, error) {
 	return &Store{database: database}, nil
 }
 
-// CreateRun atomically persists a complete run plan.
+// CreateRun atomically persists a complete run plan. It deliberately retains
+// duplicate-insert behavior instead of attaching by idempotency identity.
 func (s *Store) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
-	if err := storage.ValidateRunPlan(plan); err != nil {
-		return fmt.Errorf("create run: %w", err)
+	if validationErr := storage.ValidateRunPlan(plan); validationErr != nil {
+		return fmt.Errorf("create run: %w", validationErr)
 	}
 
 	return retryContention(ctx, "retry run plan", func(attemptCtx context.Context) error {
-		return s.createRunOnce(attemptCtx, plan)
+		return s.createRunOnlyOnce(attemptCtx, plan)
 	})
 }
 
-func (s *Store) createRunOnce(ctx context.Context, plan *storage.RunPlan) error {
+func (s *Store) createRunOnlyOnce(ctx context.Context, plan *storage.RunPlan) error {
 	transaction, err := s.database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin run-plan transaction: %w", err)
 	}
 
-	if err := requireForeignKeys(ctx, transaction); err != nil {
-		if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-			return fmt.Errorf("validate run-plan transaction: %w", errors.Join(err, rollbackErr))
-		}
-
-		return err
+	if err = requireForeignKeys(ctx, transaction); err == nil {
+		err = insertRun(ctx, transaction, &plan.Run)
 	}
 
-	if err := s.createRun(ctx, transaction, plan); err != nil {
+	if err == nil {
+		err = s.createRunContents(ctx, transaction, plan)
+	}
+
+	if err != nil {
 		if rollbackErr := transaction.Rollback(); rollbackErr != nil {
 			return fmt.Errorf("persist run plan: %w", errors.Join(err, rollbackErr))
 		}
@@ -60,11 +61,81 @@ func (s *Store) createRunOnce(ctx context.Context, plan *storage.RunPlan) error 
 		return err
 	}
 
-	if err := transaction.Commit(); err != nil {
+	if err = transaction.Commit(); err != nil {
 		return fmt.Errorf("commit run plan: %w", err)
 	}
 
 	return nil
+}
+
+// CreateOrAttachRun atomically persists a complete run plan or attaches to the
+// retained compatible run selected by its idempotency key.
+func (s *Store) CreateOrAttachRun(
+	ctx context.Context,
+	plan *storage.RunPlan,
+) (runID storage.RunID, created bool, err error) {
+	if validationErr := storage.ValidateRunPlan(plan); validationErr != nil {
+		return "", false, fmt.Errorf("create run: %w", validationErr)
+	}
+
+	err = retryContention(ctx, "retry run plan", func(attemptCtx context.Context) error {
+		runID, created, err = s.createRunOnce(attemptCtx, plan)
+
+		return err
+	})
+	if err != nil {
+		return "", false, err
+	}
+
+	return runID, created, nil
+}
+
+func (s *Store) createRunOnce(
+	ctx context.Context,
+	plan *storage.RunPlan,
+) (runID storage.RunID, created bool, err error) {
+	transaction, err := s.database.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("begin run-plan transaction: %w", err)
+	}
+
+	if err := requireForeignKeys(ctx, transaction); err != nil {
+		if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+			return "", false, fmt.Errorf("validate run-plan transaction: %w", errors.Join(err, rollbackErr))
+		}
+
+		return "", false, err
+	}
+
+	created = true
+
+	if insertErr := insertRun(ctx, transaction, &plan.Run); insertErr != nil {
+		runID, insertErr = attachCompatibleRun(ctx, transaction, plan, insertErr)
+		created = false
+
+		if insertErr != nil {
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				return "", false, fmt.Errorf("persist run plan: %w", errors.Join(insertErr, rollbackErr))
+			}
+
+			return "", false, insertErr
+		}
+	} else {
+		runID = plan.Run.ID
+		if createErr := s.createRunContents(ctx, transaction, plan); createErr != nil {
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				return "", false, fmt.Errorf("persist run plan: %w", errors.Join(createErr, rollbackErr))
+			}
+
+			return "", false, createErr
+		}
+	}
+
+	if err := transaction.Commit(); err != nil {
+		return "", false, fmt.Errorf("commit run plan: %w", err)
+	}
+
+	return runID, created, nil
 }
 
 func requireForeignKeys(ctx context.Context, transaction *sql.Tx) error {
@@ -80,11 +151,7 @@ func requireForeignKeys(ctx context.Context, transaction *sql.Tx) error {
 	return nil
 }
 
-func (s *Store) createRun(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan) error {
-	if err := insertRun(ctx, transaction, &plan.Run); err != nil {
-		return err
-	}
-
+func (s *Store) createRunContents(ctx context.Context, transaction *sql.Tx, plan *storage.RunPlan) error {
 	for index := range plan.Nodes {
 		if err := insertNode(ctx, transaction, plan.Run.ID, &plan.Nodes[index]); err != nil {
 			return err
@@ -98,6 +165,46 @@ func (s *Store) createRun(ctx context.Context, transaction *sql.Tx, plan *storag
 	}
 
 	return nil
+}
+
+func attachCompatibleRun(
+	ctx context.Context,
+	transaction *sql.Tx,
+	plan *storage.RunPlan,
+	insertErr error,
+) (storage.RunID, error) {
+	if plan.Run.IdempotencyKey == nil {
+		return "", insertErr
+	}
+
+	var (
+		existingID            storage.RunID
+		definitionHash        string
+		submissionFingerprint sql.NullString
+	)
+
+	err := transaction.QueryRowContext(ctx, `SELECT id, definition_hash, submission_fingerprint
+		FROM cord_runs WHERE workflow_name = ? AND idempotency_key = ?`,
+		plan.Run.WorkflowName, *plan.Run.IdempotencyKey,
+	).Scan(&existingID, &definitionHash, &submissionFingerprint)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", insertErr
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("inspect idempotent run attachment: %w", err)
+	}
+
+	if definitionHash != plan.Run.DefinitionHash || !submissionFingerprint.Valid ||
+		plan.Run.SubmissionFingerprint == nil || submissionFingerprint.String != *plan.Run.SubmissionFingerprint {
+		return "", fmt.Errorf(
+			"attach run for workflow %q and idempotency key: %w",
+			plan.Run.WorkflowName,
+			storage.ErrRunConflict,
+		)
+	}
+
+	return existingID, nil
 }
 
 func insertRun(ctx context.Context, transaction *sql.Tx, run *storage.Run) error {
@@ -119,6 +226,8 @@ func insertRun(ctx context.Context, transaction *sql.Tx, run *storage.Run) error
 		run.RetryBaseDelay.Nanoseconds(),
 		run.RetryMaxDelay.Nanoseconds(),
 		run.RetryPolicyVersion,
+		nullStringPointer(run.IdempotencyKey),
+		nullStringPointer(run.SubmissionFingerprint),
 	)
 	if err != nil {
 		return fmt.Errorf("insert run %q: %w", run.ID, err)
@@ -192,6 +301,14 @@ func nullPayload(payload storage.EncodedPayload) any {
 	}
 
 	return []byte(payload)
+}
+
+func nullStringPointer(value *string) any {
+	if value == nil {
+		return nil
+	}
+
+	return *value
 }
 
 func nullString(value string) any {

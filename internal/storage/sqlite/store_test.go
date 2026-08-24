@@ -1,6 +1,7 @@
 package sqlite_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -37,7 +38,7 @@ func TestStore_CreateRun(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	plan := validPlan(now, "run-1")
 
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	assertRowCounts(t, database, map[string]int{
 		edgesTable: 1,
@@ -79,7 +80,7 @@ func TestStore_CreateRunParameterizesAllValues(t *testing.T) {
 	plan.Nodes[0].ID = storage.NodeID(injection)
 	plan.Edges[0].Parent = storage.NodeID(injection)
 
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	var workflowName string
 
@@ -103,7 +104,7 @@ func TestStore_CreateRunRejectsDisabledSQLiteForeignKeys(t *testing.T) {
 	database, store := newStore(t, false)
 	plan := validPlan(time.Now().UTC(), "foreign-keys-disabled")
 
-	err := store.CreateRun(t.Context(), &plan)
+	_, _, err := store.CreateOrAttachRun(t.Context(), &plan)
 
 	require.ErrorContains(t, err, "sqlite foreign-key enforcement is disabled")
 	assertRowCounts(t, database, map[string]int{runsTable: 0})
@@ -114,7 +115,7 @@ func TestStore_SQLiteForeignKeysCascadeRunDeletion(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "cascade-run")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	_, err := database.ExecContext(t.Context(), "DELETE FROM cord_runs WHERE id = ?", plan.Run.ID)
 	require.NoError(t, err)
@@ -134,7 +135,7 @@ func TestStore_CreateRunRollsBackIncompletePlan(t *testing.T) {
 	plan.Nodes[1].RemainingDeps = 2
 	plan.Edges = append(plan.Edges, plan.Edges[0])
 
-	require.Error(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRunError(t.Context(), t, store, &plan)
 	assertRowCounts(t, database, map[string]int{
 		edgesTable: 0,
 		nodesTable: 0,
@@ -214,7 +215,7 @@ func TestStore_CreateRunRejectsInvalidPlan(t *testing.T) {
 				plan = &candidate
 			}
 
-			require.Error(t, store.CreateRun(t.Context(), plan))
+			requireCreateRunError(t.Context(), t, store, plan)
 			assert.Equal(t, 0, rowCount(t, database, runsTable))
 		})
 	}
@@ -240,7 +241,7 @@ func TestStore_CreateRunRejectsEmptyRunIDAndDuplicateNodes(t *testing.T) {
 			_, store := newStore(t, true)
 			plan := validPlan(time.Now().UTC(), "structurally-invalid")
 			testCase.mutate(&plan)
-			require.Error(t, store.CreateRun(t.Context(), &plan))
+			requireCreateRunError(t.Context(), t, store, &plan)
 		})
 	}
 }
@@ -286,10 +287,127 @@ func TestStore_CreateRunRejectsCycles(t *testing.T) {
 			plan := validPlan(time.Now().UTC(), "cycle-run")
 			testCase.mutate(&plan)
 
-			require.ErrorContains(t, store.CreateRun(t.Context(), &plan), "cycle")
+			requireCreateRunErrorContains(t.Context(), t, store, &plan, "cycle")
 			assert.Equal(t, 0, rowCount(t, database, runsTable))
 		})
 	}
+}
+
+func TestStore_CreateRunAttachesCompatibleIdempotentSubmission(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStore(t, true)
+	key, fingerprint := "order-42", testSubmissionFingerprint
+	first := validPlan(time.Now().UTC(), "first-run")
+	first.Run.IdempotencyKey = &key
+	first.Run.SubmissionFingerprint = &fingerprint
+
+	runID, created := requireCreateOrAttachRun(t.Context(), t, store, &first)
+	assert.Equal(t, first.Run.ID, runID)
+	assert.True(t, created)
+
+	second := validPlan(time.Now().UTC(), "second-run")
+	second.Run.IdempotencyKey = &key
+	second.Run.SubmissionFingerprint = &fingerprint
+	runID, created = requireCreateOrAttachRun(t.Context(), t, store, &second)
+	assert.Equal(t, first.Run.ID, runID)
+	assert.False(t, created)
+	assert.Equal(t, 1, rowCount(t, database, runsTable))
+
+	var input []byte
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		"SELECT input_payload FROM cord_runs WHERE id = ?", first.Run.ID,
+	).Scan(&input))
+	assert.Equal(t, []byte(first.Run.Input), input)
+}
+
+func TestStore_CreateRunRejectsConflictingIdempotentSubmission(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStore(t, true)
+	key, fingerprint := "order-42", testSubmissionFingerprint
+	first := validPlan(time.Now().UTC(), "first-run")
+	first.Run.IdempotencyKey = &key
+	first.Run.SubmissionFingerprint = &fingerprint
+	requireCreateOrAttachRun(t.Context(), t, store, &first)
+
+	second := validPlan(time.Now().UTC(), "second-run")
+	second.Run.IdempotencyKey = &key
+	otherFingerprint := "submission-v1:different"
+	second.Run.SubmissionFingerprint = &otherFingerprint
+	_, _, err := store.CreateOrAttachRun(t.Context(), &second)
+	require.ErrorIs(t, err, storage.ErrRunConflict)
+	assert.Equal(t, 1, rowCount(t, database, runsTable))
+}
+
+func TestStore_CreateRunConcurrentIdempotentSubmissionsAttach(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "idempotent.db")
+	firstDatabase := openDatabaseAtPath(t, path, true)
+	secondDatabase := openDatabaseAtPath(t, path, true)
+	require.NoError(t, sqlite.Migrate(t.Context(), firstDatabase))
+	firstStore, err := sqlite.New(firstDatabase)
+	require.NoError(t, err)
+	secondStore, err := sqlite.New(secondDatabase)
+	require.NoError(t, err)
+
+	key, fingerprint := "concurrent-key", testSubmissionFingerprint
+
+	plans := []storage.RunPlan{
+		validPlan(time.Now().UTC(), "concurrent-first"),
+		validPlan(time.Now().UTC(), "concurrent-second"),
+	}
+	for index := range plans {
+		plans[index].Run.IdempotencyKey = &key
+		plans[index].Run.SubmissionFingerprint = &fingerprint
+	}
+
+	start := make(chan struct{})
+
+	type result struct {
+		err     error
+		id      storage.RunID
+		created bool
+	}
+
+	results := make(chan result, 2)
+
+	for index, store := range []*sqlite.Store{firstStore, secondStore} {
+		go func() {
+			<-start
+
+			id, created, createErr := store.CreateOrAttachRun(t.Context(), &plans[index])
+			results <- result{id: id, created: created, err: createErr}
+		}()
+	}
+
+	close(start)
+
+	firstResult, secondResult := <-results, <-results
+	require.NoError(t, firstResult.err)
+	require.NoError(t, secondResult.err)
+	assert.Equal(t, firstResult.id, secondResult.id)
+	assert.NotEqual(t, firstResult.created, secondResult.created)
+	assert.Equal(t, 1, rowCount(t, firstDatabase, runsTable))
+}
+
+func TestStore_CreateRunAllowsSameKeyForDifferentWorkflows(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStore(t, true)
+	key, fingerprint := "same-key", testSubmissionFingerprint
+	first := validPlan(time.Now().UTC(), "first-run")
+	first.Run.IdempotencyKey = &key
+	first.Run.SubmissionFingerprint = &fingerprint
+	requireCreateOrAttachRun(t.Context(), t, store, &first)
+
+	second := validPlan(time.Now().UTC(), "second-run")
+	second.Run.WorkflowName = "other-workflow"
+	second.Run.IdempotencyKey = &key
+	second.Run.SubmissionFingerprint = &fingerprint
+	_, created := requireCreateOrAttachRun(t.Context(), t, store, &second)
+	assert.True(t, created)
 }
 
 func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
@@ -297,11 +415,11 @@ func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "duplicate-run")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	duplicate := validPlan(time.Now().UTC(), "duplicate-run")
 	duplicate.Run.WorkflowName = "replacement"
-	require.Error(t, store.CreateRun(t.Context(), &duplicate))
+	requireCreateRunError(t.Context(), t, store, &duplicate)
 
 	var workflowName string
 
@@ -334,28 +452,31 @@ func TestStore_CreateRunDuplicatePreservesOriginal(t *testing.T) {
 }
 
 const (
-	compileNode  storage.NodeID = "compile"
-	terminalNode storage.NodeID = "publish"
+	compileNode               storage.NodeID = "compile"
+	terminalNode              storage.NodeID = "publish"
+	testSubmissionFingerprint                = "submission-v1:abc"
 )
 
 func validPlan(now time.Time, runID storage.RunID) storage.RunPlan {
 	return storage.RunPlan{
 		Run: storage.Run{
-			CreatedAt:          now,
-			UpdatedAt:          now,
-			CompletedAt:        nil,
-			ID:                 runID,
-			WorkflowName:       "build",
-			DefinitionHash:     "definition-hash",
-			TerminalNodeID:     terminalNode,
-			Status:             storage.RunRunning,
-			Input:              storage.EncodedPayload(`{"repository":"cord"}`),
-			Output:             nil,
-			Error:              nil,
-			MaxAttempts:        3,
-			RetryBaseDelay:     500 * time.Millisecond,
-			RetryMaxDelay:      30 * time.Second,
-			RetryPolicyVersion: 1,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+			CompletedAt:           nil,
+			ID:                    runID,
+			WorkflowName:          "build",
+			DefinitionHash:        "definition-hash",
+			TerminalNodeID:        terminalNode,
+			Status:                storage.RunRunning,
+			Input:                 storage.EncodedPayload(`{"repository":"cord"}`),
+			Output:                nil,
+			Error:                 nil,
+			MaxAttempts:           3,
+			RetryBaseDelay:        500 * time.Millisecond,
+			RetryMaxDelay:         30 * time.Second,
+			RetryPolicyVersion:    1,
+			IdempotencyKey:        nil,
+			SubmissionFingerprint: nil,
 		},
 		Nodes: []storage.Node{
 			newNode(
@@ -421,7 +542,13 @@ func newStore(t *testing.T, foreignKeys bool) (*sql.DB, *sqlite.Store) {
 func openDatabase(t *testing.T, foreignKeys bool) *sql.DB {
 	t.Helper()
 
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)", filepath.Join(t.TempDir(), "storage.db"))
+	return openDatabaseAtPath(t, filepath.Join(t.TempDir(), "storage.db"), foreignKeys)
+}
+
+func openDatabaseAtPath(t *testing.T, path string, foreignKeys bool) *sql.DB {
+	t.Helper()
+
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)", path)
 	if foreignKeys {
 		dsn += "&_pragma=foreign_keys(1)"
 	}
@@ -460,4 +587,49 @@ func rowCount(t *testing.T, database *sql.DB, table string) int {
 	require.NoError(t, err)
 
 	return count
+}
+
+func requireCreateRun(
+	ctx context.Context,
+	tb testing.TB,
+	store *sqlite.Store,
+	plan *storage.RunPlan,
+) {
+	tb.Helper()
+	require.NoError(tb, store.CreateRun(ctx, plan))
+}
+
+func requireCreateOrAttachRun(
+	ctx context.Context,
+	tb testing.TB,
+	store *sqlite.Store,
+	plan *storage.RunPlan,
+) (storage.RunID, bool) {
+	tb.Helper()
+
+	runID, created, err := store.CreateOrAttachRun(ctx, plan)
+	require.NoError(tb, err)
+
+	return runID, created
+}
+
+func requireCreateRunError(
+	ctx context.Context,
+	tb testing.TB,
+	store *sqlite.Store,
+	plan *storage.RunPlan,
+) {
+	tb.Helper()
+	require.Error(tb, store.CreateRun(ctx, plan))
+}
+
+func requireCreateRunErrorContains(
+	ctx context.Context,
+	tb testing.TB,
+	store *sqlite.Store,
+	plan *storage.RunPlan,
+	message string,
+) {
+	tb.Helper()
+	require.ErrorContains(tb, store.CreateRun(ctx, plan), message)
 }

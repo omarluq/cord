@@ -15,7 +15,7 @@ func TestStore_ClaimReadyNodeForFunctionsMatchesExactRegistration(t *testing.T) 
 
 	_, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "registered-claim")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	claim, claimed, err := store.ClaimReadyNodeForFunctions(t.Context(), "worker", time.Minute, nil)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestStore_LoadNodeInputsUsesRootThenOrderedParentOutputs(t *testing.T) {
 		{RunID: plan.Run.ID, Parent: compileNode, Child: terminalNode, ParentOrder: 1},
 		{RunID: plan.Run.ID, Parent: "lint", Child: terminalNode, ParentOrder: 0},
 	}
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	inputs, err := store.LoadNodeInputs(t.Context(), plan.Run.ID, plan.Nodes[0].ID)
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestStore_RetryPromotionAndRunResult(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "retry-result")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	accepted, err := store.RetryNode(
@@ -109,6 +109,13 @@ func TestStore_RetryPromotionAndRunResult(t *testing.T) {
 
 	result, err := store.GetRunResult(t.Context(), plan.Run.ID)
 	require.NoError(t, err)
+	assert.Equal(t, plan.Run.WorkflowName, result.WorkflowName)
+	assert.Equal(t, plan.Run.DefinitionHash, result.DefinitionHash)
+	assert.Equal(t, plan.Nodes[1].SignatureHash, result.TerminalSignatureHash)
+	assert.Equal(t, plan.Run.MaxAttempts, result.MaxAttempts)
+	assert.Equal(t, plan.Run.RetryBaseDelay, result.RetryBaseDelay)
+	assert.Equal(t, plan.Run.RetryMaxDelay, result.RetryMaxDelay)
+	assert.Equal(t, plan.Run.RetryPolicyVersion, result.RetryPolicyVersion)
 	assert.Equal(t, storage.RunCompleted, result.Status)
 	assert.JSONEq(t, `"done"`, string(result.Output))
 	assert.Nil(t, result.Error)

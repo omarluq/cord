@@ -14,7 +14,7 @@ func TestStore_RetryNodeRejectsNegativeDelayWithoutMutation(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "negative-retry-delay")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	accepted, err := store.RetryNode(
@@ -51,7 +51,7 @@ func TestStore_RetryNodeRejectsInvalidFencesWithoutMutation(t *testing.T) {
 
 			database, store := newStore(t, true)
 			plan := validPlan(time.Now().UTC(), storage.RunID("retry-rejection-"+testCase.name))
-			require.NoError(t, store.CreateRun(t.Context(), &plan))
+			requireCreateRun(t.Context(), t, store, &plan)
 			claim := claimNode(t, store)
 
 			if testCase.mutate != nil {
@@ -92,7 +92,7 @@ func TestStore_RetryNodePersistsFailureAndClearsLease(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "retry-fence")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 	failure := []byte(`{"message":"retry"}`)
 	accepted, err := store.RetryNode(
@@ -127,7 +127,7 @@ func TestStore_FailNodeRollsBackWhenRunFailureFails(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "failure-rollback")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 	trigger := `CREATE TRIGGER reject_failed_run BEFORE UPDATE OF status ON cord_runs
 		WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'run failure boundary'); END`

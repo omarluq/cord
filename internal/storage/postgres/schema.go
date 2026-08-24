@@ -12,7 +12,8 @@ import (
 
 const (
 	initialVersion     = int64(1)
-	requiredVersion    = int64(2)
+	parentOrderVersion = int64(2)
+	requiredVersion    = int64(3)
 	schemaVersionTable = "cord_schema_migrations"
 	migrationLockKey   = int64(0x636f7264) // "cord"
 )
@@ -20,7 +21,8 @@ const (
 func migrations() []*goose.Migration {
 	return []*goose.Migration{
 		goose.NewGoMigration(initialVersion, &goose.GoFunc{RunTx: migrateV1}, nil),
-		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateV2}, nil),
+		goose.NewGoMigration(parentOrderVersion, &goose.GoFunc{RunTx: migrateV2}, nil),
+		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateV3}, nil),
 	}
 }
 
@@ -96,6 +98,27 @@ func migrateV2(ctx context.Context, transaction *sql.Tx) error {
 		ON cord_edges(run_id, child_node_id, parent_order)`
 	if _, err := transaction.ExecContext(ctx, statement); err != nil {
 		return fmt.Errorf("create parent-output lookup index: %w", err)
+	}
+
+	return nil
+}
+
+func migrateV3(ctx context.Context, transaction *sql.Tx) error {
+	// Adding nullable columns without defaults is a metadata-only operation on
+	// supported PostgreSQL versions and preserves all pre-v3 run rows. Goose's
+	// transactional Go migration pattern precludes CREATE INDEX CONCURRENTLY;
+	// create the unique index only after both inexpensive column additions.
+	statements := []string{
+		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
+		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS submission_fingerprint TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS cord_runs_workflow_name_idempotency_key_idx
+			ON cord_runs(workflow_name, idempotency_key)`,
+	}
+
+	for _, statement := range statements {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add idempotent submission schema: %w", err)
+		}
 	}
 
 	return nil

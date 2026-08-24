@@ -103,6 +103,12 @@ const (
 	joinDependencies                  = 2
 	workerA                           = "worker-a"
 	workerB                           = "worker-b"
+	completedNodeName                 = "completed"
+	runningNodeName                   = "running"
+	readyNodeName                     = "ready"
+	retryingNodeName                  = "retrying"
+	pendingNodeName                   = "pending"
+	terminalNodeName                  = "terminal"
 )
 
 // Run executes Cord's backend-neutral behavioral storage conformance suite.
@@ -115,6 +121,10 @@ func Run(t *testing.T, harness Harness) {
 		name string
 	}{
 		{name: "create and result", run: runCreateAndResult},
+		{name: "idempotent create or attach", run: runIdempotentCreateOrAttach},
+		{name: "idempotent create conflict", run: runIdempotentCreateConflict},
+		{name: "concurrent idempotent create", run: runConcurrentIdempotentCreate},
+		{name: "idempotency deletion release", run: runIdempotencyDeletionRelease},
 		{name: "invalid run plans", run: runInvalidRunPlans},
 		{name: "join order and dependency release", run: runJoinOrder},
 		{name: "claim uniqueness and completion fence", run: runClaimAndCompletionFence},
@@ -124,6 +134,9 @@ func Run(t *testing.T, harness Harness) {
 		{name: "final attempt lease expiry", run: runFinalAttemptLeaseExpiry},
 		{name: "concurrent final attempt recovery", run: runConcurrentFinalAttemptRecovery},
 		{name: "restart and resume", run: runRestartAndResume},
+		{name: "cancellation outcomes", run: runCancellationOutcomes},
+		{name: "cancellation states and fences", run: runCancellationStatesAndFences},
+		{name: "concurrent cancellation", run: runConcurrentCancellation},
 		{name: "migration idempotence", run: runMigrationIdempotence},
 		{name: "run deletion", run: runRunDeletion},
 	}
@@ -158,7 +171,8 @@ func runCreateAndResult(t *testing.T, harness Harness) {
 		t.Fatal(err)
 	}
 
-	requireRunResult(t, result, storage.RunRunning, nil, nil)
+	requireRunResult(t, &result, storage.RunRunning, nil, nil)
+	requireRunIdentity(t, &result, &plan)
 
 	claim := mustClaim(t, store, "worker")
 
@@ -172,7 +186,8 @@ func runCreateAndResult(t *testing.T, harness Harness) {
 		t.Fatal(err)
 	}
 
-	requireRunResult(t, result, storage.RunCompleted, []byte(output), nil)
+	requireRunResult(t, &result, storage.RunCompleted, []byte(output), nil)
+	requireRunIdentity(t, &result, &plan)
 
 	_, err = store.GetRunResult(t.Context(), "missing-run")
 	if !errors.Is(err, storage.ErrRunNotFound) {
@@ -674,6 +689,12 @@ func conformanceRegistrations() []storage.FunctionRegistration {
 		{Key: leftFunctionKey, Signature: "left"},
 		{Key: rightFunctionKey, Signature: "right"},
 		{Key: joinFunctionKey, Signature: "join"},
+		{Key: completedNodeName, Signature: "completed-signature"},
+		{Key: runningNodeName, Signature: "running-signature"},
+		{Key: readyNodeName, Signature: "ready-signature"},
+		{Key: retryingNodeName, Signature: "retry-signature"},
+		{Key: pendingNodeName, Signature: "pending-signature"},
+		{Key: terminalNodeName, Signature: "terminal-signature"},
 	}
 }
 
@@ -693,11 +714,36 @@ func requireRejected(t *testing.T, operation string, accepted bool, err error) {
 	}
 }
 
-func requireRunResult(t *testing.T, result storage.RunResult, status storage.RunStatus, output, runError []byte) {
+func requireRunResult(t *testing.T, result *storage.RunResult, status storage.RunStatus, output, runError []byte) {
 	t.Helper()
 
 	if result.Status != status || string(result.Output) != string(output) || string(result.Error) != string(runError) {
 		t.Fatalf("run result = %#v, want status=%s output=%q error=%q", result, status, output, runError)
+	}
+}
+
+func requireRunIdentity(t *testing.T, result *storage.RunResult, plan *storage.RunPlan) {
+	t.Helper()
+
+	var terminalSignature string
+
+	for index := range plan.Nodes {
+		if plan.Nodes[index].ID == plan.Run.TerminalNodeID {
+			terminalSignature = plan.Nodes[index].SignatureHash
+
+			break
+		}
+	}
+
+	if result.WorkflowName != plan.Run.WorkflowName ||
+		result.DefinitionHash != plan.Run.DefinitionHash ||
+		result.TerminalSignatureHash != terminalSignature ||
+		result.MaxAttempts != plan.Run.MaxAttempts ||
+		result.RetryBaseDelay != plan.Run.RetryBaseDelay ||
+		result.RetryMaxDelay != plan.Run.RetryMaxDelay ||
+		result.RetryPolicyVersion != plan.Run.RetryPolicyVersion {
+		t.Fatalf("run result identity = %#v, want run identity and retry metadata from %#v",
+			result, plan.Run)
 	}
 }
 
@@ -750,7 +796,8 @@ func singleNodePlan(runID storage.RunID, name string) storage.RunPlan {
 		Edges: nil,
 		Run: storage.Run{
 			CompletedAt: nil, Output: nil, Error: nil,
-			ID: runID, WorkflowName: name, DefinitionHash: "definition", TerminalNodeID: conformanceNodeID,
+			ID: runID, WorkflowName: name, DefinitionHash: "definition",
+			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: conformanceNodeID,
 			Status: storage.RunRunning, Input: []byte(`"input"`), CreatedAt: now, UpdatedAt: now,
 			MaxAttempts: maxAttempts, RetryBaseDelay: time.Millisecond,
 			RetryMaxDelay: time.Second, RetryPolicyVersion: 1,

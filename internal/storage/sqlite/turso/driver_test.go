@@ -84,7 +84,7 @@ func TestConcurrentMigrations(t *testing.T) {
 	}
 
 	require.NoError(t, rows.Err())
-	require.Equal(t, []int64{1, 2, 3}, versions)
+	require.Equal(t, []int64{1, 2, 3, 4}, versions)
 }
 
 // TestAbandonedMigrationLock verifies an expired remote lock can be recovered.

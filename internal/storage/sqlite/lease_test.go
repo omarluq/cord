@@ -21,7 +21,7 @@ func TestStore_HeartbeatNodeRejectsNonPositiveTTLWithoutMutation(t *testing.T) {
 
 			database, store := newStore(t, true)
 			plan := validPlan(time.Now().UTC(), storage.RunID("heartbeat-ttl-"+ttl.String()))
-			require.NoError(t, store.CreateRun(t.Context(), &plan))
+			requireCreateRun(t.Context(), t, store, &plan)
 			claim := claimNode(t, store)
 
 			var before string
@@ -52,7 +52,7 @@ func TestStore_HeartbeatNodeRejectsExpiredLeaseWithoutMutation(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "heartbeat-expired")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	const expiredAt = "2000-01-01T00:00:00.000Z"
@@ -81,7 +81,7 @@ func TestStore_HeartbeatNodeRejectsInactiveRun(t *testing.T) {
 
 	_, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "heartbeat-canceled")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	accepted, err := sqlite.CancelRunForTest(t.Context(), store, claim.RunID)
@@ -105,7 +105,7 @@ func TestStore_RecoverExpiredLeasesLeavesActiveLeasesUntouched(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "active-lease")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	recovered, err := store.RecoverExpiredLeases(t.Context())
@@ -128,7 +128,7 @@ func TestStore_RecoverExpiredExhaustedLeasesInBatches(t *testing.T) {
 	for index := range runCount {
 		plan := validPlan(now, storage.RunID(fmt.Sprintf("batch-recovery-%03d", index)))
 		plan.Run.MaxAttempts = 1
-		require.NoError(t, store.CreateRun(t.Context(), &plan))
+		requireCreateRun(t.Context(), t, store, &plan)
 		claimNode(t, store)
 	}
 

@@ -232,7 +232,11 @@ func runSQLiteContention(t *testing.T, open sqliteOpen) {
 	runID := storage.RunID(fmt.Sprintf("sqlite-driver-contention-%d", now.UnixNano()))
 
 	result := make(chan error, 1)
-	go func() { result <- store.CreateRun(t.Context(), contentionPlan(runID, now)) }()
+
+	go func() {
+		err := store.CreateRun(t.Context(), contentionPlan(runID, now))
+		result <- err
+	}()
 
 	select {
 	case err := <-result:
