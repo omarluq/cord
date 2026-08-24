@@ -17,7 +17,10 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
-const planVersion = "cord/run-plan/v1"
+const (
+	planVersion                  = "cord/run-plan/v1"
+	submissionFingerprintVersion = "cord/submission-fingerprint/v1"
+)
 
 type nodeDefinition struct {
 	err         error
@@ -150,21 +153,23 @@ func buildPlan[I any](
 
 	return &storage.RunPlan{
 		Run: storage.Run{
-			CreatedAt:          now,
-			UpdatedAt:          now,
-			CompletedAt:        nil,
-			ID:                 runID,
-			WorkflowName:       name,
-			DefinitionHash:     definitionHash(name, inputFingerprint, terminal, nodes, edges, retry),
-			TerminalNodeID:     terminal,
-			Status:             storage.RunRunning,
-			Input:              storage.EncodedPayload(payload),
-			Output:             nil,
-			Error:              nil,
-			MaxAttempts:        retry.maxAttempts,
-			RetryBaseDelay:     retry.baseDelay,
-			RetryMaxDelay:      retry.maxDelay,
-			RetryPolicyVersion: retryPolicyVersion,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+			CompletedAt:           nil,
+			ID:                    runID,
+			WorkflowName:          name,
+			DefinitionHash:        definitionHash(name, inputFingerprint, terminal, nodes, edges, retry),
+			IdempotencyKey:        nil,
+			SubmissionFingerprint: nil,
+			TerminalNodeID:        terminal,
+			Status:                storage.RunRunning,
+			Input:                 storage.EncodedPayload(payload),
+			Output:                nil,
+			Error:                 nil,
+			MaxAttempts:           retry.maxAttempts,
+			RetryBaseDelay:        retry.baseDelay,
+			RetryMaxDelay:         retry.maxDelay,
+			RetryPolicyVersion:    retryPolicyVersion,
 		},
 		Nodes: nodes,
 		Edges: edges,
@@ -263,6 +268,15 @@ func definitionHash(
 	}
 
 	return hashframe.SHA256(parts...)
+}
+
+func submissionFingerprint(definitionHash string, input storage.EncodedPayload) string {
+	return hashframe.SHA256(
+		submissionFingerprintVersion,
+		"submission",
+		definitionHash,
+		string(input),
+	)
 }
 
 func generateRunID() (storage.RunID, error) {
