@@ -208,7 +208,7 @@ func insertNodes(
 		attempt, available_at, lease_owner, lease_generation, lease_expires_at,
 		output_payload, error_payload, started_at, completed_at,
 		lifecycle_version, state_changed_at
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$8)`
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
 
 	for index := range plan.Nodes {
 		node := &plan.Nodes[index]
@@ -223,7 +223,7 @@ func insertNodes(
 			node.Status,
 			node.RemainingDeps,
 			node.Attempt,
-			createdAt,
+			node.AvailableAt,
 			nullableString(node.Lease.Owner),
 			node.Lease.Generation,
 			nullableTime(node.Lease.ExpiresAt),
@@ -232,6 +232,7 @@ func insertNodes(
 			nullableTimePointer(node.StartedAt),
 			nullableTimePointer(node.CompletedAt),
 			storage.LifecycleVersion1,
+			createdAt,
 		)
 		if err != nil {
 			return fmt.Errorf("insert node %q for run %q: %w", node.ID, plan.Run.ID, err)
