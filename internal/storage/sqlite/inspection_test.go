@@ -16,7 +16,7 @@ func TestStore_InspectRunSnapshotAndCounts(t *testing.T) {
 
 	database, store := newStore(t, true)
 	now := time.Date(2025, time.January, 2, 3, 4, 5, 6000000, time.FixedZone("test", 2*60*60))
-	plan := validPlan(now, "inspect-legacy")
+	plan := validPlan(now, "inspect-current")
 	requireCreateRun(t.Context(), t, store, &plan)
 
 	report, err := store.InspectRun(t.Context(), plan.Run.ID)
@@ -38,37 +38,6 @@ func TestStore_InspectRunSnapshotAndCounts(t *testing.T) {
 	assert.Nil(t, output)
 }
 
-func TestStore_InspectRunLegacyMappings(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		status storage.RunStatus
-		reason storage.TerminalReason
-	}{
-		{status: storage.RunCompleted, reason: storage.ReasonSucceeded},
-		{status: storage.RunFailed, reason: storage.ReasonLegacyUnknown},
-		{status: storage.RunCanceled, reason: storage.ReasonCanceledByRequest},
-	}
-
-	for _, testCase := range tests {
-		t.Run(string(testCase.status), func(t *testing.T) {
-			t.Parallel()
-			database, store := newStore(t, true)
-			plan := validPlan(time.Now().UTC(), storage.RunID("legacy-"+testCase.status))
-			requireCreateRun(t.Context(), t, store, &plan)
-			_, err := database.ExecContext(t.Context(), `UPDATE cord_runs
-				SET status = ?, completed_at = updated_at, lifecycle_version = NULL,
-					started_at = NULL, terminal_reason = NULL, terminal_runner_id = NULL
-				WHERE id = ?`, testCase.status, plan.Run.ID)
-			require.NoError(t, err)
-
-			report, err := store.InspectRun(t.Context(), plan.Run.ID)
-			require.NoError(t, err)
-			assert.Equal(t, testCase.reason, report.Reason)
-		})
-	}
-}
-
 func TestStore_InspectRunFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -77,20 +46,11 @@ func TestStore_InspectRunFailsClosed(t *testing.T) {
 		name   string
 	}{
 		{
-			name: "unknown version",
-			mutate: func(t *testing.T, database *sql.DB, runID storage.RunID) {
-				t.Helper()
-				_, err := database.ExecContext(t.Context(),
-					"UPDATE cord_runs SET lifecycle_version = 2 WHERE id = ?", runID)
-				require.NoError(t, err)
-			},
-		},
-		{
 			name: "missing terminal reason",
 			mutate: func(t *testing.T, database *sql.DB, runID storage.RunID) {
 				t.Helper()
 				_, err := database.ExecContext(t.Context(), `UPDATE cord_runs
-					SET lifecycle_version = 1, status = 'failed', completed_at = updated_at
+					SET status = 'failed', completed_at = updated_at
 					WHERE id = ?`, runID)
 				require.NoError(t, err)
 			},
@@ -166,81 +126,6 @@ func TestStore_ListRunNodesKeysetFiltersAndBounds(t *testing.T) {
 	assert.ErrorIs(t, err, storage.ErrRunNotFound)
 }
 
-func TestStore_ListRunNodesLegacyRunningNode(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		lastRunner any
-		name       string
-		wantError  bool
-	}{
-		{name: "lease owner supplies report runner", lastRunner: nil, wantError: false},
-		{name: "persisted last runner is incompatible", lastRunner: "runner", wantError: true},
-		{name: "persisted empty last runner is incompatible", lastRunner: "", wantError: true},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			database, store := newStore(t, true)
-			now := time.Now().UTC()
-			plan := validPlan(now, "legacy-running")
-			requireCreateRun(t.Context(), t, store, &plan)
-
-			_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-				SET status = ?, attempt = 1, lease_owner = 'runner', lease_generation = 1,
-					lease_expires_at = ?, started_at = available_at, lifecycle_version = NULL,
-					state_changed_at = NULL, last_started_at = NULL, last_runner_id = ?
-				WHERE run_id = ? AND node_id = ?`,
-				storage.NodeRunning, now.Add(time.Minute).Format(time.RFC3339Nano), testCase.lastRunner,
-				plan.Run.ID, compileNode)
-			require.NoError(t, err)
-
-			page, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
-			if testCase.wantError {
-				require.ErrorIs(t, err, storage.ErrRunIncompatible)
-
-				return
-			}
-
-			require.NoError(t, err)
-			require.Len(t, page.Nodes, 2)
-			require.NotNil(t, page.Nodes[0].RunnerID)
-			assert.Equal(t, storage.RunnerID("runner"), *page.Nodes[0].RunnerID)
-			require.NotNil(t, page.Nodes[0].CurrentLease)
-			assert.Equal(t, storage.RunnerID("runner"), page.Nodes[0].CurrentLease.RunnerID)
-		})
-	}
-}
-
-func TestStore_ListRunNodesLegacyReasonFilterAndMalformedRow(t *testing.T) {
-	t.Parallel()
-
-	database, store := newStore(t, true)
-	plan := inspectionLinearPlan("reason-page", 2)
-	requireCreateRun(t.Context(), t, store, &plan)
-	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET status = 'completed', completed_at = available_at, lifecycle_version = NULL,
-			state_changed_at = NULL
-		WHERE run_id = ? AND node_id = ?`,
-		plan.Run.ID, plan.Nodes[0].ID)
-	require.NoError(t, err)
-
-	reason := storage.ReasonSucceeded
-	page, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{
-		State: nil, Reason: &reason, ContinuationToken: "", PageSize: 0,
-	})
-	require.NoError(t, err)
-	require.Len(t, page.Nodes, 1)
-	assert.Equal(t, reason, page.Nodes[0].Reason)
-
-	_, err = database.ExecContext(t.Context(),
-		"UPDATE cord_nodes SET lifecycle_version = 2 WHERE run_id = ?", plan.Run.ID)
-	require.NoError(t, err)
-	_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
-	assert.ErrorIs(t, err, storage.ErrRunIncompatible)
-}
-
 func TestStore_ListRunNodesValidatesCurrentNodeStartMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -287,7 +172,7 @@ func TestStore_ListRunNodesAllowsUnclaimedCurrentNode(t *testing.T) {
 	plan := validPlan(time.Now().UTC(), "unclaimed-current-node")
 	requireCreateRun(t.Context(), t, store, &plan)
 	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET lifecycle_version = 1, state_changed_at = available_at
+		SET state_changed_at = available_at
 		WHERE run_id = ?`, plan.Run.ID)
 	require.NoError(t, err)
 
@@ -325,7 +210,7 @@ func TestStore_ListRunNodesRejectsUnclaimedCurrentNodeStartMetadata(t *testing.T
 			requireCreateRun(t.Context(), t, store, &plan)
 
 			_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-				SET lifecycle_version = 1, state_changed_at = available_at,
+				SET state_changed_at = available_at,
 					started_at = CASE WHEN ? THEN available_at ELSE NULL END,
 					last_started_at = CASE WHEN ? THEN available_at ELSE NULL END,
 					last_runner_id = CASE WHEN ? THEN 'worker' ELSE NULL END

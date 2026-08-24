@@ -127,14 +127,10 @@ func migrateV3(ctx context.Context, transaction *sql.Tx) error {
 }
 
 func migrateV4(ctx context.Context, transaction *sql.Tx) error {
-	// Nullable columns without defaults preserve legacy rows as explicitly
-	// distinguishable from rows written with lifecycle metadata.
 	statements := []string{
-		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS lifecycle_version INTEGER`,
 		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ`,
 		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS terminal_reason TEXT`,
 		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS terminal_runner_id TEXT`,
-		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS lifecycle_version INTEGER`,
 		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS state_changed_at TIMESTAMPTZ`,
 		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS last_started_at TIMESTAMPTZ`,
 		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS last_runner_id TEXT`,

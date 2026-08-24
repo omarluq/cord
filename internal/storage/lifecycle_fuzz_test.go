@@ -25,27 +25,22 @@ func FuzzPersistedLifecycleVocabulary(f *testing.F) {
 		string(storage.NodeReady), string(storage.NodeRetryWait), string(storage.ReasonSucceeded),
 		string(storage.ReasonCanceledByRequest), string(storage.ReasonCanceledByRunFailure),
 		string(storage.ReasonFailureNonRetryable), string(storage.ReasonFailureAttemptsExhausted),
-		string(storage.ReasonFailureLeaseExpired), string(storage.ReasonLegacyUnknown),
+		string(storage.ReasonFailureLeaseExpired),
 		"future_value", "COMP" + "LETED", "\x00",
 	}
 	for _, state := range seeds {
 		for _, reason := range seeds {
-			f.Add(state, reason, int64(1))
+			f.Add(state, reason)
 		}
 	}
 
-	f.Fuzz(func(t *testing.T, stateValue, reasonValue string, versionValue int64) {
+	f.Fuzz(func(t *testing.T, stateValue, reasonValue string) {
 		runState := storage.RunStatus(stateValue)
 		nodeState := storage.NodeStatus(stateValue)
 		reason := storage.TerminalReason(reasonValue)
-		version := storage.LifecycleVersion(versionValue)
 
 		assertRunVocabularyProperties(t, runState, reason)
 		assertNodeVocabularyProperties(t, nodeState, reason)
-
-		if version.IsKnown() != (version == storage.LifecycleVersion1) {
-			t.Fatalf("LifecycleVersion(%d).IsKnown() is inconsistent", versionValue)
-		}
 
 		if reason.IsKnown() && reason == "" {
 			t.Fatal("empty terminal reason reported as known")
@@ -67,10 +62,6 @@ func assertRunVocabularyProperties(t *testing.T, state storage.RunStatus, reason
 		allowed:     state.AllowsReason(reason),
 		reasonKnown: reason.IsKnown(),
 	})
-
-	if mapped, ok := state.LegacyReason(); ok && (!terminal || !state.AllowsReason(mapped)) {
-		t.Fatalf("run state %q has invalid legacy reason %q", state, mapped)
-	}
 }
 
 func assertNodeVocabularyProperties(t *testing.T, state storage.NodeStatus, reason storage.TerminalReason) {
@@ -87,15 +78,6 @@ func assertNodeVocabularyProperties(t *testing.T, state storage.NodeStatus, reas
 		allowed:     state.AllowsReason(reason),
 		reasonKnown: reason.IsKnown(),
 	})
-
-	for _, runState := range []storage.RunStatus{
-		storage.RunRunning, storage.RunCanceling, storage.RunCompleted,
-		storage.RunFailed, storage.RunCanceled, "future",
-	} {
-		if mapped, ok := state.LegacyReason(runState); ok && (!terminal || !state.AllowsReason(mapped)) {
-			t.Fatalf("node state %q under run %q has invalid legacy reason %q", state, runState, mapped)
-		}
-	}
 }
 
 func assertKnownTerminalAgreement(

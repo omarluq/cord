@@ -66,7 +66,6 @@ func TestLifecycleVocabulary(t *testing.T) {
 		{reason: cord.ReasonFailureNonRetryable, value: "failure_non_retryable"},
 		{reason: cord.ReasonFailureAttemptsExhausted, value: "failure_attempts_exhausted"},
 		{reason: cord.ReasonFailureLeaseExpired, value: "failure_lease_expired"},
-		{reason: cord.ReasonLegacyUnknown, value: "legacy_unknown"},
 	}
 	for _, testCase := range reasons {
 		assert.Equal(t, testCase.value, string(testCase.reason))
@@ -119,7 +118,6 @@ func TestRunStateReasonPairs(t *testing.T) {
 			cord.ReasonFailureNonRetryable:      true,
 			cord.ReasonFailureAttemptsExhausted: true,
 			cord.ReasonFailureLeaseExpired:      true,
-			cord.ReasonLegacyUnknown:            true,
 		},
 		cord.RunStateCanceled: {cord.ReasonCanceledByRequest: true},
 	}
@@ -154,12 +152,10 @@ func TestNodeStateReasonPairs(t *testing.T) {
 			cord.ReasonFailureNonRetryable:      true,
 			cord.ReasonFailureAttemptsExhausted: true,
 			cord.ReasonFailureLeaseExpired:      true,
-			cord.ReasonLegacyUnknown:            true,
 		},
 		cord.NodeStateCanceled: {
 			cord.ReasonCanceledByRequest:    true,
 			cord.ReasonCanceledByRunFailure: true,
-			cord.ReasonLegacyUnknown:        true,
 		},
 	}
 
@@ -179,7 +175,6 @@ func allReasons() []cord.TerminalReason {
 		cord.ReasonFailureNonRetryable,
 		cord.ReasonFailureAttemptsExhausted,
 		cord.ReasonFailureLeaseExpired,
-		cord.ReasonLegacyUnknown,
 		"future_reason",
 	}
 }

@@ -59,11 +59,11 @@ func column(name, affinity string, notNull bool, defaultSQL string, primaryKey i
 	}
 }
 
-func lifecycleColumn(name, declaredType string) schemaColumn {
-	current := column(name, sqliteAffinity(declaredType), false, "", 0)
-	current.declaredType = declaredType
-
-	return current
+func lifecycleColumn(name string) schemaColumn {
+	return schemaColumn{
+		name: name, declaredType: affinityText, affinity: affinityText,
+		notNull: false, defaultSQL: "", primaryKey: 0,
+	}
 }
 
 func index(name string, columns ...string) schemaIndex {
@@ -97,10 +97,9 @@ func runColumns() []schemaColumn {
 		column("retry_policy_version", affinityInteger, true, "1", 0),
 		column("idempotency_key", affinityText, false, "", 0),
 		column("submission_fingerprint", affinityText, false, "", 0),
-		lifecycleColumn("lifecycle_version", affinityInteger),
-		lifecycleColumn("started_at", affinityText),
-		lifecycleColumn("terminal_reason", affinityText),
-		lifecycleColumn("terminal_runner_id", affinityText),
+		lifecycleColumn("started_at"),
+		lifecycleColumn("terminal_reason"),
+		lifecycleColumn("terminal_runner_id"),
 	}
 }
 
@@ -121,11 +120,10 @@ func nodeColumns() []schemaColumn {
 		column("error_payload", affinityBlob, false, "", 0),
 		column("started_at", affinityText, false, "", 0),
 		column("completed_at", affinityText, false, "", 0),
-		lifecycleColumn("lifecycle_version", affinityInteger),
-		lifecycleColumn("state_changed_at", affinityText),
-		lifecycleColumn("last_started_at", affinityText),
-		lifecycleColumn("last_runner_id", affinityText),
-		lifecycleColumn("terminal_reason", affinityText),
+		lifecycleColumn("state_changed_at"),
+		lifecycleColumn("last_started_at"),
+		lifecycleColumn("last_runner_id"),
+		lifecycleColumn("terminal_reason"),
 	}
 }
 

@@ -17,14 +17,10 @@ const (
 			lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
 			attempt = attempt + 1,
 			started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			state_changed_at = CASE WHEN lifecycle_version IS NULL OR lifecycle_version = 1
-				THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE state_changed_at END,
-			last_started_at = CASE WHEN lifecycle_version IS NULL OR lifecycle_version = 1
-				THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE last_started_at END,
-			last_runner_id = CASE WHEN lifecycle_version IS NULL OR lifecycle_version = 1
-				THEN ? ELSE last_runner_id END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE (run_id, node_id) = (
+			state_changed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+			last_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+			last_runner_id = ?
+			WHERE (run_id, node_id) = (
 			SELECT n.run_id, n.node_id
 			FROM cord_nodes AS n
 			JOIN cord_runs AS r ON r.id = n.run_id`
@@ -139,10 +135,9 @@ func (s *Store) claimReadyNodeOnce(
 
 	if _, err = transaction.ExecContext(ctx, `UPDATE cord_runs
 		SET started_at = COALESCE(started_at,
-			(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = ?)),
-			lifecycle_version = COALESCE(lifecycle_version, ?)
-		WHERE id = ? AND (started_at IS NULL OR lifecycle_version IS NULL)`,
-		claim.RunID, storage.LifecycleVersion1, claim.RunID); err != nil {
+			(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = ?))
+			WHERE id = ? AND started_at IS NULL`,
+		claim.RunID, claim.RunID); err != nil {
 		return nil, false, fmt.Errorf("record run start: %w", err)
 	}
 

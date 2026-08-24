@@ -22,13 +22,13 @@ func TestPostgresInspectionAndNodePagination(t *testing.T) {
 
 	now := time.Date(2026, 8, 24, 1, 0, 0, 123456000, time.FixedZone("test", 2*60*60))
 	insertInspectionRun(t, database, &inspectionRun{
-		runID: "inspect", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil, version: 1,
+		runID: "inspect", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil,
 	})
 
 	for index, status := range []storage.NodeStatus{
 		storage.NodeReady, storage.NodePending, storage.NodeReady,
 	} {
-		insertInspectionNode(t, database, "inspect", fmt.Sprintf("node-%d", index), status, 1, now)
+		insertInspectionNode(t, database, "inspect", fmt.Sprintf("node-%d", index), status, now)
 	}
 
 	report, err := store.InspectRun(t.Context(), "inspect")
@@ -74,110 +74,13 @@ func TestPostgresInspectionAndNodePagination(t *testing.T) {
 	assert.Empty(t, page.Nodes)
 }
 
-func TestPostgresInspectionLegacyAndFailClosed(t *testing.T) {
-	t.Parallel()
-
-	database := openInspectionPostgres(t)
-	store, err := postgresstore.New(database)
-	require.NoError(t, err)
-
-	now := time.Now().UTC().Truncate(time.Microsecond)
-
-	insertInspectionRun(t, database, &inspectionRun{
-		runID: "legacy", status: storage.RunFailed, reason: nil, now: now, finishedAt: &now, version: 0,
-	})
-	insertInspectionNode(t, database, "legacy", "failed", storage.NodeFailed, 0, now)
-	insertInspectionNode(t, database, "legacy", "sibling", storage.NodeCanceled, 0, now)
-
-	report, err := store.InspectRun(t.Context(), "legacy")
-	require.NoError(t, err)
-	assert.Equal(t, storage.ReasonLegacyUnknown, report.Reason)
-
-	page, err := store.ListRunNodes(t.Context(), "legacy", storage.NodeQuery{})
-	require.NoError(t, err)
-	require.Len(t, page.Nodes, 2)
-	assert.Equal(t, storage.ReasonLegacyUnknown, page.Nodes[0].Reason)
-	assert.Equal(t, storage.ReasonCanceledByRunFailure, page.Nodes[1].Reason)
-
-	insertInspectionRun(t, database, &inspectionRun{
-		runID: "future", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil, version: 2,
-	})
-	insertInspectionNode(t, database, "future", "node", storage.NodeReady, 2, now)
-	_, err = store.InspectRun(t.Context(), "future")
-	require.ErrorIs(t, err, storage.ErrRunIncompatible)
-	_, err = store.ListRunNodes(t.Context(), "future", storage.NodeQuery{})
-	require.ErrorIs(t, err, storage.ErrRunIncompatible)
-
-	badReason := string(storage.ReasonFailureLeaseExpired)
-	insertInspectionRun(t, database, &inspectionRun{
-		runID: "malformed", status: storage.RunRunning, reason: &badReason, now: now,
-		finishedAt: nil, version: 1,
-	})
-	insertInspectionNode(t, database, "malformed", "node", storage.NodeReady, 1, now)
-	_, err = store.InspectRun(t.Context(), "malformed")
-	require.ErrorIs(t, err, storage.ErrRunIncompatible)
-}
-
-// TestPostgresInspectionLegacyRunningNode verifies legacy running-node runner metadata.
-func TestPostgresInspectionLegacyRunningNode(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		lastRunner any
-		name       string
-		wantError  bool
-	}{
-		{name: "lease owner supplies report runner", lastRunner: nil, wantError: false},
-		{name: "persisted last runner is incompatible", lastRunner: "runner", wantError: true},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			database := openInspectionPostgres(t)
-			store, err := postgresstore.New(database)
-			require.NoError(t, err)
-
-			now := time.Now().UTC().Truncate(time.Microsecond)
-			insertInspectionRun(t, database, &inspectionRun{
-				runID: "legacy-running", status: storage.RunRunning, reason: nil,
-				finishedAt: nil, now: now, version: 0,
-			})
-
-			_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
-				run_id, node_id, function_key, signature_hash, status, remaining_deps,
-				attempt, available_at, lease_owner, lease_generation, lease_expires_at,
-				started_at, last_runner_id
-			) VALUES (
-				'legacy-running', 'node', 'inspection.node', 'signature', 'running', 0,
-				1, $1, 'runner', 1, $2, $1, $3
-			)`, now, now.Add(time.Minute), testCase.lastRunner)
-			require.NoError(t, err)
-
-			page, err := store.ListRunNodes(t.Context(), "legacy-running", storage.NodeQuery{})
-			if testCase.wantError {
-				require.ErrorIs(t, err, storage.ErrRunIncompatible)
-
-				return
-			}
-
-			require.NoError(t, err)
-			require.Len(t, page.Nodes, 1)
-			require.NotNil(t, page.Nodes[0].RunnerID)
-			assert.Equal(t, storage.RunnerID("runner"), *page.Nodes[0].RunnerID)
-			require.NotNil(t, page.Nodes[0].CurrentLease)
-			assert.Equal(t, storage.RunnerID("runner"), page.Nodes[0].CurrentLease.RunnerID)
-		})
-	}
-}
-
 func TestPostgresInspectionUsesRunScopedCountPlan(t *testing.T) {
 	t.Parallel()
 
 	database := prepareInspectionPlanDatabase(t)
 
 	const explain = `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT
-		r.id, r.workflow_name, r.status, r.lifecycle_version, r.terminal_reason,
+		r.id, r.workflow_name, r.status, r.terminal_reason,
 		r.created_at, r.started_at, r.updated_at, r.completed_at, r.terminal_runner_id,
 		counts.pending, counts.ready, counts.running, counts.retry_wait,
 		counts.completed, counts.failed, counts.canceled, counts.total
@@ -210,7 +113,7 @@ func TestPostgresNodePageUsesPrimaryKeyKeysetPlan(t *testing.T) {
 	database := prepareInspectionPlanDatabase(t)
 
 	const explain = `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT
-		n.run_id, n.node_id, n.function_key, n.status, n.lifecycle_version, n.terminal_reason,
+		n.run_id, n.node_id, n.function_key, n.status, n.terminal_reason,
 		n.attempt, r.max_attempts, n.available_at, n.started_at, n.last_started_at,
 		n.state_changed_at, n.completed_at, n.last_runner_id,
 		n.lease_owner, n.lease_generation, n.lease_expires_at
@@ -219,14 +122,7 @@ func TestPostgresNodePageUsesPrimaryKeyKeysetPlan(t *testing.T) {
 	WHERE n.run_id = $1
 		AND n.node_id > $2
 		AND ($3::text IS NULL OR n.status = $3)
-		AND ($4::text IS NULL OR CASE
-			WHEN n.lifecycle_version IS NOT NULL THEN n.terminal_reason
-			WHEN n.status = 'completed' THEN 'succeeded'
-			WHEN n.status = 'failed' THEN 'legacy_unknown'
-			WHEN n.status = 'canceled' AND r.status = 'failed' THEN 'canceled_by_run_failure'
-			WHEN n.status = 'canceled' THEN 'legacy_unknown'
-			ELSE NULL
-		END = $4)
+		AND ($4::text IS NULL OR n.terminal_reason = $4)
 	ORDER BY n.node_id
 	LIMIT $5`
 
@@ -288,11 +184,11 @@ func prepareInspectionPlanDatabase(t *testing.T) *sql.DB {
 	database := openInspectionPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	insertInspectionRun(t, database, &inspectionRun{
-		runID: "plan", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil, version: 1,
+		runID: "plan", status: storage.RunRunning, reason: nil, now: now, finishedAt: nil,
 	})
 
 	for index := range 20 {
-		insertInspectionNode(t, database, "plan", fmt.Sprintf("node-%03d", index), storage.NodeReady, 1, now)
+		insertInspectionNode(t, database, "plan", fmt.Sprintf("node-%03d", index), storage.NodeReady, now)
 	}
 
 	analyzeInspectionTables(t, database)
@@ -321,23 +217,17 @@ type inspectionRun struct {
 	now        time.Time
 	runID      storage.RunID
 	status     storage.RunStatus
-	version    int
 }
 
 func insertInspectionRun(t *testing.T, database *sql.DB, run *inspectionRun) {
 	t.Helper()
 
-	var lifecycleVersion any
-	if run.version != 0 {
-		lifecycleVersion = run.version
-	}
-
 	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_runs (
 		id, workflow_name, definition_hash, status, input_payload, terminal_node_id,
 		created_at, updated_at, completed_at, max_attempts, retry_base_delay_ns,
-		retry_max_delay_ns, retry_policy_version, lifecycle_version, terminal_reason
-	) VALUES ($1, 'inspection', 'hash', $2, ''::bytea, 'node', $3, $3, $4, 3, 1, 1, 1, $5, $6)`,
-		run.runID, run.status, run.now, run.finishedAt, lifecycleVersion, run.reason)
+		retry_max_delay_ns, retry_policy_version, terminal_reason
+	) VALUES ($1, 'inspection', 'hash', $2, ''::bytea, 'node', $3, $3, $4, 3, 1, 1, 1, $5)`,
+		run.runID, run.status, run.now, run.finishedAt, run.reason)
 	require.NoError(t, err)
 }
 
@@ -347,16 +237,11 @@ func insertInspectionNode(
 	runID storage.RunID,
 	nodeID string,
 	status storage.NodeStatus,
-	version int,
 	now time.Time,
 ) {
 	t.Helper()
 
-	var lifecycleVersion, stateChangedAt any
-	if version != 0 {
-		lifecycleVersion = version
-		stateChangedAt = now
-	}
+	stateChangedAt := now
 
 	var finishedAt any
 	if terminal, _ := status.Terminal(); terminal {
@@ -365,9 +250,8 @@ func insertInspectionNode(
 
 	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
 		run_id, node_id, function_key, signature_hash, status, remaining_deps,
-		attempt, available_at, lease_generation, completed_at, lifecycle_version,
-		state_changed_at, terminal_reason
-	) VALUES ($1, $2, 'inspection.node', 'signature', $3, 0, 0, $4, 0, $5, $6, $7, $8)`,
-		runID, nodeID, status, now, finishedAt, lifecycleVersion, stateChangedAt, nil)
+		attempt, available_at, lease_generation, completed_at, state_changed_at, terminal_reason
+	) VALUES ($1, $2, 'inspection.node', 'signature', $3, 0, 0, $4, 0, $5, $6, $7)`,
+		runID, nodeID, status, now, finishedAt, stateChangedAt, nil)
 	require.NoError(t, err)
 }

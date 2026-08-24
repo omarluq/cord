@@ -137,14 +137,9 @@ func finishRunCancellation(
 		SET status = $1,
 			updated_at = $4,
 			completed_at = $4,
-			terminal_reason = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN $5 ELSE terminal_reason
-			END,
-			terminal_runner_id = CASE
-				WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN NULL ELSE terminal_runner_id
-			END,
-		lifecycle_version = COALESCE(lifecycle_version, 1)
-		WHERE id = $2 AND status = $3`
+			terminal_reason = $5,
+			terminal_runner_id = NULL
+				WHERE id = $2 AND status = $3`
 
 	result, err := transaction.ExecContext(
 		ctx, query, storage.RunCanceled, runID, storage.RunCanceling,

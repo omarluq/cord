@@ -291,7 +291,7 @@ func TestLifecycleModelProperties(t *testing.T) {
 	reasons := []TerminalReason{
 		"", ReasonSucceeded, ReasonCanceledByRequest, ReasonCanceledByRunFailure,
 		ReasonFailureNonRetryable, ReasonFailureAttemptsExhausted,
-		ReasonFailureLeaseExpired, ReasonLegacyUnknown, "future",
+		ReasonFailureLeaseExpired, "future",
 	}
 
 	for _, state := range runStates {

@@ -80,12 +80,9 @@ func (s *Store) CompleteNode(
 			result, err := transaction.ExecContext(attemptCtx, `UPDATE cord_nodes
 			SET status = ?, output_payload = ?, error_payload = NULL,
 				lease_owner = NULL, lease_expires_at = NULL, completed_at = ?,
-				state_changed_at = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
-				terminal_reason = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE run_id = ? AND node_id = ? AND status = ?
+				state_changed_at = ?,
+				terminal_reason = ?
+						WHERE run_id = ? AND node_id = ? AND status = ?
 				AND lease_owner = ? AND lease_generation = ?
 				AND julianday(lease_expires_at) > julianday('now')
 				AND EXISTS (SELECT 1 FROM cord_runs WHERE id = ? AND status = ?)`,
@@ -110,10 +107,9 @@ func (s *Store) CompleteNode(
 				status = CASE WHEN remaining_deps = 1 THEN ? ELSE status END,
 				available_at = CASE WHEN remaining_deps = 1 THEN ? ELSE available_at END,
 				state_changed_at = CASE WHEN remaining_deps = 1
-					AND (lifecycle_version IS NULL OR lifecycle_version = 1)
-					THEN ? ELSE state_changed_at END,
-				lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE run_id = ? AND status = ? AND remaining_deps > 0
+
+					THEN ? ELSE state_changed_at END
+							WHERE run_id = ? AND status = ? AND remaining_deps > 0
 				AND node_id IN (SELECT child_node_id FROM cord_edges
 					WHERE run_id = ? AND parent_node_id = ?)`,
 				storage.NodeReady, instant, instant, runID, storage.NodePending, runID, nodeID)
@@ -124,12 +120,9 @@ func (s *Store) CompleteNode(
 			_, err = transaction.ExecContext(attemptCtx, `UPDATE cord_runs
 			SET status = ?, output_payload = ?, error_payload = NULL,
 				updated_at = ?, completed_at = ?,
-				terminal_reason = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
-				terminal_runner_id = CASE
-			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_runner_id END,
-			lifecycle_version = COALESCE(lifecycle_version, 1)
-			WHERE id = ? AND status = ? AND terminal_node_id = ?`,
+				terminal_reason = ?,
+				terminal_runner_id = ?
+						WHERE id = ? AND status = ? AND terminal_node_id = ?`,
 				storage.RunCompleted, nullPayload(output), instant, instant,
 				storage.ReasonSucceeded, lease.Owner, runID, storage.RunRunning, nodeID)
 			if err != nil {

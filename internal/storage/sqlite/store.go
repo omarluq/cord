@@ -237,7 +237,6 @@ func insertRun(
 		run.RetryPolicyVersion,
 		nullStringPointer(run.IdempotencyKey),
 		nullStringPointer(run.SubmissionFingerprint),
-		storage.LifecycleVersion1,
 	)
 	if err != nil {
 		return fmt.Errorf("insert run %q: %w", run.ID, err)
@@ -271,7 +270,6 @@ func insertNode(
 		nullPayload(node.Error),
 		nullTimePointer(node.StartedAt),
 		nullTimePointer(node.CompletedAt),
-		storage.LifecycleVersion1,
 		formatTime(createdAt),
 	)
 	if err != nil {
