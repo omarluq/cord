@@ -3,6 +3,8 @@ package cord_test
 import (
 	"database/sql"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +23,11 @@ func TestWorkflowGetReadsLegacyTerminalRowsAfterMigration(t *testing.T) {
 
 	fixture, err := os.ReadFile("testdata/legacy_terminal_runs.sql")
 	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), string(fixture))
+
+	fixtureSQL := string(fixture)
+	fixtureSQL = regexp.MustCompile(`decode\('([0-9A-F]+)', 'hex'\)`).ReplaceAllString(fixtureSQL, "X'$1'")
+	fixtureSQL = strings.ReplaceAll(fixtureSQL, " AS TIMESTAMP", " AS TEXT")
+	_, err = database.ExecContext(t.Context(), fixtureSQL)
 	require.NoError(t, err)
 
 	before := readLegacyTerminalRows(t, database)

@@ -7,11 +7,26 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
+const winningClaimMetadataFormat = "winner=%#v, persisted node=%#v"
+
 type concurrentClaimResult struct {
 	claim   *storage.Claim
 	err     error
 	owner   string
 	claimed bool
+}
+
+type terminalRaceOutcome struct {
+	result             *storage.RunResult
+	node               *storage.NodeReport
+	report             *storage.RunReport
+	cancellation       storage.CancellationOutcome
+	transitionAccepted bool
+}
+
+type terminalRaceExpectation struct {
+	status storage.RunStatus
+	owner  string
 }
 
 func runConcurrentClaimWinnerMetadata(t *testing.T, harness Harness) {
@@ -71,19 +86,19 @@ func requireWinningClaimMetadata(
 	t.Helper()
 
 	if winner.claim.Lease.Owner != winner.owner || node.State != storage.NodeRunning {
-		t.Fatalf("winner=%#v, persisted node=%#v", winner, node)
+		t.Fatalf(winningClaimMetadataFormat, winner, node)
 	}
 
 	if node.RunnerID == nil || string(*node.RunnerID) != winner.owner {
-		t.Fatalf("winner=%#v, persisted node=%#v", winner, node)
+		t.Fatalf(winningClaimMetadataFormat, winner, node)
 	}
 
 	if node.CurrentLease == nil || string(node.CurrentLease.RunnerID) != winner.owner {
-		t.Fatalf("winner=%#v, persisted node=%#v", winner, node)
+		t.Fatalf(winningClaimMetadataFormat, winner, node)
 	}
 
 	if node.CurrentLease.Generation != winner.claim.Lease.Generation || node.Attempt != winner.claim.Attempt {
-		t.Fatalf("winner=%#v, persisted node=%#v", winner, node)
+		t.Fatalf(winningClaimMetadataFormat, winner, node)
 	}
 }
 
@@ -219,31 +234,37 @@ func runTerminalCancellationRace(
 	node := mustFindNode(t, opened.backend, plan.Run.ID, claim.NodeID)
 	report := mustInspectRun(t, opened.backend, plan.Run.ID)
 
-	requireTerminalRaceOutcome(
-		t, transitionResultValue.accepted, cancellationResultValue.outcome,
-		&result, &node, &report, transitionStatus, claim.Lease.Owner,
-	)
+	requireTerminalRaceOutcome(t, terminalRaceOutcome{
+		result:             &result,
+		node:               &node,
+		report:             &report,
+		cancellation:       cancellationResultValue.outcome,
+		transitionAccepted: transitionResultValue.accepted,
+	}, terminalRaceExpectation{
+		status: transitionStatus,
+		owner:  claim.Lease.Owner,
+	})
 }
 
 func requireTerminalRaceOutcome(
 	t *testing.T,
-	transitionAccepted bool,
-	cancellationOutcome storage.CancellationOutcome,
-	result *storage.RunResult,
-	node *storage.NodeReport,
-	report *storage.RunReport,
-	transitionStatus storage.RunStatus,
-	owner string,
+	outcome terminalRaceOutcome,
+	expectation terminalRaceExpectation,
 ) {
 	t.Helper()
 
-	if transitionAccepted {
-		requireTransitionWonRace(t, cancellationOutcome, result, node, report, transitionStatus, owner)
+	if outcome.transitionAccepted {
+		requireTransitionWonRace(
+			t, outcome.cancellation, outcome.result, outcome.node, outcome.report,
+			expectation.status, expectation.owner,
+		)
 
 		return
 	}
 
-	requireCancellationWonRace(t, cancellationOutcome, result, node, report)
+	requireCancellationWonRace(
+		t, outcome.cancellation, outcome.result, outcome.node, outcome.report,
+	)
 }
 
 func requireTransitionWonRace(
