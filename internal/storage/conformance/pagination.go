@@ -23,6 +23,8 @@ func runNodePagination(t *testing.T, harness Harness) {
 	requireMissingNodePage(t, opened.backend)
 }
 
+const firstPaginatedNodeID = storage.NodeID("node-00")
+
 func requirePaginatedNodeIDs(t *testing.T, backend storage.Backend, plan *storage.RunPlan) {
 	t.Helper()
 
@@ -41,7 +43,7 @@ func requirePaginatedNodeIDs(t *testing.T, backend storage.Backend, plan *storag
 			t.Fatal(err)
 		}
 
-		requireValidNodePage(t, &page, plan, token)
+		requireValidNodePage(t, &page, plan, token, pageSize)
 
 		for index := range page.Nodes {
 			gotIDs = append(gotIDs, page.Nodes[index].NodeID)
@@ -54,14 +56,24 @@ func requirePaginatedNodeIDs(t *testing.T, backend storage.Backend, plan *storag
 		token = page.ContinuationToken
 	}
 
-	wantIDs := []storage.NodeID{"node-00", "node-01", "node-02", "node-03", "node-04"}
+	wantIDs := []storage.NodeID{firstPaginatedNodeID, "node-01", "node-02", "node-03", "node-04"}
 	if fmt.Sprint(gotIDs) != fmt.Sprint(wantIDs) {
 		t.Fatalf("paged node IDs = %v, want %v", gotIDs, wantIDs)
 	}
 }
 
-func requireValidNodePage(t *testing.T, page *storage.NodePage, plan *storage.RunPlan, previousToken string) {
+func requireValidNodePage(
+	t *testing.T,
+	page *storage.NodePage,
+	plan *storage.RunPlan,
+	previousToken string,
+	pageSize int,
+) {
 	t.Helper()
+
+	if len(page.Nodes) > pageSize {
+		t.Fatalf("page contains %d nodes, requested at most %d", len(page.Nodes), pageSize)
+	}
 
 	if len(page.Nodes) == 0 && page.ContinuationToken != "" {
 		t.Fatalf("empty page has continuation token %q", page.ContinuationToken)
@@ -91,7 +103,7 @@ func requireFilteredNodes(t *testing.T, backend storage.Backend, plan *storage.R
 		t.Fatal(err)
 	}
 
-	if got := nodeIDs(readyPage.Nodes); fmt.Sprint(got) != fmt.Sprint([]storage.NodeID{"node-00"}) {
+	if got := nodeIDs(readyPage.Nodes); fmt.Sprint(got) != fmt.Sprint([]storage.NodeID{firstPaginatedNodeID}) {
 		t.Fatalf("ready node IDs = %v", got)
 	}
 
@@ -102,6 +114,26 @@ func requireFilteredNodes(t *testing.T, backend storage.Backend, plan *storage.R
 	})
 	if err != nil || len(empty.Nodes) != 0 || empty.ContinuationToken != "" {
 		t.Fatalf("empty filtered page = %#v err=%v", empty, err)
+	}
+
+	claim := mustClaim(t, backend, workerA)
+	accepted, err := backend.FailNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"failed"`),
+		storage.ReasonFailureNonRetryable,
+	)
+	requireAccepted(t, "fail node for reason filter", accepted, err)
+
+	reason := storage.ReasonFailureNonRetryable
+
+	reasonPage, err := backend.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{
+		State: nil, Reason: &reason, ContinuationToken: "", PageSize: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := nodeIDs(reasonPage.Nodes); fmt.Sprint(got) != fmt.Sprint([]storage.NodeID{firstPaginatedNodeID}) {
+		t.Fatalf("non-retryable failure node IDs = %v", got)
 	}
 }
 
