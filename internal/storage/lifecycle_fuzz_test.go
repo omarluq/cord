@@ -6,6 +6,16 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
+type reasonProperties struct {
+	kind        string
+	state       string
+	reason      string
+	terminal    bool
+	stateKnown  bool
+	allowed     bool
+	reasonKnown bool
+}
+
 func FuzzPersistedLifecycleVocabulary(f *testing.F) {
 	seeds := []string{
 		"",
@@ -47,8 +57,15 @@ func assertRunVocabularyProperties(t *testing.T, state storage.RunStatus, reason
 
 	terminal, known := state.Terminal()
 	assertKnownTerminalAgreement(t, "run", string(state), terminal, known, state.IsKnown())
-	assertReasonProperties(t, "run", string(state), string(reason), terminal, known,
-		state.AllowsReason(reason), reason.IsKnown())
+	assertReasonProperties(t, reasonProperties{
+		kind:        "run",
+		state:       string(state),
+		reason:      string(reason),
+		terminal:    terminal,
+		stateKnown:  known,
+		allowed:     state.AllowsReason(reason),
+		reasonKnown: reason.IsKnown(),
+	})
 
 	if mapped, ok := state.LegacyReason(); ok && (!terminal || !state.AllowsReason(mapped)) {
 		t.Fatalf("run state %q has invalid legacy reason %q", state, mapped)
@@ -60,8 +77,15 @@ func assertNodeVocabularyProperties(t *testing.T, state storage.NodeStatus, reas
 
 	terminal, known := state.Terminal()
 	assertKnownTerminalAgreement(t, "node", string(state), terminal, known, state.IsKnown())
-	assertReasonProperties(t, "node", string(state), string(reason), terminal, known,
-		state.AllowsReason(reason), reason.IsKnown())
+	assertReasonProperties(t, reasonProperties{
+		kind:        "node",
+		state:       string(state),
+		reason:      string(reason),
+		terminal:    terminal,
+		stateKnown:  known,
+		allowed:     state.AllowsReason(reason),
+		reasonKnown: reason.IsKnown(),
+	})
 
 	for _, runState := range []storage.RunStatus{
 		storage.RunRunning, storage.RunCanceling, storage.RunCompleted,
@@ -89,26 +113,25 @@ func assertKnownTerminalAgreement(
 	}
 }
 
-func assertReasonProperties(
-	t *testing.T,
-	kind, state, reason string,
-	terminal, known, allowed, reasonKnown bool,
-) {
+func assertReasonProperties(t *testing.T, properties reasonProperties) {
 	t.Helper()
 
-	if !known && allowed {
-		t.Fatalf("unknown %s state %q accepted reason %q", kind, state, reason)
+	if !properties.stateKnown && properties.allowed {
+		t.Fatalf("unknown %s state %q accepted reason %q",
+			properties.kind, properties.state, properties.reason)
 	}
 
-	if !allowed {
+	if !properties.allowed {
 		return
 	}
 
-	if terminal != (reason != "") {
-		t.Fatalf("%s state %q accepted inconsistent reason %q", kind, state, reason)
+	if properties.terminal != (properties.reason != "") {
+		t.Fatalf("%s state %q accepted inconsistent reason %q",
+			properties.kind, properties.state, properties.reason)
 	}
 
-	if reason != "" && !reasonKnown {
-		t.Fatalf("%s state %q accepted unknown reason %q", kind, state, reason)
+	if properties.reason != "" && !properties.reasonKnown {
+		t.Fatalf("%s state %q accepted unknown reason %q",
+			properties.kind, properties.state, properties.reason)
 	}
 }
