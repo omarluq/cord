@@ -54,6 +54,86 @@ func TestSQLiteQueryPlans_TimestampPredicates(t *testing.T) {
 	}
 }
 
+func TestSQLiteQueryPlans_NodeInspectionPages(t *testing.T) {
+	t.Parallel()
+
+	database, _ := newStore(t, true)
+
+	const selectReport = `SELECT n.node_id, n.function_key, n.status, n.attempt,
+		n.available_at, n.started_at, n.last_started_at, n.state_changed_at, n.completed_at,
+		n.lifecycle_version, n.terminal_reason, n.last_runner_id,
+		n.lease_owner, n.lease_generation, n.lease_expires_at
+	FROM cord_nodes AS n
+	WHERE n.run_id = 'run' AND n.node_id > 'node-10'`
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "unfiltered keyset page",
+			query: selectReport + ` ORDER BY n.node_id LIMIT 51`,
+		},
+		{
+			name:  "state-filtered keyset page",
+			query: selectReport + ` AND n.status = 'ready' ORDER BY n.node_id LIMIT 51`,
+		},
+		{
+			name: "reason-filtered keyset page",
+			query: selectReport + ` AND CASE
+				WHEN n.lifecycle_version IS NULL AND n.status = 'completed' THEN 'succeeded'
+				WHEN n.lifecycle_version IS NULL AND n.status = 'failed' THEN 'legacy_unknown'
+				WHEN n.lifecycle_version IS NULL AND n.status = 'canceled' AND 'failed' = 'failed'
+					THEN 'canceled_by_run_failure'
+				WHEN n.lifecycle_version IS NULL AND n.status = 'canceled' THEN 'legacy_unknown'
+				ELSE COALESCE(n.terminal_reason, '') END = 'succeeded'
+				ORDER BY n.node_id LIMIT 51`,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			details := strings.Join(explainQueryPlan(t, database, testCase.query), "\n")
+			assert.Contains(t, details, "sqlite_autoindex_cord_nodes_1 (run_id=? AND node_id>?)")
+			assert.NotContains(t, details, "SCAN cord_nodes")
+			assert.NotContains(t, details, "USE TEMP B-TREE")
+		})
+	}
+}
+
+func TestSQLiteQueryPlan_RunInspectionCounts(t *testing.T) {
+	t.Parallel()
+
+	database, _ := newStore(t, true)
+	query := `SELECT
+		r.id, r.workflow_name, r.status, r.created_at, r.updated_at,
+		r.started_at, r.completed_at, r.lifecycle_version,
+		r.terminal_reason, r.terminal_runner_id,
+		COUNT(n.node_id),
+		COALESCE(SUM(CASE WHEN n.status IN (
+			'pending', 'ready', 'running', 'retry_wait', 'completed', 'failed', 'canceled'
+		) THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'pending' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'ready' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'running' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'retry_wait' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'completed' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'failed' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN n.status = 'canceled' THEN 1 ELSE 0 END), 0)
+	FROM cord_runs AS r
+	LEFT JOIN cord_nodes AS n ON n.run_id = r.id
+	WHERE r.id = 'run'
+	GROUP BY r.id`
+
+	details := strings.Join(explainQueryPlan(t, database, query), "\n")
+	assert.Contains(t, details, "sqlite_autoindex_cord_runs_1 (id=?)")
+	assert.Contains(t, details, "cord_nodes_run_status_idx (run_id=?)")
+	assert.NotContains(t, details, "SCAN cord_nodes")
+	assert.NotContains(t, details, "USE TEMP B-TREE")
+}
+
 func TestSQLiteQueryPlan_OrderedParentInputs(t *testing.T) {
 	t.Parallel()
 
@@ -434,6 +514,77 @@ func BenchmarkStore_GetRunResult(b *testing.B) {
 	for range b.N {
 		if _, err := store.GetRunResult(b.Context(), plan.Run.ID); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStore_InspectRun(b *testing.B) {
+	for _, nodeCount := range []int{1, 100, 1000} {
+		b.Run(fmt.Sprintf("nodes=%d", nodeCount), func(b *testing.B) {
+			store := newBenchmarkStore(b)
+
+			plan := benchmarkLinearPlan("inspect-run", nodeCount)
+			if err := store.CreateRun(b.Context(), &plan); err != nil {
+				b.Fatal(err)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for range b.N {
+				if _, err := store.InspectRun(b.Context(), plan.Run.ID); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkStore_ListRunNodes(b *testing.B) {
+	for _, pageSize := range []int{1, 50, 200} {
+		b.Run(fmt.Sprintf("first-page/size=%d", pageSize), func(b *testing.B) {
+			benchmarkListRunNodes(b, storage.NodeQuery{
+				State: nil, Reason: nil, ContinuationToken: "", PageSize: pageSize,
+			})
+		})
+	}
+
+	pending := storage.NodePending
+	middleCursor := "node-0499"
+
+	b.Run("middle-page/unfiltered", func(b *testing.B) {
+		benchmarkListRunNodes(b, storage.NodeQuery{
+			State: nil, Reason: nil, ContinuationToken: middleCursor, PageSize: 50,
+		})
+	})
+	b.Run("middle-page/state-filtered", func(b *testing.B) {
+		benchmarkListRunNodes(b, storage.NodeQuery{
+			State: &pending, Reason: nil, ContinuationToken: middleCursor, PageSize: 50,
+		})
+	})
+}
+
+func benchmarkListRunNodes(b *testing.B, query storage.NodeQuery) {
+	b.Helper()
+
+	store := newBenchmarkStore(b)
+
+	plan := benchmarkLinearPlan("list-run-nodes", 1000)
+	if err := store.CreateRun(b.Context(), &plan); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		page, err := store.ListRunNodes(b.Context(), plan.Run.ID, query)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		if len(page.Nodes) == 0 {
+			b.Fatal("node page is unexpectedly empty")
 		}
 	}
 }
