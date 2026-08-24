@@ -23,12 +23,18 @@ func TestWorkflowGetReadsPreAsyncPersistedRunAfterMigration(t *testing.T) {
 	_, err = flow.Get(t.Context(), runID)
 	require.NoError(t, err)
 
-	var definitionHash, terminalNodeID, functionKey, signatureHash string
+	var (
+		definitionHash, terminalNodeID, functionKey, signatureHash string
+		maxAttempts, retryPolicyVersion                            int
+		retryBaseDelayNS, retryMaxDelayNS                          int64
+	)
 
 	err = sourceDatabase.QueryRowContext(t.Context(), `SELECT r.definition_hash, r.terminal_node_id,
-		n.function_key, n.signature_hash FROM cord_runs r JOIN cord_nodes n
+		n.function_key, n.signature_hash, r.max_attempts, r.retry_base_delay_ns,
+		r.retry_max_delay_ns, r.retry_policy_version FROM cord_runs r JOIN cord_nodes n
 		ON n.run_id = r.id AND n.node_id = r.terminal_node_id WHERE r.id = ?`, runID).Scan(
 		&definitionHash, &terminalNodeID, &functionKey, &signatureHash,
+		&maxAttempts, &retryBaseDelayNS, &retryMaxDelayNS, &retryPolicyVersion,
 	)
 	require.NoError(t, err)
 	require.NoError(t, source.Close())
@@ -49,10 +55,10 @@ func TestWorkflowGetReadsPreAsyncPersistedRunAfterMigration(t *testing.T) {
 		id, workflow_name, definition_hash, status, input_payload, output_payload,
 		terminal_node_id, created_at, updated_at, completed_at, max_attempts,
 		retry_base_delay_ns, retry_max_delay_ns, retry_policy_version
-	) VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, 3, ?, ?, 1)`,
+	) VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		runID, "pre-async-public-get", definitionHash, []byte("41"), []byte("42"),
 		terminalNodeID, persistedAt, persistedAt, persistedAt,
-		(500 * time.Millisecond).Nanoseconds(), (30 * time.Second).Nanoseconds())
+		maxAttempts, retryBaseDelayNS, retryMaxDelayNS, retryPolicyVersion)
 	require.NoError(t, err)
 	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
 		run_id, node_id, function_key, signature_hash, status, remaining_deps,

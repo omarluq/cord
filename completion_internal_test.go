@@ -381,7 +381,7 @@ func BenchmarkCompletionNotification(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				runtime.publishCompletion(poll, &completionObservation{}, false)
+				runtime.publishCompletion(poll, &completionObservation{}, true)
 
 				for _, waiter := range waiters {
 					<-waiter
