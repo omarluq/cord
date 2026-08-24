@@ -16,7 +16,14 @@ const (
 		SET status = ?, lease_owner = ?, lease_generation = lease_generation + 1,
 			lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
 			attempt = attempt + 1,
-			started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+			started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			state_changed_at = CASE WHEN lifecycle_version IS NULL OR lifecycle_version = 1
+				THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE state_changed_at END,
+			last_started_at = CASE WHEN lifecycle_version IS NULL OR lifecycle_version = 1
+				THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE last_started_at END,
+			last_runner_id = CASE WHEN lifecycle_version IS NULL OR lifecycle_version = 1
+				THEN ? ELSE last_runner_id END,
+			lifecycle_version = COALESCE(lifecycle_version, 1)
 		WHERE (run_id, node_id) = (
 			SELECT n.run_id, n.node_id
 			FROM cord_nodes AS n
@@ -96,27 +103,51 @@ func (s *Store) claimReadyNodeOnce(
 	owner string,
 	leaseTTL time.Duration,
 	registeredJSON []byte,
-) (*storage.Claim, bool, error) {
+) (_ *storage.Claim, claimed bool, err error) {
+	transaction, err := s.database.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin ready-node claim: %w", err)
+	}
+	defer func() {
+		if rollbackErr := transaction.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("rollback ready-node claim: %w", rollbackErr))
+		}
+	}()
+
 	statement := claimReadyNodeStatement
 	arguments := []any{
-		storage.NodeRunning, owner, durationModifier(leaseTTL), storage.NodeReady, storage.RunRunning,
+		storage.NodeRunning, owner, durationModifier(leaseTTL), owner,
+		storage.NodeReady, storage.RunRunning,
 	}
 
 	if len(registeredJSON) > 0 {
 		statement = claimRegisteredReadyNodeStatement
 		arguments = []any{
-			storage.NodeRunning, owner, durationModifier(leaseTTL), registeredJSON,
-			storage.NodeReady, storage.RunRunning,
+			storage.NodeRunning, owner, durationModifier(leaseTTL), owner,
+			registeredJSON, storage.NodeReady, storage.RunRunning,
 		}
 	}
 
-	claim, err := scanClaim(s.database.QueryRowContext(ctx, statement, arguments...), owner)
+	claim, err := scanClaim(transaction.QueryRowContext(ctx, statement, arguments...), owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 
 	if err != nil {
 		return nil, false, fmt.Errorf("claim ready node: %w", err)
+	}
+
+	if _, err = transaction.ExecContext(ctx, `UPDATE cord_runs
+		SET started_at = COALESCE(started_at,
+			(SELECT started_at FROM cord_nodes WHERE run_id = ? AND node_id = ?)),
+			lifecycle_version = COALESCE(lifecycle_version, ?)
+		WHERE id = ? AND started_at IS NULL`,
+		claim.RunID, claim.NodeID, storage.LifecycleVersion1, claim.RunID); err != nil {
+		return nil, false, fmt.Errorf("record run start: %w", err)
+	}
+
+	if err = transaction.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit ready-node claim: %w", err)
 	}
 
 	return claim, true, nil
@@ -128,18 +159,9 @@ func scanClaim(row *sql.Row, owner string) (*storage.Claim, error) {
 	var expiresUnixMillis, remainingMicros, retryBaseDelayNS, retryMaxDelayNS int64
 
 	err := row.Scan(
-		&claim.RunID,
-		&claim.NodeID,
-		&claim.FunctionKey,
-		&claim.SignatureHash,
-		&claim.Attempt,
-		&claim.Lease.Generation,
-		&expiresUnixMillis,
-		&remainingMicros,
-		&claim.MaxAttempts,
-		&retryBaseDelayNS,
-		&retryMaxDelayNS,
-		&claim.RetryPolicyVersion,
+		&claim.RunID, &claim.NodeID, &claim.FunctionKey, &claim.SignatureHash,
+		&claim.Attempt, &claim.Lease.Generation, &expiresUnixMillis, &remainingMicros,
+		&claim.MaxAttempts, &retryBaseDelayNS, &retryMaxDelayNS, &claim.RetryPolicyVersion,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan claimed node: %w", err)

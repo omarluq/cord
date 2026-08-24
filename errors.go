@@ -14,7 +14,8 @@ var (
 	ErrRunFinished = errors.New("cord: workflow run already finished")
 	// ErrRunConflict indicates that an idempotency key belongs to a different submission.
 	ErrRunConflict = errors.New("cord: workflow submission conflicts with an existing run")
-	// ErrRunIncompatible indicates that a workflow handle is incompatible with a durable run.
+	// ErrRunIncompatible indicates that a workflow handle or durable lifecycle
+	// snapshot is incompatible with a retained run.
 	ErrRunIncompatible = errors.New("cord: workflow is incompatible with the durable run")
 )
 

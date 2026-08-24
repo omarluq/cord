@@ -39,9 +39,16 @@ func (s *Store) cancelRunOnce(
 		}
 	}()
 
-	result, err := transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ? AND status IN (?, ?)`, storage.RunCanceling, runID, storage.RunRunning, storage.RunCanceling)
+	transitionedAt, err := databaseInstant(ctx, transaction)
+	if err != nil {
+		return "", err
+	}
+
+	instant := formatTime(transitionedAt)
+
+	result, err := transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?, updated_at = ?
+		WHERE id = ? AND status IN (?, ?)`, storage.RunCanceling, instant,
+		runID, storage.RunRunning, storage.RunCanceling)
 	if err != nil {
 		return "", fmt.Errorf("request cancellation for run %q: %w", runID, err)
 	}
@@ -51,7 +58,7 @@ func (s *Store) cancelRunOnce(
 		return "", fmt.Errorf("inspect run cancellation: %w", err)
 	}
 
-	outcome, err = persistCancellation(ctx, transaction, runID, accepted)
+	outcome, err = persistCancellation(ctx, transaction, runID, accepted, instant)
 	if err != nil {
 		return "", err
 	}
@@ -68,16 +75,19 @@ func persistCancellation(
 	transaction *sql.Tx,
 	runID storage.RunID,
 	accepted bool,
+	instant string,
 ) (storage.CancellationOutcome, error) {
 	if !accepted {
 		return cancellationOutcome(ctx, transaction, runID)
 	}
 
-	if err := cancelUnfinishedNodes(ctx, transaction, runID); err != nil {
+	if err := cancelUnfinishedNodes(
+		ctx, transaction, runID, storage.ReasonCanceledByRequest, instant,
+	); err != nil {
 		return "", err
 	}
 
-	if err := finishRunCancellation(ctx, transaction, runID); err != nil {
+	if err := finishRunCancellation(ctx, transaction, runID, instant); err != nil {
 		return "", err
 	}
 
@@ -112,11 +122,21 @@ func cancellationOutcome(
 	}
 }
 
-func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
+func finishRunCancellation(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+	instant string,
+) error {
 	result, err := transaction.ExecContext(ctx, `UPDATE cord_runs SET status = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-		completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ? AND status = ?`, storage.RunCanceled, runID, storage.RunCanceling)
+		updated_at = ?, completed_at = ?,
+		terminal_reason = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
+		terminal_runner_id = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN NULL ELSE terminal_runner_id END,
+		lifecycle_version = COALESCE(lifecycle_version, 1)
+		WHERE id = ? AND status = ?`, storage.RunCanceled, instant, instant,
+		storage.ReasonCanceledByRequest, runID, storage.RunCanceling)
 	if err != nil {
 		return fmt.Errorf("finish cancellation for run %q: %w", runID, err)
 	}
@@ -133,12 +153,23 @@ func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID stora
 	return nil
 }
 
-func cancelUnfinishedNodes(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
+func cancelUnfinishedNodes(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+	reason storage.TerminalReason,
+	instant string,
+) error {
 	_, err := transaction.ExecContext(ctx, `UPDATE cord_nodes
-		SET status = ?, lease_owner = NULL, lease_expires_at = NULL,
-			completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		SET status = ?, lease_owner = NULL, lease_expires_at = NULL, completed_at = ?,
+			state_changed_at = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE state_changed_at END,
+			terminal_reason = CASE
+			WHEN lifecycle_version IS NULL OR lifecycle_version = 1 THEN ? ELSE terminal_reason END,
+		lifecycle_version = COALESCE(lifecycle_version, 1)
 		WHERE run_id = ? AND status IN (?, ?, ?, ?)`,
-		storage.NodeCanceled, runID, storage.NodePending, storage.NodeReady, storage.NodeRunning, storage.NodeRetryWait)
+		storage.NodeCanceled, instant, instant, reason, runID,
+		storage.NodePending, storage.NodeReady, storage.NodeRunning, storage.NodeRetryWait)
 	if err != nil {
 		return fmt.Errorf("cancel unfinished nodes for run %q: %w", runID, err)
 	}

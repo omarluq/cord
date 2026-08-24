@@ -33,7 +33,10 @@ func runCancellationOutcomes(t *testing.T, harness Harness) {
 			return backend.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"done"`))
 		}},
 		{name: "failed", transition: func(backend storage.Backend, claim *storage.Claim) (bool, error) {
-			return backend.FailNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"failed"`))
+			return backend.FailNode(
+				t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"failed"`),
+				storage.ReasonFailureNonRetryable,
+			)
 		}},
 	} {
 		t.Run(terminal.name, func(t *testing.T) {
@@ -62,16 +65,22 @@ func runCancellationStatesAndFences(t *testing.T, harness Harness) {
 		t.Fatal(err)
 	}
 
-	completed := mustClaim(t, opened.backend, "completed-worker")
+	completed := mustClaimFunction(
+		t, opened.backend, "completed-worker", completedNodeName, "completed-signature",
+	)
 	requireClaimNode(t, completed, "completed")
 	accepted, err := opened.backend.CompleteNode(
 		t.Context(), completed.RunID, completed.NodeID, completed.Lease, []byte(`"done"`),
 	)
 	requireAccepted(t, "complete preserved node", accepted, err)
 
-	running := mustClaim(t, opened.backend, "running-worker")
+	running := mustClaimFunction(
+		t, opened.backend, "running-worker", runningNodeName, "running-signature",
+	)
 	requireClaimNode(t, running, runningNodeName)
-	retrying := mustClaim(t, opened.backend, "retry-worker")
+	retrying := mustClaimFunction(
+		t, opened.backend, "retry-worker", retryingNodeName, "retry-signature",
+	)
 	requireClaimNode(t, retrying, "retrying")
 	accepted, err = opened.backend.RetryNode(
 		t.Context(), retrying.RunID, retrying.NodeID, retrying.Lease, []byte(`"retry"`), time.Hour,
@@ -175,8 +184,11 @@ func cancellationPlan(runID storage.RunID) storage.RunPlan {
 	now := plan.Run.CreatedAt
 
 	const (
-		retryingOffset = 2 * time.Millisecond
-		readyOffset    = 3 * time.Millisecond
+		pendingDependencies = 4
+		retryingParentOrder = 2
+		readyParentOrder    = 3
+		retryingOffset      = 2 * time.Millisecond
+		readyOffset         = 3 * time.Millisecond
 	)
 
 	plan.Run.TerminalNodeID = terminalNodeName
@@ -195,13 +207,19 @@ func cancellationPlan(runID storage.RunID) storage.RunPlan {
 		conformanceNode(
 			runID, readyNodeName, readyNodeName, "ready-signature", storage.NodeReady, now.Add(readyOffset), 0,
 		),
-		conformanceNode(runID, pendingNodeName, pendingNodeName, "pending-signature", storage.NodePending, now, 1),
+		conformanceNode(
+			runID, pendingNodeName, pendingNodeName, "pending-signature",
+			storage.NodePending, now, pendingDependencies,
+		),
 		conformanceNode(
 			runID, terminalNodeName, terminalNodeName, "terminal-signature", storage.NodePending, now, 1,
 		),
 	}
 	plan.Edges = []storage.Edge{
-		{RunID: runID, Parent: runningNodeName, Child: pendingNodeName, ParentOrder: 0},
+		{RunID: runID, Parent: completedNodeName, Child: pendingNodeName, ParentOrder: 0},
+		{RunID: runID, Parent: runningNodeName, Child: pendingNodeName, ParentOrder: 1},
+		{RunID: runID, Parent: retryingNodeName, Child: pendingNodeName, ParentOrder: retryingParentOrder},
+		{RunID: runID, Parent: readyNodeName, Child: pendingNodeName, ParentOrder: readyParentOrder},
 		{RunID: runID, Parent: pendingNodeName, Child: terminalNodeName, ParentOrder: 0},
 	}
 
@@ -226,6 +244,7 @@ func requireCancellationFences(
 	requireRejected(t, "retry after cancellation", accepted, err)
 	accepted, err = backend.FailNode(
 		t.Context(), running.RunID, running.NodeID, running.Lease, []byte(`"late"`),
+		storage.ReasonFailureNonRetryable,
 	)
 	requireRejected(t, "failure after cancellation", accepted, err)
 
@@ -253,6 +272,24 @@ func requireCancellationOutcome(
 	if err != nil || got != want {
 		t.Fatalf("CancelRun() = (%q, %v), want (%q, nil)", got, err, want)
 	}
+}
+
+func mustClaimFunction(
+	t *testing.T,
+	backend storage.Backend,
+	owner, functionKey, signature string,
+) *storage.Claim {
+	t.Helper()
+
+	claim, claimed, err := backend.ClaimReadyNodeForFunctions(
+		t.Context(), owner, time.Minute,
+		[]storage.FunctionRegistration{{Key: functionKey, Signature: signature}},
+	)
+	if err != nil || !claimed || claim == nil {
+		t.Fatalf("claim function %q: claim=%#v claimed=%v err=%v", functionKey, claim, claimed, err)
+	}
+
+	return claim
 }
 
 func requireClaimNode(t *testing.T, claim *storage.Claim, want storage.NodeID) {

@@ -20,7 +20,7 @@ const claimQuery = `WITH registered(function_key, signature_hash) AS (VALUES %s)
 	WHERE n.status = 'ready'
 		AND r.status = 'running'
 		AND n.attempt < r.max_attempts
-		AND n.available_at <= clock_timestamp()
+		AND n.available_at <= $3
 	ORDER BY n.available_at, n.run_id, n.node_id
 	FOR UPDATE OF n SKIP LOCKED
 	LIMIT 1
@@ -29,16 +29,23 @@ UPDATE cord_nodes n
 SET status = 'running',
 	lease_owner = $1,
 	lease_generation = n.lease_generation + 1,
-	lease_expires_at = clock_timestamp() + ($2 * interval '1 microsecond'),
+	lease_expires_at = $3 + ($2 * interval '1 microsecond'),
 	attempt = n.attempt + 1,
-	started_at = COALESCE(n.started_at, clock_timestamp())
+	started_at = COALESCE(n.started_at, $3),
+	state_changed_at = CASE WHEN n.lifecycle_version IS NULL OR n.lifecycle_version = 1
+		THEN $3 ELSE n.state_changed_at END,
+	last_started_at = CASE WHEN n.lifecycle_version IS NULL OR n.lifecycle_version = 1
+		THEN $3 ELSE n.last_started_at END,
+	last_runner_id = CASE WHEN n.lifecycle_version IS NULL OR n.lifecycle_version = 1
+		THEN $1 ELSE n.last_runner_id END,
+	lifecycle_version = COALESCE(n.lifecycle_version, 1)
 FROM candidate c, cord_runs r
 WHERE n.run_id = c.run_id
 	AND n.node_id = c.node_id
 	AND r.id = n.run_id
 RETURNING n.run_id, n.node_id, n.function_key, n.signature_hash, n.attempt,
 	n.lease_generation, n.lease_expires_at,
-	GREATEST(0, (EXTRACT(EPOCH FROM (n.lease_expires_at - clock_timestamp())) * 1000000)::bigint),
+	GREATEST(0, (EXTRACT(EPOCH FROM (n.lease_expires_at - $3)) * 1000000)::bigint),
 	r.max_attempts, r.retry_base_delay_ns,
 	r.retry_max_delay_ns, r.retry_policy_version`
 
@@ -61,29 +68,57 @@ func (s *Store) ClaimReadyNodeForFunctions(
 		return nil, false, nil
 	}
 
-	values, arguments, err := registrationValues(owner, ttl, registrations)
+	var claim *storage.Claim
+
+	err := runTransaction(ctx, s.pool, "claim ready node", func(transaction *sql.Tx) error {
+		claimedAt, timeErr := databaseInstant(ctx, transaction)
+		if timeErr != nil {
+			return timeErr
+		}
+
+		values, arguments, valuesErr := registrationValues(owner, ttl, claimedAt, registrations)
+		if valuesErr != nil {
+			return valuesErr
+		}
+
+		claim, valuesErr = scanClaim(
+			transaction.QueryRowContext(ctx, fmt.Sprintf(claimQuery, values), arguments...), owner,
+		)
+		if errors.Is(valuesErr, sql.ErrNoRows) {
+			claim = nil
+
+			return nil
+		}
+
+		if valuesErr != nil {
+			return fmt.Errorf("claim ready node: %w", valuesErr)
+		}
+
+		_, valuesErr = transaction.ExecContext(ctx, `UPDATE cord_runs
+			SET started_at = COALESCE(started_at,
+				(SELECT MIN(started_at) FROM cord_nodes WHERE run_id = $1)),
+				lifecycle_version = COALESCE(lifecycle_version, 1)
+			WHERE id = $1 AND (lifecycle_version IS NULL OR lifecycle_version = 1)`, claim.RunID)
+		if valuesErr != nil {
+			return fmt.Errorf("record run start: %w", valuesErr)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
 
-	claim, err := scanClaim(s.pool.QueryRowContext(ctx, fmt.Sprintf(claimQuery, values), arguments...), owner)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-
-	if err != nil {
-		return nil, false, fmt.Errorf("claim ready node: %w", err)
-	}
-
-	return claim, true, nil
+	return claim, claim != nil, nil
 }
 
 func registrationValues(
 	owner string,
 	ttl time.Duration,
+	claimedAt time.Time,
 	registrations []storage.FunctionRegistration,
 ) (valueList string, arguments []any, err error) {
-	arguments = []any{owner, ttl.Microseconds()}
+	arguments = []any{owner, ttl.Microseconds(), claimedAt}
 	values := make([]string, 0, len(registrations))
 	seen := make(map[string]struct{}, len(registrations))
 

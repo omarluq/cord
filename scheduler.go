@@ -459,8 +459,14 @@ func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeEr
 		maxDelay:    claim.RetryMaxDelay,
 	}
 
-	if isPermanent(invokeErr) || claim.Attempt >= policy.maxAttempts {
-		accepted, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure)
+	permanent := isPermanent(invokeErr)
+	if permanent || claim.Attempt >= policy.maxAttempts {
+		reason := storage.ReasonFailureAttemptsExhausted
+		if permanent {
+			reason = storage.ReasonFailureNonRetryable
+		}
+
+		accepted, err := c.store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, failure, reason)
 		if err != nil {
 			return fmt.Errorf("cord: fail node: %w", err)
 		}

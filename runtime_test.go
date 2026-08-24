@@ -401,7 +401,7 @@ func TestNew_RejectsNewerSchema(t *testing.T) {
 
 	_, err = database.ExecContext(
 		t.Context(),
-		"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (5, 1)",
+		"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (6, 1)",
 	)
 	require.NoError(t, err)
 

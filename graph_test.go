@@ -100,7 +100,8 @@ func TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable(t *t
 	nodeID := storage.NodeID("6c5b0f920fab45ba04a898c2184e4f6596f4c41149f1977ada36064320aad502")
 	plan := storage.RunPlan{
 		Run: storage.Run{
-			CreatedAt: now, UpdatedAt: now, CompletedAt: nil,
+			CreatedAt: now, UpdatedAt: now, CompletedAt: nil, StartedAt: nil,
+			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
 			ID: runID, WorkflowName: "persisted-plan-golden",
 			DefinitionHash: "persisted-definition-hash", TerminalNodeID: nodeID,
 			Status: storage.RunRunning, Input: []byte("7"), Output: nil, Error: nil,
@@ -111,6 +112,8 @@ func TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable(t *t
 		},
 		Nodes: []storage.Node{{
 			AvailableAt: now, CompletedAt: nil, StartedAt: nil,
+			StateChangedAt: nil, LastStartedAt: nil, LifecycleVersion: nil,
+			LastRunnerID: nil, TerminalReason: nil,
 			FunctionKey: "github.com/omarluq/cord_test.passThrough", RunID: runID, ID: nodeID,
 			SignatureHash: signature, Status: storage.NodeReady, Error: nil, Output: nil,
 			Lease: storage.Lease{}, RemainingDeps: 0, Attempt: 0,

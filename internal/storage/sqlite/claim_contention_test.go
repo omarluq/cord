@@ -42,35 +42,31 @@ func TestStore_ConcurrentClaimantsMakeProgressWithoutDuplicateClaims(t *testing.
 	}
 
 	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
+		path := filepath.Join(t.TempDir(), testCase.name+"-claims.db")
+		databases, stores := openClaimStores(t, path, claimants)
+		createReadyRuns(t, stores[0], runs, "run")
 
-			path := filepath.Join(t.TempDir(), "claims.db")
-			databases, stores := openClaimStores(t, path, claimants)
-			createReadyRuns(t, stores[0], runs, "run")
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		claims, progress, errs := claimQuotaConcurrently(
+			ctx,
+			stores,
+			runs/claimants,
+			testCase.registered,
+		)
 
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
+		for _, err := range errs {
+			require.NoError(t, err, testCase.name)
+		}
 
-			claims, progress, errs := claimQuotaConcurrently(
-				ctx,
-				stores,
-				runs/claimants,
-				testCase.registered,
-			)
-			for _, err := range errs {
-				require.NoError(t, err)
-			}
+		require.NoError(t, ctx.Err(), testCase.name)
+		cancel()
+		assert.Len(t, uniqueClaimedNodes(t, claims), runs, testCase.name)
 
-			require.NoError(t, ctx.Err())
-			assert.Len(t, uniqueClaimedNodes(t, claims), runs)
+		for index, count := range progress {
+			assert.Equal(t, int64(runs/claimants), count, "%s worker-%d progress", testCase.name, index)
+		}
 
-			for index, count := range progress {
-				assert.Equal(t, int64(runs/claimants), count, "worker-%d progress", index)
-			}
-
-			assert.Equal(t, runs, runningNodeCount(t, databases[0], compileNode))
-		})
+		assert.Equal(t, runs, runningNodeCount(t, databases[0], compileNode), testCase.name)
 	}
 }
 

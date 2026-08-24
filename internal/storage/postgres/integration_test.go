@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"reflect"
@@ -31,34 +32,66 @@ const (
 	operationTimeout = 30 * time.Second
 )
 
+func TestMain(m *testing.M) {
+	os.Exit(runPostgresTests(m))
+}
+
+func runPostgresTests(m *testing.M) (exitCode int) {
+	if os.Getenv("CORD_POSTGRES_DSN") != "" {
+		return m.Run()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+
+	container, err := postgrescontainer.Run(
+		ctx,
+		postgresImage,
+		postgrescontainer.WithDatabase("cord"),
+		postgrescontainer.WithUsername("cord"),
+		postgrescontainer.WithPassword("cord"),
+		postgrescontainer.BasicWaitStrategies(),
+	)
+	if err != nil {
+		log.Printf("start PostgreSQL test container: %v", err)
+
+		return 1
+	}
+
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cleanupCancel()
+
+		if terminateErr := container.Terminate(cleanupCtx); terminateErr != nil {
+			log.Printf("terminate PostgreSQL test container: %v", terminateErr)
+
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+	}()
+
+	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		log.Printf("resolve PostgreSQL test connection: %v", err)
+
+		return 1
+	}
+
+	if err = os.Setenv("CORD_POSTGRES_DSN", dsn); err != nil {
+		log.Printf("publish PostgreSQL test connection: %v", err)
+
+		return 1
+	}
+
+	return m.Run()
+}
+
 func startPostgres(t *testing.T) string {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), fixtureTimeout)
-	defer cancel()
-
 	dsn := os.Getenv("CORD_POSTGRES_DSN")
-	if dsn == "" {
-		container, err := postgrescontainer.Run(
-			ctx,
-			postgresImage,
-			postgrescontainer.WithDatabase("cord"),
-			postgrescontainer.WithUsername("cord"),
-			postgrescontainer.WithPassword("cord"),
-			postgrescontainer.BasicWaitStrategies(),
-		)
-		require.NoError(t, err, "start PostgreSQL test container")
-
-		t.Cleanup(func() {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), operationTimeout)
-			defer cleanupCancel()
-
-			assert.NoError(t, container.Terminate(cleanupCtx), "terminate PostgreSQL test container")
-		})
-
-		dsn, err = container.ConnectionString(ctx, "sslmode=disable")
-		require.NoError(t, err, "resolve PostgreSQL test connection")
-	}
+	require.NotEmpty(t, dsn, "PostgreSQL test connection was not initialized")
 
 	return isolatePostgresSchema(t, dsn)
 }
@@ -101,8 +134,8 @@ func openPostgres(tb testing.TB, dsn string) *sql.DB {
 		tb.Fatalf("open PostgreSQL: %v", err)
 	}
 
-	database.SetMaxOpenConns(8)
-	database.SetMaxIdleConns(8)
+	database.SetMaxOpenConns(4)
+	database.SetMaxIdleConns(2)
 
 	if err = database.PingContext(context.Background()); err != nil {
 		closeErr := database.Close()
@@ -131,8 +164,8 @@ func openPostgresPool(tb testing.TB, dsn string) *sql.DB {
 
 	database, err := sql.Open("pgx", dsn)
 	require.NoError(tb, err)
-	database.SetMaxOpenConns(16)
-	database.SetMaxIdleConns(16)
+	database.SetMaxOpenConns(8)
+	database.SetMaxIdleConns(4)
 	require.NoError(tb, database.PingContext(context.Background()))
 	tb.Cleanup(func() { assert.NoError(tb, database.Close()) })
 
@@ -236,6 +269,15 @@ func TestSchemaVerification(t *testing.T) {
 		{"idempotency index uniqueness", `DROP INDEX cord_runs_workflow_name_idempotency_key_idx;
 			CREATE INDEX cord_runs_workflow_name_idempotency_key_idx
 			ON cord_runs(workflow_name, idempotency_key)`},
+		{"run lifecycle version type", `ALTER TABLE cord_runs ALTER COLUMN lifecycle_version TYPE BIGINT`},
+		{"run lifecycle version nullability", `ALTER TABLE cord_runs ALTER COLUMN lifecycle_version SET NOT NULL`},
+		{"run lifecycle version default", `ALTER TABLE cord_runs ALTER COLUMN lifecycle_version SET DEFAULT 1`},
+		{"run lifecycle timestamp type", `ALTER TABLE cord_runs ALTER COLUMN started_at TYPE TIMESTAMP`},
+		{"run lifecycle text type", `ALTER TABLE cord_runs ALTER COLUMN terminal_reason TYPE VARCHAR(64)`},
+		{"node lifecycle version type", `ALTER TABLE cord_nodes ALTER COLUMN lifecycle_version TYPE BIGINT`},
+		{"node lifecycle timestamp nullability", `ALTER TABLE cord_nodes ALTER COLUMN state_changed_at SET NOT NULL`},
+		{"node lifecycle timestamp default", `ALTER TABLE cord_nodes ALTER COLUMN last_started_at SET DEFAULT now()`},
+		{"node lifecycle text type", `ALTER TABLE cord_nodes ALTER COLUMN last_runner_id TYPE VARCHAR(64)`},
 		{"foreign key delete action", `ALTER TABLE cord_nodes DROP CONSTRAINT cord_nodes_run_id_fkey;
 			ALTER TABLE cord_nodes ADD FOREIGN KEY (run_id) REFERENCES cord_runs(id)`},
 	}
@@ -258,21 +300,181 @@ func TestSchemaVerification(t *testing.T) {
 		CREATE INDEX extension_index ON cord_runs(workflow_name)`)
 	require.NoError(t, err)
 	require.NoError(t, postgresstore.Verify(t.Context(), database))
+
+	var lifecycleIndexes int
+
+	err = database.QueryRowContext(t.Context(), `SELECT count(DISTINCT i.indexrelid)
+		FROM pg_catalog.pg_index i
+		JOIN pg_catalog.pg_class tab ON tab.oid = i.indrelid
+		JOIN pg_catalog.pg_namespace n ON n.oid = tab.relnamespace
+		JOIN unnest(i.indkey) key(attnum) ON true
+		JOIN pg_catalog.pg_attribute a ON a.attrelid = tab.oid AND a.attnum = key.attnum
+		WHERE n.oid = current_schema()::regnamespace
+			AND tab.relname IN ('cord_runs', 'cord_nodes')
+			AND a.attname IN ('lifecycle_version', 'started_at', 'terminal_reason',
+				'terminal_runner_id', 'state_changed_at', 'last_started_at', 'last_runner_id')`).
+		Scan(&lifecycleIndexes)
+	require.NoError(t, err)
+	assert.Zero(t, lifecycleIndexes, "lifecycle migration must not add indexes")
 }
 
-func TestMigrateVersionTwoRowsAndExecutesThem(t *testing.T) {
+func TestMigratePriorVersionRowsAndExecutesThem(t *testing.T) {
 	t.Parallel()
 
-	database := openPostgres(t, startPostgres(t))
-	require.NoError(t, postgresstore.Migrate(t.Context(), database))
-	_, err := database.ExecContext(t.Context(), `DROP INDEX cord_runs_workflow_name_idempotency_key_idx;
-		ALTER TABLE cord_runs DROP COLUMN submission_fingerprint;
-		ALTER TABLE cord_runs DROP COLUMN idempotency_key;
-		DELETE FROM cord_schema_migrations WHERE version_id = 3`)
+	for _, version := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("version_%d", version), func(t *testing.T) {
+			t.Parallel()
+			testMigratePriorVersionRowsAndExecutesThem(t, startPostgres(t), version)
+		})
+	}
+}
+
+func TestMigratePriorVersionTerminalRowsRemainInspectable(t *testing.T) {
+	t.Parallel()
+
+	states := []struct {
+		runStatus  storage.RunStatus
+		nodeStatus storage.NodeStatus
+		runReason  storage.TerminalReason
+		nodeReason storage.TerminalReason
+	}{
+		{storage.RunCompleted, storage.NodeCompleted, storage.ReasonSucceeded, storage.ReasonSucceeded},
+		{storage.RunFailed, storage.NodeFailed, storage.ReasonLegacyUnknown, storage.ReasonLegacyUnknown},
+		{storage.RunFailed, storage.NodeCanceled, storage.ReasonLegacyUnknown, storage.ReasonCanceledByRunFailure},
+		{storage.RunCanceled, storage.NodeCanceled, storage.ReasonCanceledByRequest, storage.ReasonLegacyUnknown},
+	}
+	for _, version := range []int{1, 2, 3} {
+		for _, state := range states {
+			t.Run(fmt.Sprintf("v%d/%s-%s", version, state.runStatus, state.nodeStatus), func(t *testing.T) {
+				t.Parallel()
+				database := openPostgres(t, startPostgres(t))
+				require.NoError(t, postgresstore.Migrate(t.Context(), database))
+				downgradePostgresFixture(t, database, version)
+				insertPostgresLegacyTerminal(t, database, state.runStatus, state.nodeStatus)
+				before := readPostgresLegacyTerminal(t, database)
+				require.NoError(t, postgresstore.Migrate(t.Context(), database))
+				assert.Equal(t, before, readPostgresLegacyTerminal(t, database))
+				assertPostgresLegacyLifecycleNull(t, database)
+
+				store, err := postgresstore.New(database)
+				require.NoError(t, err)
+				report, err := store.InspectRun(t.Context(), "legacy-terminal")
+				require.NoError(t, err)
+				assert.Equal(t, state.runStatus, report.State)
+				assert.Equal(t, state.runReason, report.Reason)
+				page, err := store.ListRunNodes(t.Context(), "legacy-terminal", storage.NodeQuery{})
+				require.NoError(t, err)
+				require.Len(t, page.Nodes, 1)
+				assert.Equal(t, state.nodeStatus, page.Nodes[0].State)
+				assert.Equal(t, state.nodeReason, page.Nodes[0].Reason)
+			})
+		}
+	}
+}
+
+func insertPostgresLegacyTerminal(
+	t *testing.T,
+	database *sql.DB,
+	runStatus storage.RunStatus,
+	nodeStatus storage.NodeStatus,
+) {
+	t.Helper()
+
+	now := time.Date(2024, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+	finished := now.Add(time.Minute)
+
+	var runOutput, runError, nodeOutput, nodeError any
+	if runStatus == storage.RunCompleted {
+		runOutput = []byte("42")
+	}
+
+	if runStatus == storage.RunFailed {
+		runError = []byte(`{"message":"legacy terminal"}`)
+	}
+
+	if nodeStatus == storage.NodeCompleted {
+		nodeOutput = []byte("42")
+	}
+
+	if nodeStatus == storage.NodeFailed {
+		nodeError = []byte(`{"message":"legacy terminal"}`)
+	}
+
+	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_runs (
+		id, workflow_name, definition_hash, status, input_payload, output_payload,
+		terminal_node_id, error_payload, created_at, updated_at, completed_at,
+		max_attempts, retry_base_delay_ns, retry_max_delay_ns, retry_policy_version
+	) VALUES ($1, 'legacy-workflow', 'legacy-definition', $2, $3, $4, 'node', $5,
+		$6, $7, $7, 3, 500000000, 30000000000, 1)`,
+		"legacy-terminal", runStatus, []byte("41"), runOutput, runError, now, finished)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
+		run_id, node_id, function_key, signature_hash, status, remaining_deps,
+		attempt, available_at, lease_generation, output_payload, error_payload,
+		started_at, completed_at
+	) VALUES ('legacy-terminal', 'node', 'legacy.function', 'legacy-signature',
+		$1, 0, 1, $2, 1, $3, $4, $2, $5)`, nodeStatus, now, nodeOutput, nodeError, finished)
+	require.NoError(t, err)
+}
+
+type postgresLegacyTerminalRow struct {
+	RunStatus, Input, Output, RunError, Created, Updated, RunCompleted string
+	NodeStatus, NodeOutput, NodeError, NodeStarted, NodeCompleted      string
+	Attempt                                                            int
+	Generation                                                         int64
+}
+
+func readPostgresLegacyTerminal(t *testing.T, database *sql.DB) postgresLegacyTerminalRow {
+	t.Helper()
+
+	var row postgresLegacyTerminalRow
+
+	err := database.QueryRowContext(t.Context(), `SELECT r.status, encode(r.input_payload, 'hex'),
+		COALESCE(encode(r.output_payload, 'hex'), 'NULL'),
+		COALESCE(encode(r.error_payload, 'hex'), 'NULL'), r.created_at::text,
+		r.updated_at::text, r.completed_at::text, n.status,
+		COALESCE(encode(n.output_payload, 'hex'), 'NULL'),
+		COALESCE(encode(n.error_payload, 'hex'), 'NULL'), n.started_at::text,
+		n.completed_at::text, n.attempt, n.lease_generation
+		FROM cord_runs r JOIN cord_nodes n ON n.run_id = r.id
+		WHERE r.id = 'legacy-terminal'`).Scan(
+		&row.RunStatus, &row.Input, &row.Output, &row.RunError, &row.Created,
+		&row.Updated, &row.RunCompleted, &row.NodeStatus, &row.NodeOutput,
+		&row.NodeError, &row.NodeStarted, &row.NodeCompleted, &row.Attempt, &row.Generation,
+	)
 	require.NoError(t, err)
 
-	legacy := postgresReadyPlan("pre-async-postgres-run", time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC))
-	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_runs (
+	return row
+}
+
+func assertPostgresLegacyLifecycleNull(t *testing.T, database *sql.DB) {
+	t.Helper()
+
+	var populated int
+
+	err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM cord_runs r
+		JOIN cord_nodes n ON n.run_id = r.id WHERE r.id = 'legacy-terminal' AND (
+		r.lifecycle_version IS NOT NULL OR r.started_at IS NOT NULL OR
+		r.terminal_reason IS NOT NULL OR r.terminal_runner_id IS NOT NULL OR
+		n.lifecycle_version IS NOT NULL OR n.state_changed_at IS NOT NULL OR
+		n.last_started_at IS NOT NULL OR n.last_runner_id IS NOT NULL OR
+		n.terminal_reason IS NOT NULL)`).Scan(&populated)
+	require.NoError(t, err)
+	assert.Zero(t, populated, "migration must not invent lifecycle history")
+}
+
+func testMigratePriorVersionRowsAndExecutesThem(t *testing.T, dsn string, version int) {
+	t.Helper()
+
+	database := openPostgres(t, dsn)
+	require.NoError(t, postgresstore.Migrate(t.Context(), database))
+	downgradePostgresFixture(t, database, version)
+
+	legacy := postgresReadyPlan(
+		storage.RunID(fmt.Sprintf("pre-lifecycle-postgres-v%d-run", version)),
+		time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC),
+	)
+	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_runs (
 		id, workflow_name, definition_hash, status, input_payload, terminal_node_id,
 		created_at, updated_at, max_attempts, retry_base_delay_ns,
 		retry_max_delay_ns, retry_policy_version
@@ -291,8 +493,11 @@ func TestMigrateVersionTwoRowsAndExecutesThem(t *testing.T) {
 		storage.NodeReady, 0, 0, legacy.Run.CreatedAt, 0)
 	require.NoError(t, err)
 
+	require.ErrorIs(t, postgresstore.Verify(t.Context(), database), storage.ErrSchemaOutdated)
 	require.NoError(t, postgresstore.Migrate(t.Context(), database))
 	require.NoError(t, postgresstore.Verify(t.Context(), database))
+
+	assertMigratedLegacyRows(t, database, &legacy)
 
 	store, err := postgresstore.New(database)
 	require.NoError(t, err)
@@ -326,6 +531,75 @@ func TestMigrateVersionTwoRowsAndExecutesThem(t *testing.T) {
 	assert.False(t, fingerprint.Valid)
 }
 
+func assertMigratedLegacyRows(t *testing.T, database *sql.DB, legacy *storage.RunPlan) {
+	t.Helper()
+
+	var (
+		workflowName, runStatus, nodeStatus string
+		inputPayload                        []byte
+		createdAt, updatedAt, availableAt   time.Time
+		lifecycleValues                     [9]sql.NullString
+	)
+
+	err := database.QueryRowContext(t.Context(), `SELECT
+		r.workflow_name, r.status, r.input_payload, r.created_at, r.updated_at,
+		n.status, n.available_at,
+		r.lifecycle_version::text, r.started_at::text, r.terminal_reason, r.terminal_runner_id,
+		n.lifecycle_version::text, n.state_changed_at::text, n.last_started_at::text,
+		n.last_runner_id, n.terminal_reason
+		FROM cord_runs r JOIN cord_nodes n ON n.run_id = r.id WHERE r.id = $1`, legacy.Run.ID).Scan(
+		&workflowName, &runStatus, &inputPayload, &createdAt, &updatedAt,
+		&nodeStatus, &availableAt,
+		&lifecycleValues[0], &lifecycleValues[1], &lifecycleValues[2], &lifecycleValues[3],
+		&lifecycleValues[4], &lifecycleValues[5], &lifecycleValues[6], &lifecycleValues[7],
+		&lifecycleValues[8],
+	)
+	require.NoError(t, err)
+	assert.Equal(t, legacy.Run.WorkflowName, workflowName)
+	assert.Equal(t, string(legacy.Run.Status), runStatus)
+	assert.Equal(t, []byte("41"), inputPayload)
+	assert.True(t, legacy.Run.CreatedAt.Equal(createdAt))
+	assert.True(t, legacy.Run.UpdatedAt.Equal(updatedAt))
+	assert.Equal(t, string(storage.NodeReady), nodeStatus)
+	assert.True(t, legacy.Run.CreatedAt.Equal(availableAt))
+
+	for _, value := range lifecycleValues {
+		assert.False(t, value.Valid, "migrated lifecycle value must remain NULL")
+	}
+}
+
+func downgradePostgresFixture(t *testing.T, database *sql.DB, version int) {
+	t.Helper()
+
+	_, err := database.ExecContext(t.Context(), `ALTER TABLE cord_runs
+		DROP COLUMN lifecycle_version,
+		DROP COLUMN started_at,
+		DROP COLUMN terminal_reason,
+		DROP COLUMN terminal_runner_id;
+		ALTER TABLE cord_nodes
+		DROP COLUMN lifecycle_version,
+		DROP COLUMN state_changed_at,
+		DROP COLUMN last_started_at,
+		DROP COLUMN last_runner_id,
+		DROP COLUMN terminal_reason;
+		DELETE FROM cord_schema_migrations WHERE version_id = 4`)
+	require.NoError(t, err)
+
+	if version < 3 {
+		_, err = database.ExecContext(t.Context(), `DROP INDEX cord_runs_workflow_name_idempotency_key_idx;
+			ALTER TABLE cord_runs DROP COLUMN submission_fingerprint;
+			ALTER TABLE cord_runs DROP COLUMN idempotency_key;
+			DELETE FROM cord_schema_migrations WHERE version_id = 3`)
+		require.NoError(t, err)
+	}
+
+	if version < 2 {
+		_, err = database.ExecContext(t.Context(), `DROP INDEX cord_edges_run_child_parent_order_idx;
+			DELETE FROM cord_schema_migrations WHERE version_id = 2`)
+		require.NoError(t, err)
+	}
+}
+
 func TestMigratePreflightsNewerSchema(t *testing.T) {
 	t.Parallel()
 
@@ -335,9 +609,10 @@ func TestMigratePreflightsNewerSchema(t *testing.T) {
 		version_id BIGINT NOT NULL,
 		is_applied BOOLEAN NOT NULL,
 		tstamp TIMESTAMP NOT NULL DEFAULT now()
-	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (4, true)`)
+	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (5, true)`)
 	require.NoError(t, err)
 
+	require.ErrorIs(t, postgresstore.Verify(t.Context(), database), storage.ErrSchemaNewer)
 	err = postgresstore.Migrate(t.Context(), database)
 	require.ErrorIs(t, err, storage.ErrSchemaNewer)
 
@@ -380,7 +655,7 @@ func TestConcurrentMigrations(t *testing.T) {
 
 	var migrations int
 
-	const query = "SELECT count(*) FROM cord_schema_migrations WHERE version_id = 1"
+	const query = "SELECT count(*) FROM cord_schema_migrations WHERE version_id = 4"
 	require.NoError(t, database.QueryRowContext(t.Context(), query).Scan(&migrations))
 	assert.Equal(t, 1, migrations)
 }
@@ -642,15 +917,15 @@ func TestClaimSkipsLockedFirstCandidate(t *testing.T) {
 	assert.Equal(t, second.Run.ID, claim.RunID)
 }
 
+type staleLeaseOperation struct {
+	run  func(context.Context, *postgresstore.Store, *storage.Claim) (bool, error)
+	name string
+}
+
 func TestStaleLeasesRejectTransitionsWithoutMutation(t *testing.T) {
 	t.Parallel()
 
-	type operation struct {
-		run  func(context.Context, *postgresstore.Store, *storage.Claim) (bool, error)
-		name string
-	}
-
-	operations := []operation{
+	operations := []staleLeaseOperation{
 		{run: func(ctx context.Context, store *postgresstore.Store, claim *storage.Claim) (bool, error) {
 			return store.CompleteNode(ctx, claim.RunID, claim.NodeID, claim.Lease, []byte("complete"))
 		}, name: "complete"},
@@ -658,7 +933,10 @@ func TestStaleLeasesRejectTransitionsWithoutMutation(t *testing.T) {
 			return store.RetryNode(ctx, claim.RunID, claim.NodeID, claim.Lease, []byte("retry"), time.Minute)
 		}, name: "retry"},
 		{run: func(ctx context.Context, store *postgresstore.Store, claim *storage.Claim) (bool, error) {
-			return store.FailNode(ctx, claim.RunID, claim.NodeID, claim.Lease, []byte("fail"))
+			return store.FailNode(
+				ctx, claim.RunID, claim.NodeID, claim.Lease, []byte("fail"),
+				storage.ReasonFailureAttemptsExhausted,
+			)
 		}, name: "fail"},
 		{run: func(ctx context.Context, store *postgresstore.Store, claim *storage.Claim) (bool, error) {
 			accepted, _, err := store.HeartbeatNode(ctx, claim.RunID, claim.NodeID, claim.Lease, time.Minute)
@@ -752,15 +1030,18 @@ const postgresTestNode storage.NodeID = "node"
 func postgresReadyPlan(runID storage.RunID, availableAt time.Time) storage.RunPlan {
 	return storage.RunPlan{
 		Run: storage.Run{
-			CreatedAt: availableAt, UpdatedAt: availableAt, CompletedAt: nil, ID: runID,
+			CreatedAt: availableAt, UpdatedAt: availableAt, CompletedAt: nil, StartedAt: nil,
+			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil, ID: runID,
 			WorkflowName: "postgres-concurrency", DefinitionHash: "definition", TerminalNodeID: postgresTestNode,
 			Status: storage.RunRunning, Input: []byte("input"), Output: nil, Error: nil, MaxAttempts: 3,
 			RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Second, RetryPolicyVersion: 1,
 			IdempotencyKey: nil, SubmissionFingerprint: nil,
 		},
 		Nodes: []storage.Node{{
-			AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil, SignatureHash: "signature",
-			RunID: runID, ID: postgresTestNode, FunctionKey: "postgres.test", Status: storage.NodeReady,
+			AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil, StateChangedAt: nil,
+			LastStartedAt: nil, LifecycleVersion: nil, LastRunnerID: nil, TerminalReason: nil,
+			SignatureHash: "signature",
+			RunID:         runID, ID: postgresTestNode, FunctionKey: "postgres.test", Status: storage.NodeReady,
 			Lease: storage.Lease{}, Error: nil, Output: nil, RemainingDeps: 0, Attempt: 0,
 		}},
 		Edges: nil,
@@ -828,6 +1109,7 @@ func TestTerminalTransitionsSerializeOnRun(t *testing.T) {
 	fail := func(ctx context.Context, claim *storage.Claim) (bool, error) {
 		accepted, transitionErr := store.FailNode(
 			ctx, claim.RunID, claim.NodeID, claim.Lease, []byte(claim.NodeID),
+			storage.ReasonFailureAttemptsExhausted,
 		)
 		if transitionErr != nil {
 			return false, fmt.Errorf("fail terminal node: %w", transitionErr)
@@ -856,6 +1138,14 @@ func runTerminalRace(
 	err := store.CreateRun(t.Context(), &plan)
 	require.NoError(t, err)
 
+	// This low-level race fixture intentionally makes an ancestor and its
+	// terminal child claimable together after validating and persisting a legal
+	// plan. Public plan validation correctly rejects this topology as an input.
+	_, err = database.ExecContext(t.Context(), `UPDATE cord_nodes
+		SET status = $1, remaining_deps = 0
+		WHERE run_id = $2 AND node_id = $3`, storage.NodeReady, runID, "terminal")
+	require.NoError(t, err)
+
 	terminal := claimPostgresNode(t, store, "terminal-worker", "terminal-key", "terminal-signature")
 	sibling := claimPostgresNode(t, store, "sibling-worker", "sibling-key", "sibling-signature")
 
@@ -879,6 +1169,7 @@ func runTerminalRace(
 
 		accepted, transitionErr := store.FailNode(
 			t.Context(), sibling.RunID, sibling.NodeID, sibling.Lease, []byte("sibling"),
+			storage.ReasonFailureAttemptsExhausted,
 		)
 		outcomes <- outcome{err: transitionErr, accepted: accepted}
 	}()
@@ -904,9 +1195,12 @@ func terminalRacePlan(runID storage.RunID) storage.RunPlan {
 	now := time.Now().UTC().Add(-time.Second)
 
 	return storage.RunPlan{
-		Edges: nil,
+		Edges: []storage.Edge{{
+			RunID: runID, Parent: "sibling", Child: "terminal", ParentOrder: 0,
+		}},
 		Run: storage.Run{
-			CreatedAt: now, UpdatedAt: now, CompletedAt: nil,
+			CreatedAt: now, UpdatedAt: now, CompletedAt: nil, StartedAt: nil,
+			LifecycleVersion: nil, TerminalReason: nil, TerminalRunnerID: nil,
 			ID: runID, WorkflowName: string(runID), DefinitionHash: "definition",
 			TerminalNodeID: "terminal", Status: storage.RunRunning,
 			Input: []byte(`null`), Output: nil, Error: nil,
@@ -915,8 +1209,8 @@ func terminalRacePlan(runID storage.RunID) storage.RunPlan {
 			IdempotencyKey: nil, SubmissionFingerprint: nil,
 		},
 		Nodes: []storage.Node{
-			terminalRaceNode(runID, "terminal", "terminal-key", "terminal-signature", now),
-			terminalRaceNode(runID, "sibling", "sibling-key", "sibling-signature", now),
+			terminalRaceNode(runID, "terminal", "terminal-key", "terminal-signature", now, 1),
+			terminalRaceNode(runID, "sibling", "sibling-key", "sibling-signature", now, 0),
 		},
 	}
 }
@@ -926,12 +1220,19 @@ func terminalRaceNode(
 	nodeID storage.NodeID,
 	key, signature string,
 	availableAt time.Time,
+	remainingDeps int,
 ) storage.Node {
+	status := storage.NodeReady
+	if remainingDeps > 0 {
+		status = storage.NodePending
+	}
+
 	return storage.Node{
-		AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil,
+		AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil, StateChangedAt: nil,
+		LastStartedAt: nil, LifecycleVersion: nil, LastRunnerID: nil, TerminalReason: nil,
 		SignatureHash: signature, RunID: runID, ID: nodeID, FunctionKey: key,
-		Status: storage.NodeReady, Lease: storage.Lease{}, Error: nil, Output: nil,
-		RemainingDeps: 0, Attempt: 0,
+		Status: status, Lease: storage.Lease{}, Error: nil, Output: nil,
+		RemainingDeps: remainingDeps, Attempt: 0,
 	}
 }
 

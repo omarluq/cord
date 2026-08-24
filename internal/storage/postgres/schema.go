@@ -13,7 +13,8 @@ import (
 const (
 	initialVersion     = int64(1)
 	parentOrderVersion = int64(2)
-	requiredVersion    = int64(3)
+	idempotencyVersion = int64(3)
+	requiredVersion    = int64(4)
 	schemaVersionTable = "cord_schema_migrations"
 	migrationLockKey   = int64(0x636f7264) // "cord"
 )
@@ -22,7 +23,8 @@ func migrations() []*goose.Migration {
 	return []*goose.Migration{
 		goose.NewGoMigration(initialVersion, &goose.GoFunc{RunTx: migrateV1}, nil),
 		goose.NewGoMigration(parentOrderVersion, &goose.GoFunc{RunTx: migrateV2}, nil),
-		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateV3}, nil),
+		goose.NewGoMigration(idempotencyVersion, &goose.GoFunc{RunTx: migrateV3}, nil),
+		goose.NewGoMigration(requiredVersion, &goose.GoFunc{RunTx: migrateV4}, nil),
 	}
 }
 
@@ -118,6 +120,30 @@ func migrateV3(ctx context.Context, transaction *sql.Tx) error {
 	for _, statement := range statements {
 		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("add idempotent submission schema: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func migrateV4(ctx context.Context, transaction *sql.Tx) error {
+	// Nullable columns without defaults preserve legacy rows as explicitly
+	// distinguishable from rows written with lifecycle metadata.
+	statements := []string{
+		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS lifecycle_version INTEGER`,
+		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ`,
+		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS terminal_reason TEXT`,
+		`ALTER TABLE cord_runs ADD COLUMN IF NOT EXISTS terminal_runner_id TEXT`,
+		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS lifecycle_version INTEGER`,
+		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS state_changed_at TIMESTAMPTZ`,
+		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS last_started_at TIMESTAMPTZ`,
+		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS last_runner_id TEXT`,
+		`ALTER TABLE cord_nodes ADD COLUMN IF NOT EXISTS terminal_reason TEXT`,
+	}
+
+	for _, statement := range statements {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add lifecycle snapshot schema: %w", err)
 		}
 	}
 

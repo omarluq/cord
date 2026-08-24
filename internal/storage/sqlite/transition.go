@@ -55,22 +55,13 @@ func (s *Store) fencedTerminalTransitionOnce(
 	return true, nil
 }
 
-func (s *Store) updateNodes(ctx context.Context, query, operation string, arguments ...any) (count int64, err error) {
-	err = retryContention(ctx, "retry "+operation, func(attemptCtx context.Context) error {
-		result, execErr := s.database.ExecContext(attemptCtx, query, arguments...)
-		if execErr != nil {
-			return fmt.Errorf("%s: %w", operation, execErr)
-		}
+func rollbackError(transaction *sql.Tx, operation string, operationErr error) error {
+	rollbackErr := transaction.Rollback()
+	if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+		return errors.Join(operationErr, fmt.Errorf("%s: %w", operation, rollbackErr))
+	}
 
-		count, execErr = result.RowsAffected()
-		if execErr != nil {
-			return fmt.Errorf("inspect %s: %w", operation, execErr)
-		}
-
-		return nil
-	})
-
-	return count, err
+	return operationErr
 }
 
 func affectedOne(result sql.Result) (bool, error) {

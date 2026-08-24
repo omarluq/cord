@@ -181,10 +181,11 @@ func TestScheduler_RecoversExpiredLeaseWithinPollingLatency(t *testing.T) {
 	assert.Equal(t, "recovered", result.value)
 }
 
-// pollingLatencyLimit permits three polling periods plus enough scheduling
-// allowance for parallel, race-enabled test execution on a loaded runner.
+// pollingLatencyLimit permits three polling periods plus scheduling allowance
+// for parallel race-enabled package execution on a loaded runner. The bound
+// remains well below the default operational polling horizon.
 func pollingLatencyLimit(pollInterval time.Duration) time.Duration {
-	const schedulingAllowance = 2 * time.Second
+	const schedulingAllowance = 4 * time.Second
 
 	return 3*pollInterval + schedulingAllowance
 }

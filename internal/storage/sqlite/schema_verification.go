@@ -23,11 +23,12 @@ const (
 )
 
 type schemaColumn struct {
-	name       string
-	affinity   string
-	defaultSQL string
-	notNull    bool
-	primaryKey int
+	name         string
+	declaredType string
+	affinity     string
+	defaultSQL   string
+	notNull      bool
+	primaryKey   int
 }
 
 type schemaIndex struct {
@@ -53,8 +54,16 @@ type schemaTable struct {
 
 func column(name, affinity string, notNull bool, defaultSQL string, primaryKey int) schemaColumn {
 	return schemaColumn{
-		name: name, affinity: affinity, defaultSQL: defaultSQL, notNull: notNull, primaryKey: primaryKey,
+		name: name, declaredType: "", affinity: affinity, defaultSQL: defaultSQL,
+		notNull: notNull, primaryKey: primaryKey,
 	}
+}
+
+func lifecycleColumn(name, declaredType string) schemaColumn {
+	current := column(name, sqliteAffinity(declaredType), false, "", 0)
+	current.declaredType = declaredType
+
+	return current
 }
 
 func index(name string, columns ...string) schemaIndex {
@@ -88,6 +97,10 @@ func runColumns() []schemaColumn {
 		column("retry_policy_version", affinityInteger, true, "1", 0),
 		column("idempotency_key", affinityText, false, "", 0),
 		column("submission_fingerprint", affinityText, false, "", 0),
+		lifecycleColumn("lifecycle_version", affinityInteger),
+		lifecycleColumn("started_at", affinityText),
+		lifecycleColumn("terminal_reason", affinityText),
+		lifecycleColumn("terminal_runner_id", affinityText),
 	}
 }
 
@@ -108,13 +121,18 @@ func nodeColumns() []schemaColumn {
 		column("error_payload", affinityBlob, false, "", 0),
 		column("started_at", affinityText, false, "", 0),
 		column("completed_at", affinityText, false, "", 0),
+		lifecycleColumn("lifecycle_version", affinityInteger),
+		lifecycleColumn("state_changed_at", affinityText),
+		lifecycleColumn("last_started_at", affinityText),
+		lifecycleColumn("last_runner_id", affinityText),
+		lifecycleColumn("terminal_reason", affinityText),
 	}
 }
 
 func requiredSchema() []schemaTable {
 	return []schemaTable{
 		{
-			name:    "cord_runs",
+			name:    runsTable,
 			columns: runColumns(),
 			indexes: []schemaIndex{
 				uniqueIndex(
@@ -126,7 +144,7 @@ func requiredSchema() []schemaTable {
 			foreignKeys: nil,
 		},
 		{
-			name:    "cord_nodes",
+			name:    nodesTable,
 			columns: nodeColumns(),
 			indexes: []schemaIndex{
 				index("cord_nodes_status_available_at_idx", "status", "available_at"),
@@ -220,10 +238,10 @@ func verifyColumns(ctx context.Context, database *sql.DB, expected *schemaTable)
 			return fmt.Errorf("column %q.%q is missing", expected.name, wanted.name)
 		}
 
-		if current != wanted {
+		if !columnsEqual(&current, &wanted) {
 			return fmt.Errorf(
 				"column %q.%q is %s; want %s",
-				expected.name, wanted.name, describeColumn(current), describeColumn(wanted),
+				expected.name, wanted.name, describeColumn(&current), describeColumn(&wanted),
 			)
 		}
 	}
@@ -293,6 +311,8 @@ func inspectColumns(ctx context.Context, database *sql.DB, table string) (column
 		if err = rows.Scan(&current.name, &declared, &current.notNull, &defaultSQL, &current.primaryKey); err != nil {
 			return nil, fmt.Errorf("scan columns for table %q: %w", table, err)
 		}
+
+		current.declaredType = strings.ToUpper(strings.TrimSpace(declared))
 
 		current.affinity = sqliteAffinity(declared)
 		if defaultSQL.Valid {
@@ -486,10 +506,16 @@ func normalizeDefault(value string) string {
 	return value
 }
 
-func describeColumn(current schemaColumn) string {
+func columnsEqual(current, wanted *schemaColumn) bool {
+	return current.affinity == wanted.affinity && current.defaultSQL == wanted.defaultSQL &&
+		current.notNull == wanted.notNull && current.primaryKey == wanted.primaryKey &&
+		(wanted.declaredType == "" || current.declaredType == wanted.declaredType)
+}
+
+func describeColumn(current *schemaColumn) string {
 	return fmt.Sprintf(
-		"affinity=%s not-null=%t default=%q primary-key-position=%d",
-		current.affinity, current.notNull, current.defaultSQL, current.primaryKey,
+		"declared-type=%q affinity=%s not-null=%t default=%q primary-key-position=%d",
+		current.declaredType, current.affinity, current.notNull, current.defaultSQL, current.primaryKey,
 	)
 }
 

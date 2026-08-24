@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
@@ -15,7 +16,7 @@ import (
 
 const (
 	schemaVersionTable = "cord_schema_migrations"
-	requiredVersion    = int64(4)
+	requiredVersion    = int64(5)
 )
 
 // Verify checks SQLite schema compatibility without executing DDL.
@@ -43,7 +44,7 @@ func Verify(ctx context.Context, database *sql.DB) error {
 // Migrate applies all pending SQLite migrations.
 func Migrate(ctx context.Context, database *sql.DB) error {
 	return retry(ctx, "wait for concurrent migration", time.Time{}, func(err error) bool {
-		return errors.Is(err, storage.ErrSchemaOutdated) || IsBusy(err)
+		return errors.Is(err, storage.ErrSchemaOutdated) || IsBusy(err) || isMigrationBootstrapRace(err)
 	}, func(operationCtx context.Context) error {
 		if err := migrateWithRetry(operationCtx, database); err != nil {
 			return err
@@ -55,6 +56,17 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 
 		return nil
 	})
+}
+
+func isMigrationBootstrapRace(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+
+	return strings.Contains(message, "cord_schema_migrations") &&
+		(strings.Contains(message, "already exists") || strings.Contains(message, "no such table"))
 }
 
 func migrateWithRetry(ctx context.Context, database *sql.DB) error {

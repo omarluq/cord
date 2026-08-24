@@ -8,6 +8,9 @@ type RunID string
 // NodeID identifies a node within a persisted run.
 type NodeID string
 
+// RunnerID identifies one runtime incarnation in persisted diagnostic metadata.
+type RunnerID string
+
 // EncodedPayload is an opaque serialized value. A nil payload represents a nullable value.
 type EncodedPayload []byte
 
@@ -26,6 +29,61 @@ const (
 	// RunCanceled indicates that a run was canceled terminally.
 	RunCanceled RunStatus = "canceled"
 )
+
+// IsKnown reports whether status is a supported persisted run status.
+func (status RunStatus) IsKnown() bool {
+	switch status {
+	case RunRunning, RunCompleted, RunFailed, RunCanceling, RunCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Terminal reports whether status is terminal and whether status is known.
+func (status RunStatus) Terminal() (terminal, known bool) {
+	switch status {
+	case RunRunning, RunCanceling:
+		return false, true
+	case RunCompleted, RunFailed, RunCanceled:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// AllowsReason reports whether reason is legal for this run status.
+func (status RunStatus) AllowsReason(reason TerminalReason) bool {
+	switch status {
+	case RunRunning, RunCanceling:
+		return reason == ""
+	case RunCompleted:
+		return reason == ReasonSucceeded
+	case RunFailed:
+		return reason.isFailure()
+	case RunCanceled:
+		return reason == ReasonCanceledByRequest
+	default:
+		return false
+	}
+}
+
+// LegacyReason returns the only safe terminal-reason mapping for a legacy run
+// status. It returns false for nonterminal and unknown statuses.
+func (status RunStatus) LegacyReason() (TerminalReason, bool) {
+	switch status {
+	case RunCompleted:
+		return ReasonSucceeded, true
+	case RunFailed:
+		return ReasonLegacyUnknown, true
+	case RunCanceled:
+		return ReasonCanceledByRequest, true
+	case RunRunning, RunCanceling:
+		return "", false
+	default:
+		return "", false
+	}
+}
 
 // NodeStatus is the persisted state of a node.
 type NodeStatus string
@@ -47,11 +105,133 @@ const (
 	NodeCanceled NodeStatus = "canceled"
 )
 
+// IsKnown reports whether status is a supported persisted node status.
+func (status NodeStatus) IsKnown() bool {
+	switch status {
+	case NodePending, NodeReady, NodeRunning, NodeRetryWait, NodeCompleted, NodeFailed, NodeCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Terminal reports whether status is terminal and whether status is known.
+func (status NodeStatus) Terminal() (terminal, known bool) {
+	switch status {
+	case NodePending, NodeReady, NodeRunning, NodeRetryWait:
+		return false, true
+	case NodeCompleted, NodeFailed, NodeCanceled:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// AllowsReason reports whether reason is legal for this node status.
+func (status NodeStatus) AllowsReason(reason TerminalReason) bool {
+	switch status {
+	case NodePending, NodeReady, NodeRunning, NodeRetryWait:
+		return reason == ""
+	case NodeCompleted:
+		return reason == ReasonSucceeded
+	case NodeFailed:
+		return reason.isFailure()
+	case NodeCanceled:
+		return reason.isCancellation()
+	default:
+		return false
+	}
+}
+
+// LegacyReason returns the only safe terminal-reason mapping for a legacy node
+// status. The run status is used only to prove cancellation by run failure. It
+// returns false for nonterminal and unknown node statuses.
+func (status NodeStatus) LegacyReason(runStatus RunStatus) (TerminalReason, bool) {
+	switch status {
+	case NodeCompleted:
+		return ReasonSucceeded, true
+	case NodeFailed:
+		return ReasonLegacyUnknown, true
+	case NodeCanceled:
+		if runStatus == RunFailed {
+			return ReasonCanceledByRunFailure, true
+		}
+
+		return ReasonLegacyUnknown, true
+	case NodePending, NodeReady, NodeRunning, NodeRetryWait:
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// LifecycleVersion identifies the lifecycle metadata semantics of a row.
+type LifecycleVersion int
+
+const (
+	// LifecycleVersion1 identifies the first stable lifecycle snapshot model.
+	LifecycleVersion1 LifecycleVersion = 1
+)
+
+// IsKnown reports whether version is supported by this runtime.
+func (version LifecycleVersion) IsKnown() bool {
+	return version == LifecycleVersion1
+}
+
+// TerminalReason is the persisted reason for a terminal lifecycle state.
+type TerminalReason string
+
+const (
+	// ReasonSucceeded indicates successful completion.
+	ReasonSucceeded TerminalReason = "succeeded"
+	// ReasonCanceledByRequest indicates that explicit run cancellation won.
+	ReasonCanceledByRequest TerminalReason = "canceled_by_request"
+	// ReasonCanceledByRunFailure indicates that another node failed the run.
+	ReasonCanceledByRunFailure TerminalReason = "canceled_by_run_failure"
+	// ReasonFailureNonRetryable indicates a permanent or non-retryable failure.
+	ReasonFailureNonRetryable TerminalReason = "failure_non_retryable"
+	// ReasonFailureAttemptsExhausted indicates that execution attempts were exhausted.
+	ReasonFailureAttemptsExhausted TerminalReason = "failure_attempts_exhausted"
+	// ReasonFailureLeaseExpired indicates that the final claim's lease expired.
+	ReasonFailureLeaseExpired TerminalReason = "failure_lease_expired"
+	// ReasonLegacyUnknown indicates that a legacy terminal cause cannot be known safely.
+	ReasonLegacyUnknown TerminalReason = "legacy_unknown"
+)
+
+// IsKnown reports whether reason is a supported nonempty terminal reason.
+func (reason TerminalReason) IsKnown() bool {
+	switch reason {
+	case ReasonSucceeded, ReasonCanceledByRequest, ReasonCanceledByRunFailure,
+		ReasonFailureNonRetryable, ReasonFailureAttemptsExhausted,
+		ReasonFailureLeaseExpired, ReasonLegacyUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func (reason TerminalReason) isFailure() bool {
+	return reason == ReasonFailureNonRetryable ||
+		reason == ReasonFailureAttemptsExhausted ||
+		reason == ReasonFailureLeaseExpired ||
+		reason == ReasonLegacyUnknown
+}
+
+func (reason TerminalReason) isCancellation() bool {
+	return reason == ReasonCanceledByRequest ||
+		reason == ReasonCanceledByRunFailure ||
+		reason == ReasonLegacyUnknown
+}
+
 // Run is the storage representation of a run.
 type Run struct {
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 	CompletedAt           *time.Time
+	StartedAt             *time.Time
+	LifecycleVersion      *LifecycleVersion
+	TerminalReason        *TerminalReason
+	TerminalRunnerID      *RunnerID
 	ID                    RunID
 	WorkflowName          string
 	DefinitionHash        string
@@ -70,19 +250,95 @@ type Run struct {
 
 // Node is the storage representation of a node.
 type Node struct {
-	AvailableAt   time.Time
-	CompletedAt   *time.Time
-	StartedAt     *time.Time
-	FunctionKey   string
-	RunID         RunID
-	ID            NodeID
-	SignatureHash string
-	Status        NodeStatus
-	Error         EncodedPayload
-	Output        EncodedPayload
-	Lease         Lease
-	RemainingDeps int
-	Attempt       int
+	AvailableAt      time.Time
+	CompletedAt      *time.Time
+	StartedAt        *time.Time
+	StateChangedAt   *time.Time
+	LastStartedAt    *time.Time
+	LifecycleVersion *LifecycleVersion
+	LastRunnerID     *RunnerID
+	TerminalReason   *TerminalReason
+	FunctionKey      string
+	RunID            RunID
+	ID               NodeID
+	SignatureHash    string
+	Status           NodeStatus
+	Error            EncodedPayload
+	Output           EncodedPayload
+	Lease            Lease
+	RemainingDeps    int
+	Attempt          int
+}
+
+// NodeStateCounts contains an explicit count for every node state.
+type NodeStateCounts struct {
+	Pending   int
+	Ready     int
+	Running   int
+	RetryWait int
+	Completed int
+	Failed    int
+	Canceled  int
+}
+
+// RunReport is a backend-neutral snapshot of one persisted run.
+type RunReport struct {
+	SubmittedAt      time.Time
+	FirstStartedAt   *time.Time
+	StateChangedAt   time.Time
+	FinishedAt       *time.Time
+	TerminalRunnerID *RunnerID
+	ID               RunID
+	WorkflowName     string
+	State            RunStatus
+	Reason           TerminalReason
+	NodeCounts       NodeStateCounts
+}
+
+// CurrentLease reports the current durable fence for a running node.
+type CurrentLease struct {
+	ExpiresAt  time.Time
+	RunnerID   RunnerID
+	Generation int64
+}
+
+// NodeReport is a backend-neutral snapshot of one persisted node.
+type NodeReport struct {
+	EligibleAt     time.Time
+	FirstStartedAt *time.Time
+	LastStartedAt  *time.Time
+	StateChangedAt *time.Time
+	FinishedAt     *time.Time
+	RunnerID       *RunnerID
+	CurrentLease   *CurrentLease
+	RunID          RunID
+	NodeID         NodeID
+	FunctionKey    string
+	State          NodeStatus
+	Reason         TerminalReason
+	Attempt        int
+	MaxAttempts    int
+}
+
+const (
+	// DefaultNodePageSize is used when NodeQuery.PageSize is zero.
+	DefaultNodePageSize = 100
+	// MaxNodePageSize is the largest node page accepted by storage adapters.
+	MaxNodePageSize = 1000
+)
+
+// NodeQuery selects an ordered, bounded page of node reports.
+type NodeQuery struct {
+	State             *NodeStatus
+	Reason            *TerminalReason
+	ContinuationToken string
+	PageSize          int
+}
+
+// NodePage is one immutable page of node reports.
+type NodePage struct {
+	ContinuationToken string
+	Nodes             []NodeReport
 }
 
 // Edge is a persisted dependency relationship between two nodes in one run.

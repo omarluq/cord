@@ -25,8 +25,8 @@ type Backend interface {
 	CompleteNode(context.Context, RunID, NodeID, Lease, EncodedPayload) (bool, error)
 	// RetryNode records a transient failure and schedules another attempt.
 	RetryNode(context.Context, RunID, NodeID, Lease, EncodedPayload, time.Duration) (bool, error)
-	// FailNode records a terminal node failure when the lease still owns the node.
-	FailNode(context.Context, RunID, NodeID, Lease, EncodedPayload) (bool, error)
+	// FailNode records a terminal node failure and its explicit reason when the lease still owns the node.
+	FailNode(context.Context, RunID, NodeID, Lease, EncodedPayload, TerminalReason) (bool, error)
 	// PromoteRetries makes retrying nodes eligible once their delay has elapsed.
 	PromoteRetries(context.Context) (int64, error)
 	// RecoverExpiredLeases readies retryable abandoned nodes and terminalizes exhausted ones.
@@ -35,6 +35,10 @@ type Backend interface {
 	HeartbeatNode(context.Context, RunID, NodeID, Lease, time.Duration) (bool, time.Duration, error)
 	// GetRunResult returns the persisted state and payloads for a run.
 	GetRunResult(context.Context, RunID) (RunResult, error)
+	// InspectRun returns one consistent, payload-free run snapshot.
+	InspectRun(context.Context, RunID) (RunReport, error)
+	// ListRunNodes returns one bounded, payload-free keyset page of node snapshots.
+	ListRunNodes(context.Context, RunID, NodeQuery) (NodePage, error)
 }
 
 // FunctionRegistration identifies one function signature executable by a runtime.
@@ -108,6 +112,8 @@ var (
 	ErrRunNotFound = errors.New("run not found")
 	// ErrRunConflict indicates that an idempotency key belongs to an incompatible submission.
 	ErrRunConflict = errors.New("run submission conflicts with an existing run")
+	// ErrRunIncompatible indicates malformed or unsupported persisted lifecycle metadata.
+	ErrRunIncompatible = errors.New("run lifecycle metadata is incompatible")
 	// ErrSchemaOutdated indicates that a backend schema is absent or too old.
 	ErrSchemaOutdated = errors.New("schema is absent or outdated")
 	// ErrSchemaNewer indicates that a backend schema is newer than this runtime.

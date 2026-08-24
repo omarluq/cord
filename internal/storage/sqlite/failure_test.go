@@ -135,7 +135,10 @@ func TestStore_FailNodeRollsBackWhenRunFailureFails(t *testing.T) {
 	_, err := database.ExecContext(t.Context(), trigger)
 	require.NoError(t, err)
 
-	accepted, err := store.FailNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("rollback"))
+	accepted, err := store.FailNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("rollback"),
+		storage.ReasonFailureAttemptsExhausted,
+	)
 	require.ErrorContains(t, err, "run failure boundary")
 	assert.False(t, accepted)
 	assertNodeState(t, database, claim.RunID, claim.NodeID, storage.NodeRunning, 0)

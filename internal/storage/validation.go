@@ -18,6 +18,10 @@ func ValidateRunPlan(plan *RunPlan) error {
 		return errors.New("validate run plan: plan is nil")
 	}
 
+	if err := validateInitialLifecycleMetadata(plan); err != nil {
+		return err
+	}
+
 	if err := validateInitialRun(&plan.Run); err != nil {
 		return err
 	}
@@ -49,6 +53,96 @@ func ValidateRunPlan(plan *RunPlan) error {
 	}
 
 	return validateEdges(plan, dependencies)
+}
+
+func validateInitialLifecycleMetadata(plan *RunPlan) error {
+	runVersioned, err := validateInitialRunLifecycleMetadata(&plan.Run)
+	if err != nil {
+		return err
+	}
+
+	for index := range plan.Nodes {
+		node := &plan.Nodes[index]
+
+		nodeVersioned, validationErr := validateInitialNodeLifecycleMetadata(node)
+		if validationErr != nil {
+			return validationErr
+		}
+
+		if nodeVersioned != runVersioned {
+			return fmt.Errorf(
+				"validate run plan: node %q lifecycle version must be consistently present with run lifecycle version",
+				node.ID,
+			)
+		}
+	}
+
+	return nil
+}
+
+func validateInitialRunLifecycleMetadata(run *Run) (bool, error) {
+	if run.LifecycleVersion != nil && *run.LifecycleVersion != LifecycleVersion1 {
+		return false, fmt.Errorf(
+			"validate run plan: unsupported run lifecycle version %d (want %d)",
+			*run.LifecycleVersion,
+			LifecycleVersion1,
+		)
+	}
+
+	if run.StartedAt != nil {
+		return false, errors.New("validate run plan: run start time must initially be unset")
+	}
+
+	if run.TerminalReason != nil {
+		return false, errors.New("validate run plan: run terminal reason must initially be unset")
+	}
+
+	if run.TerminalRunnerID != nil {
+		return false, errors.New("validate run plan: run terminal runner ID must initially be unset")
+	}
+
+	return run.LifecycleVersion != nil, nil
+}
+
+func validateInitialNodeLifecycleMetadata(node *Node) (bool, error) {
+	if node.LifecycleVersion != nil && *node.LifecycleVersion != LifecycleVersion1 {
+		return false, fmt.Errorf(
+			"validate run plan: node %q has unsupported lifecycle version %d (want %d)",
+			node.ID,
+			*node.LifecycleVersion,
+			LifecycleVersion1,
+		)
+	}
+
+	if node.StateChangedAt != nil {
+		return false, fmt.Errorf(
+			"validate run plan: node %q state-change time must initially be unset",
+			node.ID,
+		)
+	}
+
+	if node.LastStartedAt != nil {
+		return false, fmt.Errorf(
+			"validate run plan: node %q last start time must initially be unset",
+			node.ID,
+		)
+	}
+
+	if node.LastRunnerID != nil {
+		return false, fmt.Errorf(
+			"validate run plan: node %q last runner ID must initially be unset",
+			node.ID,
+		)
+	}
+
+	if node.TerminalReason != nil {
+		return false, fmt.Errorf(
+			"validate run plan: node %q terminal reason must initially be unset",
+			node.ID,
+		)
+	}
+
+	return node.LifecycleVersion != nil, nil
 }
 
 func validateInitialRun(run *Run) error {
@@ -266,6 +360,7 @@ type edgeKey struct {
 
 func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 	children := make(map[NodeID][]NodeID, len(plan.Nodes))
+	parents := make(map[NodeID][]NodeID, len(plan.Nodes))
 	edges := make(map[edgeKey]struct{}, len(plan.Edges))
 	parentOrders := make(map[NodeID]map[int]struct{}, len(plan.Nodes))
 
@@ -276,6 +371,7 @@ func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 
 		dependencies[edge.Child]++
 		children[edge.Parent] = append(children[edge.Parent], edge.Child)
+		parents[edge.Child] = append(parents[edge.Child], edge.Parent)
 	}
 
 	if err := validateParentOrders(plan.Nodes, dependencies, parentOrders); err != nil {
@@ -286,7 +382,43 @@ func validateEdges(plan *RunPlan, dependencies map[NodeID]int) error {
 		return errors.New("validate run plan: edges contain a cycle")
 	}
 
-	return validateInitialNodeStates(plan.Nodes, dependencies)
+	if err := validateInitialNodeStates(plan.Nodes, dependencies); err != nil {
+		return err
+	}
+
+	return validateTerminalAncestry(plan.Nodes, plan.Run.TerminalNodeID, parents)
+}
+
+func validateTerminalAncestry(nodes []Node, terminalNodeID NodeID, parents map[NodeID][]NodeID) error {
+	ancestors := make(map[NodeID]struct{}, len(nodes))
+	ancestors[terminalNodeID] = struct{}{}
+	pending := []NodeID{terminalNodeID}
+
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+
+		for _, parent := range parents[current] {
+			if _, visited := ancestors[parent]; visited {
+				continue
+			}
+
+			ancestors[parent] = struct{}{}
+			pending = append(pending, parent)
+		}
+	}
+
+	for index := range nodes {
+		if _, visited := ancestors[nodes[index].ID]; !visited {
+			return fmt.Errorf(
+				"validate run plan: node %q does not reach terminal node %q",
+				nodes[index].ID,
+				terminalNodeID,
+			)
+		}
+	}
+
+	return nil
 }
 
 func validateParentOrders(
