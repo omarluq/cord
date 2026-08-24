@@ -362,15 +362,17 @@ func testMigrateV5PreservesPriorRow(t *testing.T, version int64, state priorSche
 
 	store, err := sqlite.New(database)
 	require.NoError(t, err)
-	report, err := store.InspectRun(t.Context(), "legacy-run")
-	require.NoError(t, err)
-	assert.Equal(t, state.runStatus, report.State)
-	assert.Equal(t, state.runReason, report.Reason)
+
 	page, err := store.ListRunNodes(t.Context(), "legacy-run", storage.NodeQuery{})
 	require.NoError(t, err)
 	require.Len(t, page.Nodes, 1)
 	assert.Equal(t, state.nodeStatus, page.Nodes[0].State)
 	assert.Equal(t, state.nodeReason, page.Nodes[0].Reason)
+
+	report, err := store.InspectRun(t.Context(), "legacy-run")
+	require.NoError(t, err)
+	assert.Equal(t, state.runStatus, report.State)
+	assert.Equal(t, state.runReason, report.Reason)
 }
 
 func insertPriorSchemaRow(t *testing.T, database *sql.DB, state priorSchemaLifecycleState) {
