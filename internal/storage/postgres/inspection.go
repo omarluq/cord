@@ -116,7 +116,11 @@ func (s *Store) ListRunNodes(
 	if err != nil {
 		return storage.NodePage{}, fmt.Errorf("list nodes for run %q: begin read: %w", runID, err)
 	}
-	defer func() { err = errors.Join(err, rollbackRead(transaction)) }()
+	defer func() {
+		if rollbackErr := transaction.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("roll back read: %w", rollbackErr))
+		}
+	}()
 
 	page, readErr := listRunNodes(ctx, transaction, runID, query, limit)
 	if readErr != nil {
@@ -698,14 +702,6 @@ func runnerID(value sql.NullString) *storage.RunnerID {
 func sumNodeCounts(counts storage.NodeStateCounts) int {
 	return counts.Pending + counts.Ready + counts.Running + counts.RetryWait +
 		counts.Completed + counts.Failed + counts.Canceled
-}
-
-func rollbackRead(transaction *sql.Tx) error {
-	if err := transaction.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		return fmt.Errorf("roll back read: %w", err)
-	}
-
-	return nil
 }
 
 func incompatible(format string, arguments ...any) error {
