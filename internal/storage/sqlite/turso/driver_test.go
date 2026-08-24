@@ -22,6 +22,8 @@ const (
 	libSQLPort  = "8080/tcp"
 )
 
+var libSQLContainerSlot = make(chan struct{}, 1)
+
 // TestDriverConformance verifies Cord's storage behavior against remote libSQL.
 func TestDriverConformance(t *testing.T) {
 	t.Parallel()
@@ -113,6 +115,8 @@ func TestAbandonedMigrationLock(t *testing.T) {
 func startLibSQL(t *testing.T) string {
 	t.Helper()
 
+	acquireLibSQLContainer(t)
+
 	container, err := testcontainers.Run(
 		t.Context(),
 		libSQLImage,
@@ -132,6 +136,17 @@ func startLibSQL(t *testing.T) string {
 	require.NoError(t, err)
 
 	return "http://" + net.JoinHostPort(host, port.Port())
+}
+
+func acquireLibSQLContainer(t *testing.T) {
+	t.Helper()
+
+	select {
+	case libSQLContainerSlot <- struct{}{}:
+		t.Cleanup(func() { <-libSQLContainerSlot })
+	case <-t.Context().Done():
+		require.NoError(t, t.Context().Err(), "wait for libSQL test container slot")
+	}
 }
 
 func libSQLOpener(databaseURL string) func(testing.TB) *sql.DB {

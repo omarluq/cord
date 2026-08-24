@@ -23,15 +23,18 @@ import (
 	postgresstore "github.com/omarluq/cord/internal/storage/postgres"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
 	postgrescontainer "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 const (
-	postgresImage    = "postgres:16.4-alpine"
-	fixtureTimeout   = 2 * time.Minute
-	operationTimeout = 30 * time.Second
+	postgresImage          = "postgres:16.4-alpine"
+	postgresMaxConnections = "256"
+	fixtureTimeout         = 2 * time.Minute
+	operationTimeout       = 30 * time.Second
 )
 
+// TestMain provisions the shared PostgreSQL fixture when no external test database is configured.
 func TestMain(m *testing.M) {
 	os.Exit(runPostgresTests(m))
 }
@@ -51,6 +54,7 @@ func runPostgresTests(m *testing.M) (exitCode int) {
 		postgrescontainer.WithUsername("cord"),
 		postgrescontainer.WithPassword("cord"),
 		postgrescontainer.BasicWaitStrategies(),
+		testcontainers.WithCmdArgs("-c", "max_connections="+postgresMaxConnections),
 	)
 	if err != nil {
 		log.Printf("start PostgreSQL test container: %v", err)

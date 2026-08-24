@@ -116,6 +116,10 @@ linters:
       # These white-box tests exercise intentionally unexported package mechanics.
       - linters: [testpackage]
         path: "playground/(app|examples|web_safe)_test\\.go"
+      # Remote libSQL exposes one database per container; this semaphore keeps container-backed tests parallel-safe.
+      - linters: [gochecknoglobals]
+        path: "internal/storage/sqlite/turso/driver_test\\.go"
+        text: "libSQLContainerSlot"
       - linters: [all]
         path: ".*\\.pb\\.go$"
       - linters: [all]
