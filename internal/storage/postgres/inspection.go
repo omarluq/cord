@@ -313,6 +313,7 @@ func scanNodeReport(rows *sql.Rows, runStatus storage.RunStatus) (storage.NodeRe
 		runStatus:      runStatus,
 		version:        version,
 		reason:         reason,
+		lastRunner:     lastRunner,
 		leaseOwner:     leaseOwner,
 		leaseExpiresAt: leaseExpiresAt,
 	}
@@ -452,6 +453,7 @@ type nodeValidation struct {
 	leaseExpiresAt sql.NullTime
 	runStatus      storage.RunStatus
 	reason         sql.NullString
+	lastRunner     sql.NullString
 	leaseOwner     sql.NullString
 	version        sql.NullInt64
 }
@@ -495,7 +497,7 @@ func validateNodeMetadata(report *storage.NodeReport) error {
 
 func validateLegacyNode(report *storage.NodeReport, validation *nodeValidation, terminal bool) error {
 	if validation.reason.Valid || report.StateChangedAt != nil ||
-		report.LastStartedAt != nil || report.RunnerID != nil {
+		report.LastStartedAt != nil || validation.lastRunner.Valid {
 		return incompatible("legacy node contains versioned metadata")
 	}
 
