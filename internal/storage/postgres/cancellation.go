@@ -3,23 +3,38 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/omarluq/cord/internal/storage"
 )
 
-// cancelRun is quarantined groundwork for a possible future durable
-// cancellation API. It is deliberately absent from storage.Backend and kept
-// unexported so it does not become an extension contract before that API is
-// approved. It returns false when the run is absent or already terminal.
-func (s *Store) cancelRun(ctx context.Context, runID storage.RunID) (bool, error) {
-	accepted := false
+// CancelRun atomically terminalizes a running run, cancels unfinished nodes,
+// and reports the durable state that decided the request.
+func (s *Store) CancelRun(
+	ctx context.Context,
+	runID storage.RunID,
+) (outcome storage.CancellationOutcome, err error) {
+	err = runTransaction(ctx, s.pool, "cancel run", func(transaction *sql.Tx) error {
+		outcome = ""
 
-	err := runTransaction(ctx, s.pool, "cancel run", func(transaction *sql.Tx) error {
-		accepted = false
+		status, lockErr := lockRunForCancellation(ctx, transaction, runID)
+		if lockErr != nil {
+			return lockErr
+		}
 
-		requested, requestErr := requestRunCancellation(ctx, transaction, runID)
-		if requestErr != nil || !requested {
+		terminalOutcome, terminal, outcomeErr := cancellationOutcome(runID, status)
+		if outcomeErr != nil {
+			return outcomeErr
+		}
+
+		if terminal {
+			outcome = terminalOutcome
+
+			return nil
+		}
+
+		if requestErr := requestRunCancellation(ctx, transaction, runID); requestErr != nil {
 			return requestErr
 		}
 
@@ -31,18 +46,55 @@ func (s *Store) cancelRun(ctx context.Context, runID storage.RunID) (bool, error
 			return finishErr
 		}
 
-		accepted = true
+		outcome = storage.CancellationCanceled
 
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return "", err
 	}
 
-	return accepted, nil
+	return outcome, nil
 }
 
-func requestRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) (bool, error) {
+func cancellationOutcome(
+	runID storage.RunID,
+	status storage.RunStatus,
+) (storage.CancellationOutcome, bool, error) {
+	switch status {
+	case "":
+		return storage.CancellationNotFound, true, nil
+	case storage.RunCanceled:
+		return storage.CancellationAlreadyCanceled, true, nil
+	case storage.RunCompleted, storage.RunFailed:
+		return storage.CancellationFinished, true, nil
+	case storage.RunRunning, storage.RunCanceling:
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("cancel run %q: unknown run status %q", runID, status)
+	}
+}
+
+func lockRunForCancellation(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+) (storage.RunStatus, error) {
+	const query = `SELECT status FROM cord_runs WHERE id = $1 FOR UPDATE`
+
+	var status storage.RunStatus
+	if err := transaction.QueryRowContext(ctx, query, runID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+
+		return "", fmt.Errorf("lock run %q for cancellation: %w", runID, err)
+	}
+
+	return status, nil
+}
+
+func requestRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
 	const query = `UPDATE cord_runs
 		SET status = $1, updated_at = clock_timestamp()
 		WHERE id = $2 AND status IN ($3, $4)`
@@ -51,15 +103,10 @@ func requestRunCancellation(ctx context.Context, transaction *sql.Tx, runID stor
 		ctx, query, storage.RunCanceling, runID, storage.RunRunning, storage.RunCanceling,
 	)
 	if err != nil {
-		return false, fmt.Errorf("request cancellation for run %q: %w", runID, err)
+		return fmt.Errorf("request cancellation for run %q: %w", runID, err)
 	}
 
-	count, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("inspect run cancellation: %w", err)
-	}
-
-	return count == 1, nil
+	return requireOneAffected(result, "run cancellation request")
 }
 
 func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {
@@ -76,13 +123,8 @@ func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID stora
 		return fmt.Errorf("finish cancellation for run %q: %w", runID, err)
 	}
 
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("inspect finished run cancellation: %w", err)
-	}
-
-	if count != 1 {
-		return fmt.Errorf("finish cancellation for run %q: run is no longer canceling", runID)
+	if err = requireOneAffected(result, "finished run cancellation"); err != nil {
+		return fmt.Errorf("finish cancellation for run %q: %w", runID, err)
 	}
 
 	return nil

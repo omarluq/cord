@@ -15,7 +15,7 @@ import (
 
 const (
 	schemaVersionTable = "cord_schema_migrations"
-	requiredVersion    = int64(3)
+	requiredVersion    = int64(4)
 )
 
 // Verify checks SQLite schema compatibility without executing DDL.

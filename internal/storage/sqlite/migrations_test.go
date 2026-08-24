@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/omarluq/cord/internal/storage/sqlite"
@@ -64,7 +65,7 @@ func TestMigrateConcurrentConnections(t *testing.T) {
 	}
 
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []int64{1, 2, 3}, versions)
+	assert.Equal(t, []int64{1, 2, 3, 4}, versions)
 }
 
 func TestVerifyReportsSchemaCompatibility(t *testing.T) {
@@ -92,11 +93,11 @@ func TestVerifyReportsSchemaCompatibility(t *testing.T) {
 		database := openDatabase(t, true)
 		require.NoError(t, sqlite.Migrate(t.Context(), database))
 		_, err := database.ExecContext(t.Context(), `INSERT INTO cord_schema_migrations
-			(version_id, is_applied, tstamp) VALUES (4, 1, datetime('now'))`)
+			(version_id, is_applied, tstamp) VALUES (5, 1, datetime('now'))`)
 		require.NoError(t, err)
 		err = sqlite.Verify(t.Context(), database)
 		require.ErrorIs(t, err, storage.ErrSchemaNewer)
-		assert.Contains(t, err.Error(), "current=4 required=3")
+		assert.Contains(t, err.Error(), "current=5 required=4")
 	})
 }
 
@@ -120,6 +121,12 @@ func TestVerifyRejectsStructurallyIncompatibleCurrentSchema(t *testing.T) {
 }
 
 func incompatibleSchemaCases() []incompatibleSchemaCase {
+	cases := baseIncompatibleSchemaCases()
+
+	return append(cases, identityIncompatibleSchemaCases()...)
+}
+
+func baseIncompatibleSchemaCases() []incompatibleSchemaCase {
 	return []incompatibleSchemaCase{
 		{
 			name:       "missing column",
@@ -202,6 +209,31 @@ func incompatibleSchemaCases() []incompatibleSchemaCase {
 	}
 }
 
+func identityIncompatibleSchemaCases() []incompatibleSchemaCase {
+	return []incompatibleSchemaCase{
+		{
+			name:       "missing submission identity column",
+			statements: []string{`ALTER TABLE cord_runs RENAME COLUMN submission_fingerprint TO missing_fingerprint`},
+			wantError:  `column "cord_runs"."submission_fingerprint"`,
+		},
+		{
+			name:       "missing idempotency index",
+			statements: []string{`DROP INDEX cord_runs_workflow_name_idempotency_key_idx`},
+			wantError:  `index "cord_runs_workflow_name_idempotency_key_idx" is missing`,
+		},
+		{
+			name: "non-unique idempotency index",
+			statements: []string{
+				`DROP INDEX cord_runs_workflow_name_idempotency_key_idx`,
+				`CREATE INDEX cord_runs_workflow_name_idempotency_key_idx
+					ON cord_runs(workflow_name, idempotency_key)`,
+			},
+			wantError: `index "cord_runs_workflow_name_idempotency_key_idx" has columns ` +
+				`[workflow_name idempotency_key], unique=false`,
+		},
+	}
+}
+
 func runIncompatibleSchemaCase(t *testing.T, testCase incompatibleSchemaCase) {
 	t.Helper()
 	database := openDatabase(t, false)
@@ -224,41 +256,80 @@ func runIncompatibleSchemaCase(t *testing.T, testCase incompatibleSchemaCase) {
 	assert.Contains(t, err.Error(), testCase.wantError)
 }
 
-func TestMigrateUpgradesV2SchemaAndIsIdempotent(t *testing.T) {
+func TestMigrateUpgradesV3RowsAndExecutesThem(t *testing.T) {
 	t.Parallel()
 
 	database := openDatabase(t, true)
 	require.NoError(t, sqlite.Migrate(t.Context(), database))
 
-	_, err := database.ExecContext(t.Context(), "DROP INDEX cord_edges_run_child_parent_order_idx")
+	_, err := database.ExecContext(t.Context(), "DROP INDEX cord_runs_workflow_name_idempotency_key_idx")
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), "ALTER TABLE cord_runs DROP COLUMN idempotency_key")
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), "ALTER TABLE cord_runs DROP COLUMN submission_fingerprint")
 	require.NoError(t, err)
 	_, err = database.ExecContext(t.Context(),
-		"DELETE FROM cord_schema_migrations WHERE version_id = 3")
+		"DELETE FROM cord_schema_migrations WHERE version_id = 4")
+	require.NoError(t, err)
+
+	const (
+		runID         = storage.RunID("pre-async-sqlite-run")
+		nodeID        = storage.NodeID("terminal")
+		functionKey   = "pre.async.sqlite"
+		signatureHash = "pre-async-signature"
+	)
+
+	createdAt := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC).Format(time.RFC3339Nano)
+	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_runs (
+		id, workflow_name, definition_hash, status, input_payload, terminal_node_id,
+		created_at, updated_at, max_attempts, retry_base_delay_ns,
+		retry_max_delay_ns, retry_policy_version
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, "pre-async-sqlite", "definition", storage.RunRunning, []byte("41"), nodeID,
+		createdAt, createdAt, 3, time.Millisecond.Nanoseconds(), time.Second.Nanoseconds(), 1)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
+		run_id, node_id, function_key, signature_hash, status, remaining_deps,
+		attempt, available_at, lease_generation
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, nodeID, functionKey, signatureHash, storage.NodeReady, 0, 0, createdAt, 0)
 	require.NoError(t, err)
 
 	err = sqlite.Verify(t.Context(), database)
 	require.ErrorIs(t, err, storage.ErrSchemaOutdated)
-
 	require.NoError(t, sqlite.Migrate(t.Context(), database))
 	require.NoError(t, sqlite.Migrate(t.Context(), database))
 	require.NoError(t, sqlite.Verify(t.Context(), database))
 
-	rows, err := database.QueryContext(t.Context(),
-		"SELECT name FROM pragma_index_info('cord_edges_run_child_parent_order_idx') ORDER BY seqno")
+	store, err := sqlite.New(database)
 	require.NoError(t, err)
+	claim, claimed, err := store.ClaimReadyNodeForFunctions(t.Context(), "migration-worker", time.Minute,
+		[]storage.FunctionRegistration{{Key: functionKey, Signature: signatureHash}})
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.Equal(t, runID, claim.RunID)
 
-	defer func() { require.NoError(t, rows.Close()) }()
+	inputs, err := store.LoadNodeInputs(t.Context(), claim.RunID, claim.NodeID)
+	require.NoError(t, err)
+	assert.Equal(t, []storage.EncodedPayload{[]byte("41")}, inputs)
+	accepted, err := store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("42"))
+	require.NoError(t, err)
+	require.True(t, accepted)
 
-	var columns []string
+	result, err := store.GetRunResult(t.Context(), runID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.RunCompleted, result.Status)
+	assert.Equal(t, storage.EncodedPayload("42"), result.Output)
+	assert.Equal(t, "pre-async-sqlite", result.WorkflowName)
+	assert.Equal(t, signatureHash, result.TerminalSignatureHash)
 
-	for rows.Next() {
-		var name string
-		require.NoError(t, rows.Scan(&name))
-		columns = append(columns, name)
-	}
+	var key, fingerprint sql.NullString
 
-	require.NoError(t, rows.Err())
-	assert.Equal(t, []string{"run_id", "child_node_id", "parent_order"}, columns)
+	err = database.QueryRowContext(t.Context(), `SELECT idempotency_key, submission_fingerprint
+		FROM cord_runs WHERE id = ?`, runID).Scan(&key, &fingerprint)
+	require.NoError(t, err)
+	assert.False(t, key.Valid)
+	assert.False(t, fingerprint.Valid)
 }
 
 func TestVerifyTreatsLatestRolledBackMigrationAsPreviousVersion(t *testing.T) {
@@ -267,7 +338,7 @@ func TestVerifyTreatsLatestRolledBackMigrationAsPreviousVersion(t *testing.T) {
 	database := openDatabase(t, true)
 	require.NoError(t, sqlite.Migrate(t.Context(), database))
 	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_schema_migrations
-		(version_id, is_applied, tstamp) VALUES (4, 0, datetime('now'))`)
+		(version_id, is_applied, tstamp) VALUES (5, 0, datetime('now'))`)
 	require.NoError(t, err)
 	require.NoError(t, sqlite.Verify(t.Context(), database))
 }

@@ -10,6 +10,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStore_CancelRunReportsPreciseOutcomes(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStore(t, true)
+	plan := validPlan(time.Now().UTC(), "cancel-outcomes")
+	requireCreateRun(t.Context(), t, store, &plan)
+
+	outcome, err := store.CancelRun(t.Context(), plan.Run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.CancellationCanceled, outcome)
+
+	outcome, err = store.CancelRun(t.Context(), plan.Run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.CancellationAlreadyCanceled, outcome)
+
+	outcome, err = store.CancelRun(t.Context(), "missing")
+	require.NoError(t, err)
+	assert.Equal(t, storage.CancellationNotFound, outcome)
+
+	finished := validPlan(time.Now().UTC(), "finished-run")
+	requireCreateRun(t.Context(), t, store, &finished)
+	_, err = database.ExecContext(t.Context(),
+		"UPDATE cord_runs SET status = ? WHERE id = ?", storage.RunCompleted, finished.Run.ID)
+	require.NoError(t, err)
+	outcome, err = store.CancelRun(t.Context(), finished.Run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.CancellationFinished, outcome)
+}
+
 func TestStore_CancelRunCancelsEveryUnfinishedStateAndPreservesTerminalNodes(t *testing.T) {
 	t.Parallel()
 
@@ -38,7 +67,7 @@ func TestStore_CancelRunCancelsEveryUnfinishedStateAndPreservesTerminalNodes(t *
 		{RunID: plan.Run.ID, Parent: "active", Child: waitingNode, ParentOrder: 1},
 	}
 	plan.Run.TerminalNodeID = waitingNode
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	completeClaim := claimNode(t, store)
 	require.Equal(t, storage.NodeID("completed"), completeClaim.NodeID)
@@ -92,7 +121,7 @@ func TestStore_CancelRunRollsBackWhenNodeCancellationFails(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "cancel-rollback")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	_, err := database.ExecContext(t.Context(), `CREATE TRIGGER reject_canceled BEFORE UPDATE OF status ON cord_nodes
 		WHEN NEW.status = 'canceled' BEGIN SELECT RAISE(ABORT, 'cancel boundary'); END`)
@@ -111,7 +140,7 @@ func TestStore_CancelRunRollsBackWhenFinalRunUpdateFails(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "cancel-final-rollback")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	_, err := database.ExecContext(t.Context(), `CREATE TRIGGER reject_canceled_run BEFORE UPDATE OF status ON cord_runs

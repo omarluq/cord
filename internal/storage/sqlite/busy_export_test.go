@@ -13,10 +13,12 @@ func IsBusyForTest(err error) bool {
 	return IsBusy(err)
 }
 
-// CancelRunForTest exercises quarantined cancellation groundwork without
-// exporting it from the concrete store or backend contract.
+// CancelRunForTest preserves the legacy test adapter while cancellation tests
+// migrate to the backend contract.
 func CancelRunForTest(ctx context.Context, store *Store, runID storage.RunID) (bool, error) {
-	return store.cancelRun(ctx, runID)
+	outcome, err := store.CancelRun(ctx, runID)
+
+	return outcome == storage.CancellationCanceled, err
 }
 
 // FencedTerminalTransitionForTest exercises transaction-attempt retry behavior.

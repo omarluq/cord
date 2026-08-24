@@ -11,6 +11,12 @@ import (
 type Backend interface {
 	// CreateRun atomically persists a validated run plan.
 	CreateRun(context.Context, *RunPlan) error
+	// CreateOrAttachRun atomically persists a validated run plan or attaches to
+	// the retained compatible run selected by its idempotency key. It returns
+	// the durable run ID and whether this call created the run.
+	CreateOrAttachRun(context.Context, *RunPlan) (RunID, bool, error)
+	// CancelRun durably cancels a run and reports the state that decided the request.
+	CancelRun(context.Context, RunID) (CancellationOutcome, error)
 	// ClaimReadyNodeForFunctions claims one eligible node matching a registered function signature.
 	ClaimReadyNodeForFunctions(context.Context, string, time.Duration, []FunctionRegistration) (*Claim, bool, error)
 	// LoadNodeInputs loads the ordered inputs for a claimed node.
@@ -69,16 +75,39 @@ type Claim struct {
 	RetryPolicyVersion int
 }
 
-// RunResult is the persisted terminal state returned to callers.
+// CancellationOutcome describes the durable result of a cancellation request.
+type CancellationOutcome string
+
+const (
+	// CancellationCanceled indicates that this request durably canceled the run.
+	CancellationCanceled CancellationOutcome = "canceled"
+	// CancellationAlreadyCanceled indicates that the run was already canceled.
+	CancellationAlreadyCanceled CancellationOutcome = "already_canceled"
+	// CancellationFinished indicates that the run had already completed or failed.
+	CancellationFinished CancellationOutcome = "finished"
+	// CancellationNotFound indicates that no run exists with the supplied ID.
+	CancellationNotFound CancellationOutcome = "not_found"
+)
+
+// RunResult is the persisted run state and type identity returned to callers.
 type RunResult struct {
-	Status RunStatus
-	Output EncodedPayload
-	Error  EncodedPayload
+	WorkflowName          string
+	DefinitionHash        string
+	TerminalSignatureHash string
+	Status                RunStatus
+	Output                EncodedPayload
+	Error                 EncodedPayload
+	MaxAttempts           int
+	RetryBaseDelay        time.Duration
+	RetryMaxDelay         time.Duration
+	RetryPolicyVersion    int
 }
 
 var (
 	// ErrRunNotFound indicates that a requested run does not exist.
 	ErrRunNotFound = errors.New("run not found")
+	// ErrRunConflict indicates that an idempotency key belongs to an incompatible submission.
+	ErrRunConflict = errors.New("run submission conflicts with an existing run")
 	// ErrSchemaOutdated indicates that a backend schema is absent or too old.
 	ErrSchemaOutdated = errors.New("schema is absent or outdated")
 	// ErrSchemaNewer indicates that a backend schema is newer than this runtime.

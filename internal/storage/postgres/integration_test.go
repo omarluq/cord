@@ -228,6 +228,14 @@ func TestSchemaVerification(t *testing.T) {
 		{"parent-output index columns", `DROP INDEX cord_edges_run_child_parent_order_idx;
 			CREATE INDEX cord_edges_run_child_parent_order_idx
 			ON cord_edges(child_node_id, run_id, parent_order)`},
+		{"idempotency key nullability", `ALTER TABLE cord_runs ALTER COLUMN idempotency_key SET NOT NULL`},
+		{"submission fingerprint type", `ALTER TABLE cord_runs ALTER COLUMN submission_fingerprint TYPE VARCHAR(64)`},
+		{"idempotency unique index columns", `DROP INDEX cord_runs_workflow_name_idempotency_key_idx;
+			CREATE UNIQUE INDEX cord_runs_workflow_name_idempotency_key_idx
+			ON cord_runs(idempotency_key, workflow_name)`},
+		{"idempotency index uniqueness", `DROP INDEX cord_runs_workflow_name_idempotency_key_idx;
+			CREATE INDEX cord_runs_workflow_name_idempotency_key_idx
+			ON cord_runs(workflow_name, idempotency_key)`},
 		{"foreign key delete action", `ALTER TABLE cord_nodes DROP CONSTRAINT cord_nodes_run_id_fkey;
 			ALTER TABLE cord_nodes ADD FOREIGN KEY (run_id) REFERENCES cord_runs(id)`},
 	}
@@ -252,24 +260,70 @@ func TestSchemaVerification(t *testing.T) {
 	require.NoError(t, postgresstore.Verify(t.Context(), database))
 }
 
-func TestMigrateAddsParentOutputIndexToVersionOneSchema(t *testing.T) {
+func TestMigrateVersionTwoRowsAndExecutesThem(t *testing.T) {
 	t.Parallel()
 
 	database := openPostgres(t, startPostgres(t))
 	require.NoError(t, postgresstore.Migrate(t.Context(), database))
-	_, err := database.ExecContext(t.Context(), `DROP INDEX cord_edges_run_child_parent_order_idx;
-		DELETE FROM cord_schema_migrations WHERE version_id = 2`)
+	_, err := database.ExecContext(t.Context(), `DROP INDEX cord_runs_workflow_name_idempotency_key_idx;
+		ALTER TABLE cord_runs DROP COLUMN submission_fingerprint;
+		ALTER TABLE cord_runs DROP COLUMN idempotency_key;
+		DELETE FROM cord_schema_migrations WHERE version_id = 3`)
+	require.NoError(t, err)
+
+	legacy := postgresReadyPlan("pre-async-postgres-run", time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC))
+	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_runs (
+		id, workflow_name, definition_hash, status, input_payload, terminal_node_id,
+		created_at, updated_at, max_attempts, retry_base_delay_ns,
+		retry_max_delay_ns, retry_policy_version
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		legacy.Run.ID, legacy.Run.WorkflowName, legacy.Run.DefinitionHash,
+		legacy.Run.Status, []byte("41"), legacy.Run.TerminalNodeID,
+		legacy.Run.CreatedAt, legacy.Run.UpdatedAt, legacy.Run.MaxAttempts,
+		legacy.Run.RetryBaseDelay.Nanoseconds(), legacy.Run.RetryMaxDelay.Nanoseconds(),
+		legacy.Run.RetryPolicyVersion)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
+		run_id, node_id, function_key, signature_hash, status, remaining_deps,
+		attempt, available_at, lease_generation
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		legacy.Run.ID, postgresTestNode, "postgres.test", "signature",
+		storage.NodeReady, 0, 0, legacy.Run.CreatedAt, 0)
 	require.NoError(t, err)
 
 	require.NoError(t, postgresstore.Migrate(t.Context(), database))
 	require.NoError(t, postgresstore.Verify(t.Context(), database))
 
-	var indexExists bool
-
-	err = database.QueryRowContext(t.Context(), `SELECT to_regclass(
-		format('%I.%I', current_schema(), 'cord_edges_run_child_parent_order_idx')) IS NOT NULL`).Scan(&indexExists)
+	store, err := postgresstore.New(database)
 	require.NoError(t, err)
-	assert.True(t, indexExists)
+	claim, claimed, err := store.ClaimReadyNodeForFunctions(
+		t.Context(), "migration-worker", time.Minute, postgresRegistrations(),
+	)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.Equal(t, legacy.Run.ID, claim.RunID)
+
+	inputs, err := store.LoadNodeInputs(t.Context(), claim.RunID, claim.NodeID)
+	require.NoError(t, err)
+	assert.Equal(t, []storage.EncodedPayload{[]byte("41")}, inputs)
+	accepted, err := store.CompleteNode(t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("42"))
+	require.NoError(t, err)
+	require.True(t, accepted)
+
+	result, err := store.GetRunResult(t.Context(), legacy.Run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.RunCompleted, result.Status)
+	assert.Equal(t, storage.EncodedPayload("42"), result.Output)
+	assert.Equal(t, legacy.Run.WorkflowName, result.WorkflowName)
+	assert.Equal(t, "signature", result.TerminalSignatureHash)
+
+	var key, fingerprint sql.NullString
+
+	err = database.QueryRowContext(t.Context(), `SELECT idempotency_key, submission_fingerprint
+		FROM cord_runs WHERE id = $1`, legacy.Run.ID).Scan(&key, &fingerprint)
+	require.NoError(t, err)
+	assert.False(t, key.Valid)
+	assert.False(t, fingerprint.Valid)
 }
 
 func TestMigratePreflightsNewerSchema(t *testing.T) {
@@ -281,7 +335,7 @@ func TestMigratePreflightsNewerSchema(t *testing.T) {
 		version_id BIGINT NOT NULL,
 		is_applied BOOLEAN NOT NULL,
 		tstamp TIMESTAMP NOT NULL DEFAULT now()
-	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (3, true)`)
+	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (4, true)`)
 	require.NoError(t, err)
 
 	err = postgresstore.Migrate(t.Context(), database)
@@ -497,7 +551,8 @@ func TestConcurrentClaimersAcrossPoolsClaimEachNodeOnce(t *testing.T) {
 
 	for index := range claimers {
 		plan := postgresReadyPlan(storage.RunID(fmt.Sprintf("concurrent-claim-%03d", index)), time.Now().UTC())
-		require.NoError(t, stores[0].CreateRun(t.Context(), &plan))
+		createErr := stores[0].CreateRun(t.Context(), &plan)
+		require.NoError(t, createErr)
 	}
 
 	start := make(chan struct{})
@@ -558,8 +613,10 @@ func TestClaimSkipsLockedFirstCandidate(t *testing.T) {
 	first := postgresReadyPlan("locked-first", time.Now().UTC().Add(-time.Second))
 	second := postgresReadyPlan("unlocked-second", time.Now().UTC())
 
-	require.NoError(t, store.CreateRun(t.Context(), &first))
-	require.NoError(t, store.CreateRun(t.Context(), &second))
+	err = store.CreateRun(t.Context(), &first)
+	require.NoError(t, err)
+	err = store.CreateRun(t.Context(), &second)
+	require.NoError(t, err)
 
 	transaction, err := database.BeginTx(t.Context(), nil)
 
@@ -638,8 +695,7 @@ func TestStaleLeasesRejectTransitionsWithoutMutation(t *testing.T) {
 		}, name: "expired"},
 	}
 
-	dsn := startPostgres(t)
-	database := openPostgres(t, dsn)
+	database := openPostgres(t, startPostgres(t))
 	require.NoError(t, postgresstore.Migrate(t.Context(), database))
 	store, err := postgresstore.New(database)
 	require.NoError(t, err)
@@ -648,7 +704,8 @@ func TestStaleLeasesRejectTransitionsWithoutMutation(t *testing.T) {
 		for _, fence := range fences {
 			runID := storage.RunID("fence-" + operation.name + "-" + fence.name)
 			plan := postgresReadyPlan(runID, time.Now().UTC())
-			require.NoError(t, store.CreateRun(t.Context(), &plan), operation.name+"/stale_"+fence.name)
+			err = store.CreateRun(t.Context(), &plan)
+			require.NoError(t, err, operation.name+"/stale_"+fence.name)
 			claim, claimed, claimErr := store.ClaimReadyNodeForFunctions(
 				t.Context(), "current-owner", time.Minute, postgresRegistrations(),
 			)
@@ -699,6 +756,7 @@ func postgresReadyPlan(runID storage.RunID, availableAt time.Time) storage.RunPl
 			WorkflowName: "postgres-concurrency", DefinitionHash: "definition", TerminalNodeID: postgresTestNode,
 			Status: storage.RunRunning, Input: []byte("input"), Output: nil, Error: nil, MaxAttempts: 3,
 			RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Second, RetryPolicyVersion: 1,
+			IdempotencyKey: nil, SubmissionFingerprint: nil,
 		},
 		Nodes: []storage.Node{{
 			AvailableAt: availableAt, CompletedAt: nil, StartedAt: nil, SignatureHash: "signature",
@@ -713,7 +771,7 @@ func postgresRegistrations() []storage.FunctionRegistration {
 	return []storage.FunctionRegistration{{Key: "postgres.test", Signature: "signature"}}
 }
 
-func TestCancelRunGroundwork(t *testing.T) {
+func TestCancelRunOutcomesAndFencing(t *testing.T) {
 	t.Parallel()
 
 	database := openPostgres(t, startPostgres(t))
@@ -722,30 +780,31 @@ func TestCancelRunGroundwork(t *testing.T) {
 	require.NoError(t, err)
 
 	plan := postgresReadyPlan("cancel-groundwork", time.Now().UTC())
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	err = store.CreateRun(t.Context(), &plan)
+	require.NoError(t, err)
 	claim := claimPostgresNode(t, store, "worker", "postgres.test", "signature")
 
-	accepted, err := postgresstore.CancelRunForTest(t.Context(), store, claim.RunID)
+	outcome, err := store.CancelRun(t.Context(), claim.RunID)
 	require.NoError(t, err)
-	require.True(t, accepted)
+	require.Equal(t, storage.CancellationCanceled, outcome)
 
 	result, err := store.GetRunResult(t.Context(), claim.RunID)
 	require.NoError(t, err)
 	assert.Equal(t, storage.RunCanceled, result.Status)
 
-	accepted, err = store.CompleteNode(
+	accepted, err := store.CompleteNode(
 		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late"`),
 	)
 	require.NoError(t, err)
 	assert.False(t, accepted)
 
-	accepted, err = postgresstore.CancelRunForTest(t.Context(), store, claim.RunID)
+	outcome, err = store.CancelRun(t.Context(), claim.RunID)
 	require.NoError(t, err)
-	assert.False(t, accepted)
+	assert.Equal(t, storage.CancellationAlreadyCanceled, outcome)
 
-	accepted, err = postgresstore.CancelRunForTest(t.Context(), store, "missing-run")
+	outcome, err = store.CancelRun(t.Context(), "missing-run")
 	require.NoError(t, err)
-	assert.False(t, accepted)
+	assert.Equal(t, storage.CancellationNotFound, outcome)
 }
 
 func TestTerminalTransitionsSerializeOnRun(t *testing.T) {
@@ -794,7 +853,8 @@ func runTerminalRace(
 	t.Helper()
 
 	plan := terminalRacePlan(runID)
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	err := store.CreateRun(t.Context(), &plan)
+	require.NoError(t, err)
 
 	terminal := claimPostgresNode(t, store, "terminal-worker", "terminal-key", "terminal-signature")
 	sibling := claimPostgresNode(t, store, "sibling-worker", "sibling-key", "sibling-signature")
@@ -852,6 +912,7 @@ func terminalRacePlan(runID storage.RunID) storage.RunPlan {
 			Input: []byte(`null`), Output: nil, Error: nil,
 			MaxAttempts: 1, RetryBaseDelay: time.Millisecond,
 			RetryMaxDelay: time.Second, RetryPolicyVersion: 1,
+			IdempotencyKey: nil, SubmissionFingerprint: nil,
 		},
 		Nodes: []storage.Node{
 			terminalRaceNode(runID, "terminal", "terminal-key", "terminal-signature", now),

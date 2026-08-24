@@ -9,24 +9,28 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
-// cancelRun is quarantined groundwork for a possible future durable
-// cancellation API. It is deliberately absent from storage.Backend and kept
-// unexported so it does not become an extension contract before that API is
-// approved. It returns false when the run is absent or already terminal.
-func (s *Store) cancelRun(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
+// CancelRun durably cancels unfinished work and reports the persisted state
+// that decided the request.
+func (s *Store) CancelRun(
+	ctx context.Context,
+	runID storage.RunID,
+) (outcome storage.CancellationOutcome, err error) {
 	err = retryContention(ctx, "retry run cancellation", func(attemptCtx context.Context) error {
-		accepted, err = s.cancelRunOnce(attemptCtx, runID)
+		outcome, err = s.cancelRunOnce(attemptCtx, runID)
 
 		return err
 	})
 
-	return accepted, err
+	return outcome, err
 }
 
-func (s *Store) cancelRunOnce(ctx context.Context, runID storage.RunID) (accepted bool, err error) {
+func (s *Store) cancelRunOnce(
+	ctx context.Context,
+	runID storage.RunID,
+) (outcome storage.CancellationOutcome, err error) {
 	transaction, err := s.database.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin run cancellation: %w", err)
+		return "", fmt.Errorf("begin run cancellation: %w", err)
 	}
 
 	defer func() {
@@ -39,32 +43,73 @@ func (s *Store) cancelRunOnce(ctx context.Context, runID storage.RunID) (accepte
 		updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		WHERE id = ? AND status IN (?, ?)`, storage.RunCanceling, runID, storage.RunRunning, storage.RunCanceling)
 	if err != nil {
-		return false, fmt.Errorf("request cancellation for run %q: %w", runID, err)
+		return "", fmt.Errorf("request cancellation for run %q: %w", runID, err)
 	}
 
-	accepted, err = affectedOne(result)
+	accepted, err := affectedOne(result)
 	if err != nil {
-		return false, fmt.Errorf("inspect run cancellation: %w", err)
+		return "", fmt.Errorf("inspect run cancellation: %w", err)
 	}
 
-	if !accepted {
-		return false, nil
-	}
-
-	cancelErr := cancelUnfinishedNodes(ctx, transaction, runID)
-	if cancelErr != nil {
-		return false, cancelErr
-	}
-
-	if finishErr := finishRunCancellation(ctx, transaction, runID); finishErr != nil {
-		return false, finishErr
+	outcome, err = persistCancellation(ctx, transaction, runID, accepted)
+	if err != nil {
+		return "", err
 	}
 
 	if err = transaction.Commit(); err != nil {
-		return false, fmt.Errorf("commit run cancellation: %w", err)
+		return "", fmt.Errorf("commit run cancellation: %w", err)
 	}
 
-	return true, nil
+	return outcome, nil
+}
+
+func persistCancellation(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+	accepted bool,
+) (storage.CancellationOutcome, error) {
+	if !accepted {
+		return cancellationOutcome(ctx, transaction, runID)
+	}
+
+	if err := cancelUnfinishedNodes(ctx, transaction, runID); err != nil {
+		return "", err
+	}
+
+	if err := finishRunCancellation(ctx, transaction, runID); err != nil {
+		return "", err
+	}
+
+	return storage.CancellationCanceled, nil
+}
+
+func cancellationOutcome(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID storage.RunID,
+) (storage.CancellationOutcome, error) {
+	var status storage.RunStatus
+
+	row := transaction.QueryRowContext(ctx, "SELECT status FROM cord_runs WHERE id = ?", runID)
+	if err := row.Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return storage.CancellationNotFound, nil
+		}
+
+		return "", fmt.Errorf("inspect run %q after rejected cancellation: %w", runID, err)
+	}
+
+	switch status {
+	case storage.RunCanceled:
+		return storage.CancellationAlreadyCanceled, nil
+	case storage.RunCompleted, storage.RunFailed:
+		return storage.CancellationFinished, nil
+	case storage.RunRunning, storage.RunCanceling:
+		return "", fmt.Errorf("cancel run %q: unexpected nonterminal persisted status %q", runID, status)
+	default:
+		return "", fmt.Errorf("cancel run %q: unexpected persisted status %q", runID, status)
+	}
 }
 
 func finishRunCancellation(ctx context.Context, transaction *sql.Tx, runID storage.RunID) error {

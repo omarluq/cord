@@ -4,18 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"time"
-
-	"github.com/omarluq/cord/internal/storage"
 )
 
 // RetryableForTest exposes retryable-error classification to external tests.
 func RetryableForTest(err error) bool { return isRetryable(err) }
-
-// CancelRunForTest exercises quarantined cancellation groundwork without
-// exporting it from the concrete store or backend contract.
-func CancelRunForTest(ctx context.Context, store *Store, runID storage.RunID) (bool, error) {
-	return store.cancelRun(ctx, runID)
-}
 
 // RunOperationForTest exercises operation retry behavior in external tests.
 func RunOperationForTest(ctx context.Context, operation string, operationFunc func() error) error {

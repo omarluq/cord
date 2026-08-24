@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"strings"
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
@@ -15,7 +16,9 @@ type RunPlanValidationTest struct {
 
 // ValidationRunPlanTests returns the backend-neutral run-plan validation cases.
 func ValidationRunPlanTests() []RunPlanValidationTest {
-	tests := runValidationTests()
+	tests := runIdentityValidationTests()
+	tests = append(tests, idempotencyValidationTests()...)
+	tests = append(tests, runInitialStateValidationTests()...)
 	tests = append(tests, nodeValidationTests()...)
 	tests = append(tests, nodeStateValidationTests()...)
 	tests = append(tests, edgeValidationTests()...)
@@ -23,7 +26,7 @@ func ValidationRunPlanTests() []RunPlanValidationTest {
 	return tests
 }
 
-func runValidationTests() []RunPlanValidationTest {
+func runIdentityValidationTests() []RunPlanValidationTest {
 	return []RunPlanValidationTest{
 		{
 			Name: "valid",
@@ -52,6 +55,72 @@ func runValidationTests() []RunPlanValidationTest {
 			Mutate:  func(plan *storage.RunPlan) { plan.Run.TerminalNodeID = "" },
 			WantErr: "validate run plan: terminal node ID is empty",
 		},
+	}
+}
+
+func idempotencyValidationTests() []RunPlanValidationTest {
+	const overlongKeyLength = 256
+
+	return []RunPlanValidationTest{
+		{
+			Name: "empty idempotency key",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.IdempotencyKey = new("")
+				plan.Run.SubmissionFingerprint = new("fingerprint")
+			},
+			WantErr: "validate run plan: idempotency key is empty",
+		},
+		{
+			Name: "invalid UTF-8 idempotency key",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.IdempotencyKey = new(string([]byte{0xff}))
+				plan.Run.SubmissionFingerprint = new("fingerprint")
+			},
+			WantErr: "validate run plan: idempotency key is not valid UTF-8",
+		},
+		{
+			Name: "idempotency key containing NUL",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.IdempotencyKey = new("key\x00suffix")
+				plan.Run.SubmissionFingerprint = new("fingerprint")
+			},
+			WantErr: "validate run plan: idempotency key contains NUL",
+		},
+		{
+			Name: "idempotency key longer than 255 bytes",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.IdempotencyKey = new(strings.Repeat("k", overlongKeyLength))
+				plan.Run.SubmissionFingerprint = new("fingerprint")
+			},
+			WantErr: "validate run plan: idempotency key is longer than 255 bytes",
+		},
+		{
+			Name: "missing keyed submission fingerprint",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.IdempotencyKey = new("key")
+			},
+			WantErr: "validate run plan: keyed run submission fingerprint is empty",
+		},
+		{
+			Name: "empty keyed submission fingerprint",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.IdempotencyKey = new("key")
+				plan.Run.SubmissionFingerprint = new("")
+			},
+			WantErr: "validate run plan: keyed run submission fingerprint is empty",
+		},
+		{
+			Name: "fingerprint without idempotency key",
+			Mutate: func(plan *storage.RunPlan) {
+				plan.Run.SubmissionFingerprint = new("fingerprint")
+			},
+			WantErr: "validate run plan: unkeyed run has a submission fingerprint",
+		},
+	}
+}
+
+func runInitialStateValidationTests() []RunPlanValidationTest {
+	return []RunPlanValidationTest{
 		{
 			Name:    "invalid run status",
 			Mutate:  func(plan *storage.RunPlan) { plan.Run.Status = storage.RunCompleted },
@@ -239,7 +308,8 @@ func ValidationJoinPlan(runID storage.RunID) storage.RunPlan {
 	return storage.RunPlan{
 		Run: storage.Run{
 			CreatedAt: now, UpdatedAt: now, CompletedAt: nil,
-			ID: runID, WorkflowName: "join", DefinitionHash: "definition", TerminalNodeID: joinID,
+			ID: runID, WorkflowName: "join", DefinitionHash: "definition",
+			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: joinID,
 			Status: storage.RunRunning, Input: []byte("null"), Output: nil, Error: nil,
 			MaxAttempts: 1, RetryBaseDelay: time.Millisecond,
 			RetryMaxDelay: time.Second, RetryPolicyVersion: 1,

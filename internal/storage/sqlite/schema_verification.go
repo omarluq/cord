@@ -61,6 +61,10 @@ func index(name string, columns ...string) schemaIndex {
 	return schemaIndex{name: name, columns: columns, unique: false, partial: false}
 }
 
+func uniqueIndex(name string, columns ...string) schemaIndex {
+	return schemaIndex{name: name, columns: columns, unique: true, partial: false}
+}
+
 func foreignKey(table string, from, to []string) schemaForeignKey {
 	return schemaForeignKey{table: table, from: from, to: to, onDelete: onDeleteCascade}
 }
@@ -82,6 +86,8 @@ func runColumns() []schemaColumn {
 		column("retry_base_delay_ns", affinityInteger, true, "500000000", 0),
 		column("retry_max_delay_ns", affinityInteger, true, "30000000000", 0),
 		column("retry_policy_version", affinityInteger, true, "1", 0),
+		column("idempotency_key", affinityText, false, "", 0),
+		column("submission_fingerprint", affinityText, false, "", 0),
 	}
 }
 
@@ -110,7 +116,14 @@ func requiredSchema() []schemaTable {
 		{
 			name:    "cord_runs",
 			columns: runColumns(),
-			indexes: nil, foreignKeys: nil,
+			indexes: []schemaIndex{
+				uniqueIndex(
+					"cord_runs_workflow_name_idempotency_key_idx",
+					"workflow_name",
+					"idempotency_key",
+				),
+			},
+			foreignKeys: nil,
 		},
 		{
 			name:    "cord_nodes",

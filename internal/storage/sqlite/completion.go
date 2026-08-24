@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/omarluq/cord/internal/storage"
 )
 
@@ -122,13 +124,29 @@ func (s *Store) CompleteNode(
 // GetRunResult reads one run's current status and persistent result payloads.
 func (s *Store) GetRunResult(ctx context.Context, runID storage.RunID) (storage.RunResult, error) {
 	var (
-		result          storage.RunResult
-		output, failure []byte
+		result                            storage.RunResult
+		output, failure                   []byte
+		retryBaseDelayNS, retryMaxDelayNS int64
 	)
 
-	query := "SELECT status, output_payload, error_payload FROM cord_runs WHERE id = ?"
+	query := `SELECT runs.workflow_name, runs.definition_hash, terminal.signature_hash,
+		runs.status, runs.output_payload, runs.error_payload, runs.max_attempts,
+		runs.retry_base_delay_ns, runs.retry_max_delay_ns, runs.retry_policy_version
+		FROM cord_runs AS runs
+		JOIN cord_nodes AS terminal
+			ON terminal.run_id = runs.id AND terminal.node_id = runs.terminal_node_id
+		WHERE runs.id = ?`
 	if err := s.database.QueryRowContext(ctx, query, runID).Scan(
-		&result.Status, &output, &failure,
+		&result.WorkflowName,
+		&result.DefinitionHash,
+		&result.TerminalSignatureHash,
+		&result.Status,
+		&output,
+		&failure,
+		&result.MaxAttempts,
+		&retryBaseDelayNS,
+		&retryMaxDelayNS,
+		&result.RetryPolicyVersion,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return result, fmt.Errorf("read run result %q: %w", runID, storage.ErrRunNotFound)
@@ -139,6 +157,8 @@ func (s *Store) GetRunResult(ctx context.Context, runID storage.RunID) (storage.
 
 	result.Output = storage.EncodedPayload(output)
 	result.Error = storage.EncodedPayload(failure)
+	result.RetryBaseDelay = time.Duration(retryBaseDelayNS)
+	result.RetryMaxDelay = time.Duration(retryMaxDelayNS)
 
 	return result, nil
 }

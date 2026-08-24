@@ -48,7 +48,7 @@ func TestStore_ClaimReadyNodeUsesDatabaseEligibilityAndCAS(t *testing.T) {
 	now := time.Now().UTC()
 	plan := validPlan(now, "claim")
 	plan.Nodes[0].AvailableAt = now.Add(time.Hour)
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	claim, claimed, err := store.ClaimReadyNode(t.Context(), "worker-a", time.Minute)
 	require.NoError(t, err)
@@ -87,7 +87,7 @@ func TestStore_HeartbeatExtendsLeaseAndRejectsLoss(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "heartbeat")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	accepted, expiry, err := store.HeartbeatNode(
@@ -112,7 +112,7 @@ func TestStore_ExpiredRecoveryIncrementsFenceAndAttempt(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "recovery")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	first := claimNode(t, store)
 
 	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
@@ -150,7 +150,7 @@ func TestStore_ClaimCommitSurvivesProcessBoundary(t *testing.T) {
 	require.NoError(t, err)
 
 	plan := validPlan(time.Now().UTC(), "claim-crash")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	claim, claimed, err := store.ClaimReadyNode(t.Context(), "departed-worker", time.Minute)
 	require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestStore_CompleteNodeReleasesDependenciesAndCompletesTerminalRun(t *testin
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "complete")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	first := claimNode(t, store)
 	accepted, err := store.CompleteNode(t.Context(), first.RunID, first.NodeID, first.Lease, []byte(`"object"`))
@@ -201,8 +201,8 @@ func TestStore_CompleteNodeQueuesReleasedChildrenBehindWaitingWork(t *testing.T)
 	active := validPlan(now.Add(-2*time.Minute), "active-run")
 	waiting := validPlan(now.Add(-time.Minute), "waiting-run")
 
-	require.NoError(t, store.CreateRun(t.Context(), &active))
-	require.NoError(t, store.CreateRun(t.Context(), &waiting))
+	requireCreateRun(t.Context(), t, store, &active)
+	requireCreateRun(t.Context(), t, store, &waiting)
 
 	first := claimNode(t, store)
 	require.Equal(t, active.Run.ID, first.RunID)
@@ -269,7 +269,7 @@ func TestStore_CompleteNodeDoesNotStarveReadyBranch(t *testing.T) {
 		storage.Edge{RunID: plan.Run.ID, Parent: "waiting-branch", Child: joinNode, ParentOrder: 1},
 	)
 	plan.Run.TerminalNodeID = joinNode
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	first := claimNode(t, store)
 	require.Equal(t, compileNode, first.NodeID)
@@ -305,7 +305,7 @@ func TestStore_CompleteNodeRejectsStaleAndExpiredLeases(t *testing.T) {
 
 			database, store := newStore(t, true)
 			plan := validPlan(time.Now().UTC(), storage.RunID("fence-"+testCase.name))
-			require.NoError(t, store.CreateRun(t.Context(), &plan))
+			requireCreateRun(t.Context(), t, store, &plan)
 			claim := claimNode(t, store)
 
 			if testCase.mutate == nil {
@@ -331,7 +331,7 @@ func TestStore_CompleteNodeRollsBackAtDependencyReleaseBoundary(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "completion-rollback")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	_, err := database.ExecContext(t.Context(), `CREATE TRIGGER reject_ready BEFORE UPDATE OF status ON cord_nodes
@@ -351,7 +351,7 @@ func TestStore_FailNodeIsFencedAndAtomic(t *testing.T) {
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "failure")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 	stale := claim.Lease
 	stale.Generation--
@@ -374,7 +374,7 @@ func TestStore_CancelRunFencesRunningWorkAndPreservesCompletedNodes(t *testing.T
 
 	database, store := newStore(t, true)
 	plan := validPlan(time.Now().UTC(), "cancel")
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 	claim := claimNode(t, store)
 
 	accepted, err := sqlite.CancelRunForTest(t.Context(), store, claim.RunID)

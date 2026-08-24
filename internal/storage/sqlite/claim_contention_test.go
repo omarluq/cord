@@ -126,7 +126,7 @@ func setupContendedClaim(t *testing.T, runID storage.RunID) (*sqlite.Store, *sql
 	require.NoError(t, err)
 
 	plan := validPlan(time.Now().UTC(), runID)
-	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	requireCreateRun(t.Context(), t, store, &plan)
 
 	transaction, err := first.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
@@ -333,7 +333,7 @@ func createReadyRuns(tb testing.TB, store *sqlite.Store, count int, prefix strin
 	now := time.Now().UTC()
 	for index := range count {
 		plan := validPlan(now, storage.RunID(fmt.Sprintf("%s-%03d", prefix, index)))
-		require.NoError(tb, store.CreateRun(tb.Context(), &plan))
+		requireCreateRun(tb.Context(), tb, store, &plan)
 	}
 }
 

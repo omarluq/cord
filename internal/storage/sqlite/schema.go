@@ -12,6 +12,7 @@ const (
 	schemaV1 = 1
 	schemaV2 = 2
 	schemaV3 = 3
+	schemaV4 = 4
 )
 
 func migrations() []*goose.Migration {
@@ -19,7 +20,43 @@ func migrations() []*goose.Migration {
 		goose.NewGoMigration(schemaV1, &goose.GoFunc{RunTx: migrateV1}, nil),
 		goose.NewGoMigration(schemaV2, &goose.GoFunc{RunTx: migrateV2}, nil),
 		goose.NewGoMigration(schemaV3, &goose.GoFunc{RunTx: migrateV3}, nil),
+		goose.NewGoMigration(schemaV4, &goose.GoFunc{RunTx: migrateV4}, nil),
 	}
+}
+
+func migrateV4(ctx context.Context, transaction *sql.Tx) error {
+	columns := []struct {
+		name      string
+		statement string
+	}{
+		{name: "idempotency_key", statement: "ALTER TABLE cord_runs ADD COLUMN idempotency_key TEXT"},
+		{
+			name:      "submission_fingerprint",
+			statement: "ALTER TABLE cord_runs ADD COLUMN submission_fingerprint TEXT",
+		},
+	}
+
+	for _, column := range columns {
+		exists, err := columnExists(ctx, transaction, "cord_runs", column.name)
+		if err != nil {
+			return err
+		}
+
+		if !exists {
+			if _, err = transaction.ExecContext(ctx, column.statement); err != nil {
+				return fmt.Errorf("add submission identity column %q: %w", column.name, err)
+			}
+		}
+	}
+
+	_, err := transaction.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS
+		cord_runs_workflow_name_idempotency_key_idx
+		ON cord_runs(workflow_name, idempotency_key)`)
+	if err != nil {
+		return fmt.Errorf("create run idempotency index: %w", err)
+	}
+
+	return nil
 }
 
 func migrateV3(ctx context.Context, transaction *sql.Tx) error {

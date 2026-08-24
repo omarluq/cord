@@ -78,7 +78,7 @@ func TestStore_ClaimReadyNodeForFunctionsValidatesLease(t *testing.T) {
 				time.Now().UTC(),
 				storage.RunID("registered-claim-validation-"+testCase.name),
 			)
-			require.NoError(t, store.CreateRun(t.Context(), &plan))
+			requireCreateRun(t.Context(), t, store, &plan)
 			registered := []storage.FunctionRegistration{
 				{Key: plan.Nodes[0].FunctionKey, Signature: plan.Nodes[0].SignatureHash},
 			}
@@ -115,7 +115,7 @@ func TestStore_ClaimReadyNodeEnforcesAttemptLimit(t *testing.T) {
 
 			database, store := newStore(t, true)
 			plan := validPlan(time.Now().UTC(), storage.RunID("attempt-limit-"+testCase.name))
-			require.NoError(t, store.CreateRun(t.Context(), &plan))
+			requireCreateRun(t.Context(), t, store, &plan)
 
 			result, err := database.ExecContext(
 				t.Context(),
@@ -150,8 +150,8 @@ func TestStore_ClaimReadyNodeUsesDeterministicEligibilityOrder(t *testing.T) {
 	later := validPlan(now.Add(time.Second), "later-run")
 	earlier := validPlan(now, "earlier-run")
 
-	require.NoError(t, store.CreateRun(t.Context(), &later))
-	require.NoError(t, store.CreateRun(t.Context(), &earlier))
+	requireCreateRun(t.Context(), t, store, &later)
+	requireCreateRun(t.Context(), t, store, &earlier)
 
 	claim := claimNode(t, store)
 	assert.Equal(t, earlier.Run.ID, claim.RunID)
