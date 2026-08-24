@@ -23,7 +23,8 @@ type Cord struct {
 	slots             chan struct{}
 	errorReports      chan error
 	errorReporterDone chan struct{}
-	completionWaiters map[storage.RunID]map[uint64]chan struct{}
+	completionWaiters map[storage.RunID]*completionPoll
+	activeAttempts    map[storage.RunID]map[uint64]context.CancelFunc
 	shutdownDone      chan struct{}
 	owner             string
 	registrations     []storage.FunctionRegistration
@@ -31,6 +32,7 @@ type Cord struct {
 	admittedRuns      int
 	activeGoroutines  int
 	nextWaiterID      uint64
+	nextAttemptID     uint64
 	pollInterval      time.Duration
 	leaseTTL          time.Duration
 	heartbeatInterval time.Duration
@@ -40,6 +42,7 @@ type Cord struct {
 	lifecycleMu       sync.Mutex
 	admissionMu       sync.Mutex
 	waiterMu          sync.Mutex
+	activeMu          sync.Mutex
 	errorReportingOff atomic.Bool
 	acceptingRuns     bool
 }
@@ -140,52 +143,258 @@ func (c *Cord) finishRunAdmission() bool {
 	return shutdownStarted
 }
 
+type completionObservation struct {
+	err    error
+	result storage.RunResult
+}
+
+type completionWaiter struct {
+	observations        chan completionObservation
+	observeRuntimeClose bool
+}
+
+type completionPoll struct {
+	waiters map[uint64]completionWaiter
+	trigger chan struct{}
+	done    chan struct{}
+	cancel  context.CancelFunc
+	latest  *completionObservation
+}
+
 func (c *Cord) subscribeCompletion(
 	runID storage.RunID,
-) (notifications <-chan struct{}, unsubscribe func()) {
+	observeRuntimeClose bool,
+) (observations <-chan completionObservation, unsubscribe func()) {
 	c.waiterMu.Lock()
-	defer c.waiterMu.Unlock()
+
+	poll := c.completionWaiters[runID]
+	if poll == nil {
+		pollCtx, cancel := context.WithCancel(context.Background())
+		poll = &completionPoll{
+			waiters: make(map[uint64]completionWaiter),
+			trigger: make(chan struct{}, 1),
+			done:    make(chan struct{}),
+			cancel:  cancel,
+		}
+		c.completionWaiters[runID] = poll
+
+		go c.pollCompletion(pollCtx, runID, poll)
+	}
 
 	c.nextWaiterID++
 	waiterID := c.nextWaiterID
-	waiter := make(chan struct{}, 1)
-
-	if c.completionWaiters[runID] == nil {
-		c.completionWaiters[runID] = make(map[uint64]chan struct{})
+	waiter := completionWaiter{
+		observations:        make(chan completionObservation, 1),
+		observeRuntimeClose: observeRuntimeClose,
 	}
 
-	c.completionWaiters[runID][waiterID] = waiter
+	poll.waiters[waiterID] = waiter
+	if poll.latest != nil {
+		waiter.observations <- *poll.latest
+	}
+	c.waiterMu.Unlock()
 
-	return waiter, func() {
-		c.waiterMu.Lock()
-		defer c.waiterMu.Unlock()
+	var unsubscribeOnce sync.Once
 
-		waiters := c.completionWaiters[runID]
-		delete(waiters, waiterID)
+	return waiter.observations, func() {
+		unsubscribeOnce.Do(func() {
+			var waitForPoll <-chan struct{}
 
-		if len(waiters) == 0 {
-			delete(c.completionWaiters, runID)
+			c.waiterMu.Lock()
+			delete(poll.waiters, waiterID)
+
+			if len(poll.waiters) == 0 {
+				if c.completionWaiters[runID] == poll {
+					delete(c.completionWaiters, runID)
+				}
+
+				poll.cancel()
+				waitForPoll = poll.done
+			}
+			c.waiterMu.Unlock()
+
+			if waitForPoll != nil {
+				<-waitForPoll
+			}
+		})
+	}
+}
+
+func (c *Cord) pollCompletion(ctx context.Context, runID storage.RunID, poll *completionPoll) {
+	defer close(poll.done)
+
+	timer := time.NewTimer(resultPollInterval)
+	defer timer.Stop()
+
+	for {
+		if c.readCompletion(ctx, runID, poll) {
+			return
 		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-poll.trigger:
+		case <-timer.C:
+		}
+
+		resetTimer(timer, resultPollInterval)
+	}
+}
+
+func (c *Cord) readCompletion(ctx context.Context, runID storage.RunID, poll *completionPoll) bool {
+	result, err := c.store.GetRunResult(ctx, runID)
+	if ctx.Err() != nil {
+		return true
+	}
+
+	observation := &completionObservation{err: err, result: result}
+	final := err != nil || result.Status == storage.RunCompleted ||
+		result.Status == storage.RunFailed || result.Status == storage.RunCanceled
+	c.publishCompletion(poll, observation, final)
+
+	return final
+}
+
+func resetTimer(timer *time.Timer, interval time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+
+	timer.Reset(interval)
+}
+
+func (c *Cord) publishCompletion(
+	poll *completionPoll,
+	observation *completionObservation,
+	final bool,
+) {
+	c.waiterMu.Lock()
+	fanout := final || poll.latest == nil
+	poll.latest = observation
+
+	waiters := make([]chan completionObservation, 0, len(poll.waiters))
+	if fanout {
+		for _, waiter := range poll.waiters {
+			waiters = append(waiters, waiter.observations)
+		}
+	}
+	c.waiterMu.Unlock()
+
+	for _, waiter := range waiters {
+		publishCompletionToWaiter(waiter, observation)
+	}
+}
+
+func publishCompletionToWaiter(
+	waiter chan completionObservation,
+	observation *completionObservation,
+) {
+	select {
+	case waiter <- *observation:
+		return
+	default:
+	}
+
+	select {
+	case <-waiter:
+	default:
+	}
+
+	select {
+	case waiter <- *observation:
+	default:
 	}
 }
 
 func (c *Cord) notifyCompletion(runID storage.RunID) {
-	c.waiterMu.Lock()
-	defer c.waiterMu.Unlock()
+	// Workflow cancellation reaches this hook only after the durable transition.
+	// Local cancellation is an optimization; durable fencing remains authoritative.
+	c.cancelActiveAttempts(runID)
+	c.notifyWaiters(runID)
+}
 
-	for _, waiter := range c.completionWaiters[runID] {
-		select {
-		case waiter <- struct{}{}:
-		default:
-		}
+func (c *Cord) notifyWaiters(runID storage.RunID) {
+	c.waiterMu.Lock()
+	poll := c.completionWaiters[runID]
+	c.waiterMu.Unlock()
+
+	if poll == nil {
+		return
+	}
+
+	select {
+	case poll.trigger <- struct{}{}:
+	default:
 	}
 }
 
 func (c *Cord) clearCompletionWaiters() {
-	c.waiterMu.Lock()
-	defer c.waiterMu.Unlock()
+	var stopped []*completionPoll
 
-	clear(c.completionWaiters)
+	c.waiterMu.Lock()
+	for runID, poll := range c.completionWaiters {
+		for waiterID, waiter := range poll.waiters {
+			if waiter.observeRuntimeClose {
+				delete(poll.waiters, waiterID)
+			}
+		}
+
+		if len(poll.waiters) == 0 {
+			delete(c.completionWaiters, runID)
+			poll.cancel()
+			stopped = append(stopped, poll)
+		}
+	}
+	c.waiterMu.Unlock()
+
+	for _, poll := range stopped {
+		<-poll.done
+	}
+}
+
+func (c *Cord) registerActiveAttemptLocked(
+	claim *storage.Claim,
+	cancel context.CancelFunc,
+) (unregister func()) {
+	c.nextAttemptID++
+	attemptID := c.nextAttemptID
+
+	if c.activeAttempts == nil {
+		c.activeAttempts = make(map[storage.RunID]map[uint64]context.CancelFunc)
+	}
+
+	if c.activeAttempts[claim.RunID] == nil {
+		c.activeAttempts[claim.RunID] = make(map[uint64]context.CancelFunc)
+	}
+
+	c.activeAttempts[claim.RunID][attemptID] = cancel
+
+	return func() {
+		c.activeMu.Lock()
+		defer c.activeMu.Unlock()
+
+		attempts := c.activeAttempts[claim.RunID]
+		delete(attempts, attemptID)
+
+		if len(attempts) == 0 {
+			delete(c.activeAttempts, claim.RunID)
+		}
+	}
+}
+
+func (c *Cord) cancelActiveAttempts(runID storage.RunID) {
+	c.activeMu.Lock()
+	attempts := c.activeAttempts[runID]
+	delete(c.activeAttempts, runID)
+	c.activeMu.Unlock()
+
+	for _, cancel := range attempts {
+		cancel()
+	}
 }
 
 const schedulerErrorQueueCapacity = 16
@@ -303,7 +512,8 @@ func newCordWithSettings(store storage.Backend, owner string, settings scheduler
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
 		lifecycleMu: sync.Mutex{}, shutdownDone: make(chan struct{}),
 		admissionMu: sync.Mutex{}, acceptingRuns: true, waiterMu: sync.Mutex{},
-		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
+		completionWaiters: make(map[storage.RunID]*completionPoll),
+		activeAttempts:    make(map[storage.RunID]map[uint64]context.CancelFunc),
 		errorReports:      make(chan error, schedulerErrorQueueCapacity), errorReporterDone: make(chan struct{}),
 	}
 

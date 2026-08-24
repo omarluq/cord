@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,8 +18,26 @@ type resultStore struct {
 	mu    sync.RWMutex
 }
 
-func newResultStore(result storage.RunResult) resultStore {
-	return resultStore{value: result, mu: sync.RWMutex{}}
+func newResultStore(result *storage.RunResult) resultStore {
+	return resultStore{value: *result, mu: sync.RWMutex{}}
+}
+
+func testRunResult(
+	status storage.RunStatus,
+	output storage.EncodedPayload,
+) *storage.RunResult {
+	return &storage.RunResult{
+		WorkflowName:          "",
+		DefinitionHash:        "",
+		TerminalSignatureHash: "",
+		Status:                status,
+		Output:                output,
+		Error:                 nil,
+		MaxAttempts:           defaultMaxAttempts,
+		RetryBaseDelay:        defaultBaseDelay,
+		RetryMaxDelay:         defaultMaxDelay,
+		RetryPolicyVersion:    retryPolicyVersion,
+	}
 }
 
 func (store *resultStore) get() storage.RunResult {
@@ -28,17 +47,19 @@ func (store *resultStore) get() storage.RunResult {
 	return store.value
 }
 
-func (store *resultStore) set(result storage.RunResult) {
+func (store *resultStore) set(result *storage.RunResult) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	store.value = result
+	store.value = *result
 }
 
 type resultWaitBackend struct {
 	storage.Backend
-	reads  chan struct{}
-	result resultStore
+	reads      chan struct{}
+	allowRead  <-chan struct{}
+	result     resultStore
+	totalReads atomic.Int64
 }
 
 type notifiedResult struct {
@@ -46,18 +67,29 @@ type notifiedResult struct {
 	value int
 }
 
-func (backend *resultWaitBackend) GetRunResult(context.Context, storage.RunID) (storage.RunResult, error) {
+func (backend *resultWaitBackend) GetRunResult(ctx context.Context, _ storage.RunID) (storage.RunResult, error) {
+	backend.totalReads.Add(1)
+
 	select {
 	case backend.reads <- struct{}{}:
 	default:
 	}
 
-	return backend.result.get(), nil
+	result := backend.result.get()
+	if backend.allowRead != nil {
+		select {
+		case <-backend.allowRead:
+		case <-ctx.Done():
+			return storage.RunResult{}, fmt.Errorf("test result read: %w", ctx.Err())
+		}
+	}
+
+	return result, nil
 }
 
 func newResultWaitRuntime(
 	t *testing.T,
-	result storage.RunResult,
+	result *storage.RunResult,
 	readCapacity int,
 ) (*Cord, *resultWaitBackend, serialization.JSONCodec[int]) {
 	t.Helper()
@@ -69,7 +101,7 @@ func newResultWaitRuntime(
 	runtime := &Cord{
 		store:             backend,
 		ctx:               t.Context(),
-		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
+		completionWaiters: make(map[storage.RunID]*completionPoll),
 	}
 	codec, err := serialization.NewJSONCodec[int]()
 	require.NoError(t, err)
@@ -81,18 +113,20 @@ func TestCompletionNotificationWakesAllWaitersAndCleansUp(t *testing.T) {
 	t.Parallel()
 
 	runtime := &Cord{
+		store: &resultWaitBackend{
+			result: newResultStore(testRunResult(storage.RunRunning, nil)),
+			reads:  make(chan struct{}, 1),
+		},
 		ctx:               t.Context(),
-		completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
+		completionWaiters: make(map[storage.RunID]*completionPoll),
 	}
 
 	const runID storage.RunID = "notified-run"
 
-	first, unsubscribeFirst := runtime.subscribeCompletion(runID)
-	second, unsubscribeSecond := runtime.subscribeCompletion(runID)
+	first, unsubscribeFirst := runtime.subscribeCompletion(runID, false)
+	second, unsubscribeSecond := runtime.subscribeCompletion(runID, false)
 
-	runtime.notifyCompletion(runID)
-
-	for index, waiter := range []<-chan struct{}{first, second} {
+	for index, waiter := range []<-chan completionObservation{first, second} {
 		select {
 		case <-waiter:
 		case <-time.After(time.Second):
@@ -110,7 +144,7 @@ func TestWorkflowWaitUsesLocalNotification(t *testing.T) {
 
 	runtime, backend, codec := newResultWaitRuntime(
 		t,
-		storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
+		testRunResult(storage.RunRunning, nil),
 		4,
 	)
 
@@ -124,7 +158,7 @@ func TestWorkflowWaitUsesLocalNotification(t *testing.T) {
 	}()
 
 	<-backend.reads
-	backend.result.set(storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil})
+	backend.result.set(testRunResult(storage.RunCompleted, []byte("42")))
 
 	started := time.Now()
 
@@ -147,7 +181,7 @@ func TestWorkflowWaitNotificationBeforeSubscriptionFallsBackToDurableRead(t *tes
 
 	runtime, _, codec := newResultWaitRuntime(
 		t,
-		storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil},
+		testRunResult(storage.RunCompleted, []byte("42")),
 		1,
 	)
 
@@ -163,7 +197,7 @@ func TestWorkflowWaitPollsDurableRemoteCompletion(t *testing.T) {
 
 	runtime, backend, codec := newResultWaitRuntime(
 		t,
-		storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil},
+		testRunResult(storage.RunRunning, nil),
 		4,
 	)
 
@@ -181,7 +215,7 @@ func TestWorkflowWaitPollsDurableRemoteCompletion(t *testing.T) {
 	}()
 
 	<-backend.reads
-	backend.result.set(storage.RunResult{Status: storage.RunCompleted, Output: []byte("42"), Error: nil})
+	backend.result.set(testRunResult(storage.RunCompleted, []byte("42")))
 
 	select {
 	case waitErr := <-done:
@@ -193,11 +227,96 @@ func TestWorkflowWaitPollsDurableRemoteCompletion(t *testing.T) {
 	require.Zero(t, completionWaiterCount(runtime))
 }
 
+// TestSameRunWaitersShareCompletionPolling verifies same-run waiters share durable reads.
+func TestSameRunWaitersShareCompletionPolling(t *testing.T) {
+	t.Parallel()
+
+	for _, waiterCount := range []int{1, 100, 10_000} {
+		t.Run(fmt.Sprintf("waiters=%d", waiterCount), func(t *testing.T) {
+			t.Parallel()
+			testSharedCompletionPolling(t, waiterCount)
+		})
+	}
+}
+
+func testSharedCompletionPolling(t *testing.T, waiterCount int) {
+	t.Helper()
+
+	readGate := make(chan struct{})
+	backend := &resultWaitBackend{
+		result:    newResultStore(testRunResult(storage.RunRunning, nil)),
+		reads:     make(chan struct{}, 1),
+		allowRead: readGate,
+	}
+	runtime := &Cord{
+		store: backend, ctx: t.Context(),
+		completionWaiters: make(map[storage.RunID]*completionPoll),
+	}
+	codec, err := serialization.NewJSONCodec[int]()
+	require.NoError(t, err)
+
+	outcomes := make(chan notifiedResult, waiterCount)
+	for range waiterCount {
+		go func() {
+			value, waitErr := (Workflow[int, int]{runtime: runtime}).wait(
+				t.Context(), "shared-run", codec, false,
+			)
+			outcomes <- notifiedResult{err: waitErr, value: value}
+		}()
+	}
+
+	require.Eventually(t, func() bool {
+		return completionWaiterCount(runtime) == waiterCount
+	}, 5*time.Second, time.Millisecond)
+	releaseCompletionRead(t, readGate, "initial completion poll did not start a result read")
+	require.Eventually(t, func() bool {
+		return backend.totalReads.Load() == 1
+	}, time.Second, time.Millisecond)
+
+	backend.result.set(testRunResult(storage.RunCompleted, []byte("42")))
+
+	for range 100 {
+		runtime.notifyCompletion("shared-run")
+	}
+
+	releaseCompletionRead(t, readGate, "completion notification did not start a result read")
+
+	for range waiterCount {
+		requireCompletionOutcome(t, outcomes)
+	}
+
+	require.EqualValues(t, 2, backend.totalReads.Load())
+	require.Zero(t, completionWaiterCount(runtime))
+	require.Zero(t, completionPollCount(runtime))
+}
+
+func releaseCompletionRead(t *testing.T, readGate chan<- struct{}, failure string) {
+	t.Helper()
+
+	select {
+	case readGate <- struct{}{}:
+	case <-time.After(5 * time.Second):
+		t.Fatal(failure)
+	}
+}
+
+func requireCompletionOutcome(t *testing.T, outcomes <-chan notifiedResult) {
+	t.Helper()
+
+	select {
+	case outcome := <-outcomes:
+		require.NoError(t, outcome.err)
+		require.Equal(t, 42, outcome.value)
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion waiter did not return")
+	}
+}
+
 func TestCompletionWaiterCleanupOnCancelAndClose(t *testing.T) {
 	t.Parallel()
 
 	backend := &resultWaitBackend{
-		result: newResultStore(storage.RunResult{Status: storage.RunRunning, Output: nil, Error: nil}),
+		result: newResultStore(testRunResult(storage.RunRunning, nil)),
 		reads:  make(chan struct{}, 4),
 	}
 	runtime := newAdmissionTestRuntime(backend)
@@ -217,7 +336,7 @@ func TestCompletionWaiterCleanupOnCancelAndClose(t *testing.T) {
 	require.ErrorIs(t, <-waitDone, context.Canceled)
 	require.Zero(t, completionWaiterCount(runtime))
 
-	waiter, unsubscribe := runtime.subscribeCompletion("close-run")
+	waiter, unsubscribe := runtime.subscribeCompletion("close-run", true)
 	require.NotNil(t, waiter)
 	require.Equal(t, 1, completionWaiterCount(runtime))
 	require.NoError(t, runtime.Close())
@@ -230,25 +349,31 @@ func completionWaiterCount(runtime *Cord) int {
 	defer runtime.waiterMu.Unlock()
 
 	count := 0
-	for _, waiters := range runtime.completionWaiters {
-		count += len(waiters)
+	for _, poll := range runtime.completionWaiters {
+		count += len(poll.waiters)
 	}
 
 	return count
 }
 
+func completionPollCount(runtime *Cord) int {
+	runtime.waiterMu.Lock()
+	defer runtime.waiterMu.Unlock()
+
+	return len(runtime.completionWaiters)
+}
+
+// BenchmarkCompletionNotification measures completion fanout at representative waiter counts.
 func BenchmarkCompletionNotification(b *testing.B) {
-	for _, waiterCount := range []int{1, 100} {
+	for _, waiterCount := range []int{1, 100, 10_000} {
 		b.Run(fmt.Sprintf("waiters=%d", waiterCount), func(b *testing.B) {
-			runtime := &Cord{
-				ctx:               b.Context(),
-				completionWaiters: make(map[storage.RunID]map[uint64]chan struct{}),
-			}
+			poll := &completionPoll{waiters: make(map[uint64]completionWaiter)}
+			waiters := make([]<-chan completionObservation, 0, waiterCount)
+			runtime := &Cord{completionWaiters: make(map[storage.RunID]*completionPoll)}
 
-			waiters := make([]<-chan struct{}, 0, waiterCount)
-
-			for range waiterCount {
-				waiter, _ := runtime.subscribeCompletion("benchmark-run")
+			for index := range waiterCount {
+				waiter := make(chan completionObservation, 1)
+				poll.waiters[uint64(index)] = completionWaiter{observations: waiter}
 				waiters = append(waiters, waiter)
 			}
 
@@ -256,7 +381,7 @@ func BenchmarkCompletionNotification(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				runtime.notifyCompletion("benchmark-run")
+				runtime.publishCompletion(poll, &completionObservation{}, false)
 
 				for _, waiter := range waiters {
 					<-waiter
