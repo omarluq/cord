@@ -104,7 +104,9 @@ func (s *Store) createRunOnce(
 		return "", false, fmt.Errorf("begin run-plan transaction: %w", err)
 	}
 
-	defer func() { err = rollbackError(transaction, "rollback run-plan transaction", err) }()
+	defer func() {
+		err = joinRollbackError(transaction.Rollback(), "rollback run-plan transaction", err)
+	}()
 
 	validationErr := requireForeignKeys(ctx, transaction)
 	if validationErr != nil {

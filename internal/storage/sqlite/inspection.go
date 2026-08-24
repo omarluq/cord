@@ -267,6 +267,16 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
+type nodeReportValidation struct {
+	runStatus        storage.RunStatus
+	terminalReason   sql.NullString
+	lastRunnerID     sql.NullString
+	leaseOwner       sql.NullString
+	leaseExpiresAt   sql.NullString
+	lifecycleVersion sql.NullInt64
+	leaseGeneration  int64
+}
+
 func scanNodeReport(
 	rows rowScanner,
 	runID storage.RunID,
@@ -308,10 +318,16 @@ func scanNodeReport(
 		return report, incompatibleNode(runID, report.NodeID, "%v", err)
 	}
 
-	if err := validateNodeReport(
-		&report, runStatus, lifecycleVersion, terminalReason, lastRunnerID,
-		leaseOwner, leaseExpiresAt, leaseGeneration,
-	); err != nil {
+	validation := nodeReportValidation{
+		runStatus:        runStatus,
+		lifecycleVersion: lifecycleVersion,
+		terminalReason:   terminalReason,
+		lastRunnerID:     lastRunnerID,
+		leaseOwner:       leaseOwner,
+		leaseExpiresAt:   leaseExpiresAt,
+		leaseGeneration:  leaseGeneration,
+	}
+	if err := validateNodeReport(&report, &validation); err != nil {
 		return storage.NodeReport{}, incompatibleNode(runID, report.NodeID, "%v", err)
 	}
 
@@ -418,24 +434,23 @@ func validateRunReason(report *storage.RunReport, reason sql.NullString, termina
 	return nil
 }
 
-func validateNodeReport(
-	report *storage.NodeReport,
-	runStatus storage.RunStatus,
-	version sql.NullInt64,
-	reason, lastRunnerID sql.NullString,
-	leaseOwner, leaseExpiresAt sql.NullString,
-	leaseGeneration int64,
-) error {
-	terminal, err := validateNodeBasics(report, leaseOwner, leaseExpiresAt, leaseGeneration)
+func validateNodeReport(report *storage.NodeReport, validation *nodeReportValidation) error {
+	terminal, err := validateNodeBasics(
+		report, validation.leaseOwner, validation.leaseExpiresAt, validation.leaseGeneration,
+	)
 	if err != nil {
 		return err
 	}
 
-	if !version.Valid {
-		return validateLegacyNodeReport(report, runStatus, reason, lastRunnerID)
+	if !validation.lifecycleVersion.Valid {
+		return validateLegacyNodeReport(
+			report, validation.runStatus, validation.terminalReason, validation.lastRunnerID,
+		)
 	}
 
-	return validateCurrentNodeReport(report, version.Int64, reason, terminal)
+	return validateCurrentNodeReport(
+		report, validation.lifecycleVersion.Int64, validation.terminalReason, terminal,
+	)
 }
 
 func validateNodeBasics(

@@ -103,7 +103,7 @@ func (s *Store) ListRunNodes(
 	ctx context.Context,
 	runID storage.RunID,
 	query storage.NodeQuery,
-) (storage.NodePage, error) {
+) (_ storage.NodePage, err error) {
 	limit, err := normalizeNodeQuery(query)
 	if err != nil {
 		return storage.NodePage{}, fmt.Errorf("list nodes for run %q: %w", runID, err)
@@ -116,10 +116,11 @@ func (s *Store) ListRunNodes(
 	if err != nil {
 		return storage.NodePage{}, fmt.Errorf("list nodes for run %q: begin read: %w", runID, err)
 	}
+	defer func() { err = errors.Join(err, rollbackRead(transaction)) }()
 
 	page, readErr := listRunNodes(ctx, transaction, runID, query, limit)
 	if readErr != nil {
-		return storage.NodePage{}, errors.Join(readErr, rollbackRead(transaction))
+		return storage.NodePage{}, readErr
 	}
 
 	if err = transaction.Commit(); err != nil {
