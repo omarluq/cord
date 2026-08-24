@@ -303,6 +303,43 @@ func TestStore_ListRunNodesAllowsUnclaimedCurrentNode(t *testing.T) {
 	}
 }
 
+func TestStore_ListRunNodesRejectsUnclaimedCurrentNodeStartMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                          string
+		firstStart, lastStart, runner bool
+	}{
+		{name: "first start", firstStart: true, lastStart: false, runner: false},
+		{name: "last start", firstStart: false, lastStart: true, runner: false},
+		{name: "runner", firstStart: false, lastStart: false, runner: true},
+		{name: "complete start metadata", firstStart: true, lastStart: true, runner: true},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			database, store := newStore(t, true)
+			plan := validPlan(time.Now().UTC(), storage.RunID("unclaimed-metadata-"+testCase.name))
+			requireCreateRun(t.Context(), t, store, &plan)
+
+			_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
+				SET lifecycle_version = 1, state_changed_at = available_at,
+					started_at = CASE WHEN ? THEN available_at ELSE NULL END,
+					last_started_at = CASE WHEN ? THEN available_at ELSE NULL END,
+					last_runner_id = CASE WHEN ? THEN 'worker' ELSE NULL END
+				WHERE run_id = ? AND node_id = ?`,
+				testCase.firstStart, testCase.lastStart, testCase.runner,
+				plan.Run.ID, compileNode)
+			require.NoError(t, err)
+
+			_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
+			assert.ErrorIs(t, err, storage.ErrRunIncompatible)
+		})
+	}
+}
+
 func TestStore_InspectionQueriesAreReadOnly(t *testing.T) {
 	t.Parallel()
 
