@@ -516,8 +516,7 @@ func validateLegacyNodeReport(
 	runStatus storage.RunStatus,
 	reason, lastRunnerID sql.NullString,
 ) error {
-	if reason.Valid || report.StateChangedAt != nil || report.LastStartedAt != nil ||
-		(lastRunnerID.Valid && report.State != storage.NodeRunning) {
+	if reason.Valid || report.StateChangedAt != nil || report.LastStartedAt != nil || lastRunnerID.Valid {
 		return errors.New("legacy node contains lifecycle metadata")
 	}
 
@@ -559,6 +558,10 @@ func validateCurrentNodeStart(report *storage.NodeReport) error {
 		return errors.New("current node has no state-change timestamp")
 	}
 
+	if currentNodeStartIncomplete(report) {
+		return errors.New("claimed node has incomplete start metadata")
+	}
+
 	if report.LastStartedAt != nil && report.FirstStartedAt == nil {
 		return errors.New("last start exists without first start")
 	}
@@ -572,6 +575,11 @@ func validateCurrentNodeStart(report *storage.NodeReport) error {
 	}
 
 	return nil
+}
+
+func currentNodeStartIncomplete(report *storage.NodeReport) bool {
+	return report.Attempt > 0 &&
+		(report.FirstStartedAt == nil || report.LastStartedAt == nil || report.RunnerID == nil)
 }
 
 func validateNodeReason(report *storage.NodeReport, reason sql.NullString, terminal bool) error {

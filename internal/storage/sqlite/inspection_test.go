@@ -166,6 +166,53 @@ func TestStore_ListRunNodesKeysetFiltersAndBounds(t *testing.T) {
 	assert.ErrorIs(t, err, storage.ErrRunNotFound)
 }
 
+func TestStore_ListRunNodesLegacyRunningNode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		lastRunner any
+		name       string
+		wantError  bool
+	}{
+		{name: "lease owner supplies report runner", lastRunner: nil, wantError: false},
+		{name: "persisted last runner is incompatible", lastRunner: "runner", wantError: true},
+		{name: "persisted empty last runner is incompatible", lastRunner: "", wantError: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			database, store := newStore(t, true)
+			now := time.Now().UTC()
+			plan := validPlan(now, "legacy-running")
+			requireCreateRun(t.Context(), t, store, &plan)
+
+			_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
+				SET status = ?, attempt = 1, lease_owner = 'runner', lease_generation = 1,
+					lease_expires_at = ?, started_at = available_at, lifecycle_version = NULL,
+					state_changed_at = NULL, last_started_at = NULL, last_runner_id = ?
+				WHERE run_id = ? AND node_id = ?`,
+				storage.NodeRunning, now.Add(time.Minute).Format(time.RFC3339Nano), testCase.lastRunner,
+				plan.Run.ID, compileNode)
+			require.NoError(t, err)
+
+			page, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
+			if testCase.wantError {
+				require.ErrorIs(t, err, storage.ErrRunIncompatible)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, page.Nodes, 2)
+			require.NotNil(t, page.Nodes[0].RunnerID)
+			assert.Equal(t, storage.RunnerID("runner"), *page.Nodes[0].RunnerID)
+			require.NotNil(t, page.Nodes[0].CurrentLease)
+			assert.Equal(t, storage.RunnerID("runner"), page.Nodes[0].CurrentLease.RunnerID)
+		})
+	}
+}
+
 func TestStore_ListRunNodesLegacyReasonFilterAndMalformedRow(t *testing.T) {
 	t.Parallel()
 
@@ -192,6 +239,68 @@ func TestStore_ListRunNodesLegacyReasonFilterAndMalformedRow(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
 	assert.ErrorIs(t, err, storage.ErrRunIncompatible)
+}
+
+func TestStore_ListRunNodesValidatesCurrentNodeStartMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                               string
+		clearFirst, clearLast, clearRunner bool
+	}{
+		{name: "missing first start", clearFirst: true, clearLast: false, clearRunner: false},
+		{name: "missing last start", clearFirst: false, clearLast: true, clearRunner: false},
+		{name: "missing runner", clearFirst: false, clearLast: false, clearRunner: true},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			database, store := newStore(t, true)
+			plan := validPlan(time.Now().UTC(), storage.RunID("start-metadata-"+testCase.name))
+			requireCreateRun(t.Context(), t, store, &plan)
+
+			_, claimed, err := store.ClaimReadyNode(t.Context(), "worker", time.Minute)
+			require.NoError(t, err)
+			require.True(t, claimed)
+
+			_, err = database.ExecContext(t.Context(), `UPDATE cord_nodes
+				SET status = 'retry_wait', lease_owner = NULL, lease_expires_at = NULL,
+					started_at = CASE WHEN ? THEN NULL ELSE started_at END,
+					last_started_at = CASE WHEN ? THEN NULL ELSE last_started_at END,
+					last_runner_id = CASE WHEN ? THEN NULL ELSE last_runner_id END
+				WHERE run_id = ? AND node_id = ?`,
+				testCase.clearFirst, testCase.clearLast, testCase.clearRunner,
+				plan.Run.ID, plan.Nodes[0].ID)
+			require.NoError(t, err)
+
+			_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
+			assert.ErrorIs(t, err, storage.ErrRunIncompatible)
+		})
+	}
+}
+
+func TestStore_ListRunNodesAllowsUnclaimedCurrentNode(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStore(t, true)
+	plan := validPlan(time.Now().UTC(), "unclaimed-current-node")
+	requireCreateRun(t.Context(), t, store, &plan)
+	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
+		SET lifecycle_version = 1, state_changed_at = available_at
+		WHERE run_id = ?`, plan.Run.ID)
+	require.NoError(t, err)
+
+	page, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
+	require.NoError(t, err)
+	require.Len(t, page.Nodes, len(plan.Nodes))
+
+	for _, node := range page.Nodes {
+		assert.Zero(t, node.Attempt)
+		assert.Nil(t, node.FirstStartedAt)
+		assert.Nil(t, node.LastStartedAt)
+		assert.Nil(t, node.RunnerID)
+	}
 }
 
 func TestStore_InspectionQueriesAreReadOnly(t *testing.T) {
