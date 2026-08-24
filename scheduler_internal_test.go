@@ -72,11 +72,21 @@ func newSchedulerCallbackRuntime(t *testing.T, callback func(error)) *Cord {
 	return runtime
 }
 
+const (
+	completeTransition = "complete"
+	failTransition     = "fail"
+	retryTransition    = "retry"
+	raceRunID          = "race-run"
+	raceNodeID         = "race-node"
+	raceOwner          = "race-owner"
+)
+
 type rejectedTransitionBackend struct {
 	storage.Backend
-	resultErr  error
-	transition string
-	result     storage.RunResult
+	resultErr     error
+	transitionErr error
+	transition    string
+	result        storage.RunResult
 }
 
 func (backend *rejectedTransitionBackend) CompleteNode(
@@ -86,9 +96,9 @@ func (backend *rejectedTransitionBackend) CompleteNode(
 	storage.Lease,
 	storage.EncodedPayload,
 ) (bool, error) {
-	backend.transition = "complete"
+	backend.transition = completeTransition
 
-	return false, nil
+	return false, backend.transitionErr
 }
 
 func (backend *rejectedTransitionBackend) FailNode(
@@ -98,9 +108,9 @@ func (backend *rejectedTransitionBackend) FailNode(
 	storage.Lease,
 	storage.EncodedPayload,
 ) (bool, error) {
-	backend.transition = "fail"
+	backend.transition = failTransition
 
-	return false, nil
+	return false, backend.transitionErr
 }
 
 func (backend *rejectedTransitionBackend) RetryNode(
@@ -111,9 +121,9 @@ func (backend *rejectedTransitionBackend) RetryNode(
 	storage.EncodedPayload,
 	time.Duration,
 ) (bool, error) {
-	backend.transition = "retry"
+	backend.transition = retryTransition
 
-	return false, nil
+	return false, backend.transitionErr
 }
 
 func (backend *rejectedTransitionBackend) GetRunResult(
@@ -144,7 +154,7 @@ func TestCord_RejectedFencedTransitionsAreClassified(t *testing.T) {
 	const staleOwner = "stale"
 
 	claim := &storage.Claim{
-		RunID: "race-run", NodeID: "race-node", FunctionKey: "", SignatureHash: "",
+		RunID: raceRunID, NodeID: raceNodeID, FunctionKey: "", SignatureHash: "",
 		Lease:   storage.Lease{ExpiresAt: time.Time{}, Owner: staleOwner, Generation: 1, Remaining: 0},
 		Attempt: 1, MaxAttempts: 3, RetryBaseDelay: time.Second, RetryMaxDelay: time.Second,
 		RetryPolicyVersion: 0,
@@ -159,21 +169,21 @@ func TestCord_RejectedFencedTransitionsAreClassified(t *testing.T) {
 		wantClass   fencedTransitionClass
 	}{
 		{
-			name: "completion versus expiry", transition: "complete", status: storage.RunRunning,
+			name: "completion versus expiry", transition: completeTransition, status: storage.RunRunning,
 			wantClass: fencedTransitionLeaseLost, wantMessage: "lease ownership was lost",
 			run: func(runtime *Cord) error {
 				return runtime.completeClaim(t.Context(), claim, []byte(`"stale"`))
 			},
 		},
 		{
-			name: "failure versus cancellation", transition: "fail", status: storage.RunCanceled,
+			name: "failure versus cancellation", transition: failTransition, status: storage.RunCanceled,
 			wantClass: fencedTransitionCancellationWon, wantMessage: "run cancellation already won",
 			run: func(runtime *Cord) error {
 				return runtime.handleFailure(t.Context(), claim, Permanent(errors.New("stale failure")))
 			},
 		},
 		{
-			name: "retry versus recovery", transition: "retry", status: storage.RunRunning,
+			name: "retry versus recovery", transition: retryTransition, status: storage.RunRunning,
 			wantClass: fencedTransitionLeaseLost, wantMessage: "lease ownership was lost",
 			run: func(runtime *Cord) error {
 				return runtime.handleFailure(t.Context(), claim, errors.New("stale retry"))
@@ -185,9 +195,7 @@ func TestCord_RejectedFencedTransitionsAreClassified(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			backend := &rejectedTransitionBackend{result: storage.RunResult{
-				Status: testCase.status, Output: nil, Error: nil,
-			}}
+			backend := &rejectedTransitionBackend{result: *testRunResult(testCase.status, nil)}
 			runtime := &Cord{store: backend}
 
 			err := testCase.run(runtime)
@@ -201,13 +209,113 @@ func TestCord_RejectedFencedTransitionsAreClassified(t *testing.T) {
 	}
 }
 
+func TestCord_ExpectedRejectedClaimTransitionsAreNotReported(t *testing.T) {
+	t.Parallel()
+
+	claim := &storage.Claim{
+		RunID: raceRunID, NodeID: raceNodeID, FunctionKey: "", SignatureHash: "",
+		Lease: storage.Lease{
+			ExpiresAt: time.Time{}, Owner: raceOwner, Generation: 1, Remaining: 0,
+		},
+		Attempt: 1, MaxAttempts: 3, RetryBaseDelay: time.Second, RetryMaxDelay: time.Second,
+		RetryPolicyVersion: 0,
+	}
+
+	testCases := []struct {
+		run        func(*Cord) error
+		name       string
+		transition string
+		status     storage.RunStatus
+	}{
+		{
+			name: "cancellation versus completion", transition: completeTransition, status: storage.RunCanceled,
+			run: func(runtime *Cord) error {
+				return runtime.completeClaim(t.Context(), claim, []byte(`"result"`))
+			},
+		},
+		{
+			name: "cancellation versus failure", transition: failTransition, status: storage.RunCanceled,
+			run: func(runtime *Cord) error {
+				return runtime.handleFailure(t.Context(), claim, Permanent(errors.New("failure")))
+			},
+		},
+		{
+			name: "cancellation versus retry", transition: retryTransition, status: storage.RunCanceling,
+			run: func(runtime *Cord) error {
+				return runtime.handleFailure(t.Context(), claim, errors.New("retry"))
+			},
+		},
+		{
+			name: "durable completion versus completion", transition: completeTransition, status: storage.RunCompleted,
+			run: func(runtime *Cord) error {
+				return runtime.completeClaim(t.Context(), claim, []byte(`"result"`))
+			},
+		},
+		{
+			name: "durable failure versus retry", transition: retryTransition, status: storage.RunFailed,
+			run: func(runtime *Cord) error {
+				return runtime.handleFailure(t.Context(), claim, errors.New("retry"))
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &rejectedTransitionBackend{result: *testRunResult(testCase.status, nil)}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			runtime := &Cord{
+				store: backend, ctx: ctx, errorReports: make(chan error, 1), onSchedulerError: func(error) {},
+			}
+
+			runtime.reportClaimTransitionError(testCase.run(runtime))
+
+			require.Equal(t, testCase.transition, backend.transition)
+			require.Empty(t, runtime.errorReports)
+		})
+	}
+}
+
+func TestCord_ExpectedRejectedClaimReleaseIsNotReported(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []storage.RunStatus{
+		storage.RunCanceling, storage.RunCanceled, storage.RunCompleted, storage.RunFailed,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+
+			backend := &rejectedTransitionBackend{result: *testRunResult(status, nil)}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			runtime := &Cord{
+				store: backend, ctx: ctx, errorReports: make(chan error, 1), onSchedulerError: func(error) {},
+			}
+
+			runtime.releaseClaim(&storage.Claim{
+				RunID: raceRunID, NodeID: raceNodeID, FunctionKey: "", SignatureHash: "",
+				Lease: storage.Lease{
+					ExpiresAt: time.Time{}, Owner: raceOwner, Generation: 1, Remaining: 0,
+				},
+				Attempt: 0, MaxAttempts: 0, RetryBaseDelay: 0, RetryMaxDelay: 0,
+				RetryPolicyVersion: 0,
+			}, errors.New("registration disappeared"))
+
+			require.Equal(t, retryTransition, backend.transition)
+			require.Empty(t, runtime.errorReports)
+		})
+	}
+}
+
 func TestCord_RejectedClaimReleaseAfterReclaimIsReported(t *testing.T) {
 	t.Parallel()
 
 	reports := make(chan error, 1)
-	backend := &rejectedTransitionBackend{result: storage.RunResult{
-		Status: storage.RunRunning, Output: nil, Error: nil,
-	}}
+	backend := &rejectedTransitionBackend{result: *testRunResult(storage.RunRunning, nil)}
 	runtime := &Cord{
 		store: backend, onSchedulerError: func(err error) { reports <- err },
 	}
@@ -227,18 +335,14 @@ func TestCord_RejectedClaimReleaseAfterReclaimIsReported(t *testing.T) {
 	require.ErrorAs(t, report, &rejected)
 	require.Equal(t, fencedTransitionLeaseLost, rejected.class)
 	require.ErrorContains(t, report, "claim release rejected: lease ownership was lost")
-	require.Equal(t, "retry", backend.transition)
+	require.Equal(t, retryTransition, backend.transition)
 }
 
 func TestCord_RejectedFencedTransitionPreservesDurableWinner(t *testing.T) {
 	t.Parallel()
 
 	winner := storage.EncodedPayload(`"winner"`)
-	backend := &rejectedTransitionBackend{result: storage.RunResult{
-		Status: storage.RunCompleted,
-		Output: winner,
-		Error:  nil,
-	}}
+	backend := &rejectedTransitionBackend{result: *testRunResult(storage.RunCompleted, winner)}
 	runtime := &Cord{store: backend}
 	claim := &storage.Claim{
 		RunID: "completed-run", NodeID: "completed-node", FunctionKey: "", SignatureHash: "",
@@ -255,22 +359,80 @@ func TestCord_RejectedFencedTransitionPreservesDurableWinner(t *testing.T) {
 	require.Equal(t, winner, backend.result.Output)
 }
 
+func testClaim(runID storage.RunID, nodeID storage.NodeID) *storage.Claim {
+	return &storage.Claim{
+		RunID: runID, NodeID: nodeID, FunctionKey: "", SignatureHash: "",
+		Lease: storage.Lease{
+			ExpiresAt: time.Time{}, Owner: raceOwner, Generation: 1, Remaining: 0,
+		},
+		Attempt: 1, MaxAttempts: 3, RetryBaseDelay: time.Second, RetryMaxDelay: time.Second,
+		RetryPolicyVersion: 1,
+	}
+}
+
+func TestCord_ClaimTransitionStorageFailureIsReported(t *testing.T) {
+	t.Parallel()
+
+	transitionErr := errors.New("complete unavailable")
+	backend := &rejectedTransitionBackend{transitionErr: transitionErr}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	runtime := &Cord{
+		store: backend, ctx: ctx, errorReports: make(chan error, 1), onSchedulerError: func(error) {},
+	}
+	claim := testClaim("storage-run", "storage-node")
+
+	runtime.reportClaimTransitionError(runtime.completeClaim(t.Context(), claim, nil))
+
+	report := <-runtime.errorReports
+	require.ErrorIs(t, report, transitionErr)
+	require.ErrorContains(t, report, "complete node")
+}
+
+func TestCord_RejectedClaimTransitionImpossibleStateIsReported(t *testing.T) {
+	t.Parallel()
+
+	backend := &rejectedTransitionBackend{result: *testRunResult(storage.RunStatus("invalid"), nil)}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	runtime := &Cord{
+		store: backend, ctx: ctx, errorReports: make(chan error, 1), onSchedulerError: func(error) {},
+	}
+	claim := testClaim("invalid-run", "invalid-node")
+
+	runtime.reportClaimTransitionError(runtime.completeClaim(t.Context(), claim, nil))
+
+	report := <-runtime.errorReports
+
+	var rejected *fencedTransitionError
+	require.ErrorAs(t, report, &rejected)
+	require.Equal(t, fencedTransitionImpossibleState, rejected.class)
+}
+
 func TestCord_RejectedFencedTransitionClassificationFailureIsReported(t *testing.T) {
 	t.Parallel()
 
 	classifyErr := errors.New("result unavailable")
 	backend := &rejectedTransitionBackend{resultErr: classifyErr}
-	runtime := &Cord{store: backend}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	runtime := &Cord{
+		store: backend, ctx: ctx, errorReports: make(chan error, 1), onSchedulerError: func(error) {},
+	}
 	claim := &storage.Claim{
 		RunID: "unknown-run", NodeID: "unknown-node", FunctionKey: "", SignatureHash: "",
 		Lease: storage.Lease{}, Attempt: 0, MaxAttempts: 0, RetryBaseDelay: 0,
 		RetryMaxDelay: 0, RetryPolicyVersion: 0,
 	}
 
-	err := runtime.completeClaim(t.Context(), claim, nil)
+	runtime.reportClaimTransitionError(runtime.completeClaim(t.Context(), claim, nil))
 
-	require.ErrorIs(t, err, classifyErr)
-	require.ErrorContains(t, err, "classify rejected node completion")
+	report := <-runtime.errorReports
+	require.ErrorIs(t, report, classifyErr)
+	require.ErrorContains(t, report, "classify rejected node completion")
 }
 
 func TestCord_HeartbeatFailureCancelsBeforeLeaseExpiry(t *testing.T) {
@@ -366,6 +528,89 @@ func TestCord_HeartbeatUsesDatabaseRelativeLifetimeRegardlessOfWallClock(t *test
 			stop()
 			require.True(t, <-done)
 		})
+	}
+}
+
+func TestCord_ActiveAttemptRegistryUnregistersWithoutLeaks(t *testing.T) {
+	t.Parallel()
+
+	runtime := &Cord{activeAttempts: make(map[storage.RunID]map[uint64]context.CancelFunc)}
+	claim := testClaim("registry-run", "registry-node")
+	ctx, cancel := context.WithCancel(t.Context())
+
+	runtime.activeMu.Lock()
+	unregister := runtime.registerActiveAttemptLocked(claim, cancel)
+	runtime.activeMu.Unlock()
+	require.Len(t, runtime.activeAttempts[claim.RunID], 1)
+
+	unregister()
+	require.NotContains(t, runtime.activeAttempts, claim.RunID)
+
+	unregister()
+	require.NotContains(t, runtime.activeAttempts, claim.RunID)
+	cancel()
+	<-ctx.Done()
+}
+
+func TestCord_NotifyCompletionCancelsAllActiveAttempts(t *testing.T) {
+	t.Parallel()
+
+	runtime := &Cord{
+		activeAttempts:    make(map[storage.RunID]map[uint64]context.CancelFunc),
+		completionWaiters: make(map[storage.RunID]*completionPoll),
+	}
+	claim := testClaim("canceled-run", "active-node")
+	contexts := make([]context.Context, 0, 2)
+
+	runtime.activeMu.Lock()
+	for range 2 {
+		ctx, cancel := context.WithCancel(t.Context())
+		contexts = append(contexts, ctx)
+
+		runtime.registerActiveAttemptLocked(claim, cancel)
+	}
+	runtime.activeMu.Unlock()
+
+	runtime.notifyCompletion(claim.RunID)
+
+	for _, ctx := range contexts {
+		require.ErrorIs(t, ctx.Err(), context.Canceled)
+	}
+
+	require.NotContains(t, runtime.activeAttempts, claim.RunID)
+}
+
+func TestCord_ActiveAttemptCancellationRacesUnregistration(t *testing.T) {
+	t.Parallel()
+
+	for range 100 {
+		runtime := &Cord{activeAttempts: make(map[storage.RunID]map[uint64]context.CancelFunc)}
+		claim := testClaim("race-registry-run", "race-registry-node")
+		ctx, cancel := context.WithCancel(t.Context())
+
+		runtime.activeMu.Lock()
+		unregister := runtime.registerActiveAttemptLocked(claim, cancel)
+		runtime.activeMu.Unlock()
+
+		var wait sync.WaitGroup
+
+		wait.Add(2)
+
+		go func() {
+			defer wait.Done()
+
+			runtime.cancelActiveAttempts(claim.RunID)
+		}()
+		go func() {
+			defer wait.Done()
+
+			unregister()
+		}()
+
+		wait.Wait()
+		cancel()
+		<-ctx.Done()
+		require.NotContains(t, runtime.activeAttempts, claim.RunID)
 	}
 }
 
@@ -665,9 +910,19 @@ type admissionTestBackend struct {
 	result         resultStore
 	startOnce      sync.Once
 	resultReadOnce sync.Once
+	attached       bool
 }
 
 func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storage.RunPlan) error {
+	_, _, err := backend.CreateOrAttachRun(ctx, plan)
+
+	return err
+}
+
+func (backend *admissionTestBackend) CreateOrAttachRun(
+	ctx context.Context,
+	plan *storage.RunPlan,
+) (storage.RunID, bool, error) {
 	backend.startOnce.Do(func() { close(backend.createStarted) })
 
 	if backend.createPanic != nil {
@@ -677,12 +932,12 @@ func (backend *admissionTestBackend) CreateRun(ctx context.Context, plan *storag
 	select {
 	case <-backend.allowCreate:
 	case <-ctx.Done():
-		return fmt.Errorf("admission test create run: %w", ctx.Err())
+		return "", false, fmt.Errorf("admission test create run: %w", ctx.Err())
 	}
 
 	backend.created <- plan.Run.ID
 
-	return nil
+	return plan.Run.ID, !backend.attached, nil
 }
 
 func (backend *admissionTestBackend) GetRunResult(context.Context, storage.RunID) (storage.RunResult, error) {
@@ -715,6 +970,38 @@ func newAdmissionTestRuntime(backend storage.Backend) *Cord {
 }
 
 func admissionTestStep(_ context.Context, input int) (int, error) { return input + 1, nil }
+
+func TestWorkflowPersistRunWakesSchedulerAfterAttach(t *testing.T) {
+	t.Parallel()
+
+	allowCreate := make(chan struct{})
+	close(allowCreate)
+
+	backend := &admissionTestBackend{
+		attached: true, createStarted: make(chan struct{}), allowCreate: allowCreate,
+		created: make(chan storage.RunID, 1),
+	}
+	runtime := &Cord{
+		store: backend, wake: make(chan struct{}, 1), admittedRuns: 1,
+		acceptingRuns: true, admissionMu: sync.Mutex{},
+	}
+	workflow := Workflow[int, int]{runtime: runtime}
+	plan := &storage.RunPlan{
+		Nodes: nil, Edges: nil,
+		Run: storage.Run{
+			CreatedAt: time.Time{}, UpdatedAt: time.Time{}, CompletedAt: nil,
+			ID: "attached-run", WorkflowName: "", DefinitionHash: "",
+			IdempotencyKey: nil, SubmissionFingerprint: nil, TerminalNodeID: "",
+			Status: "", Input: nil, Output: nil, Error: nil,
+			MaxAttempts: 0, RetryBaseDelay: 0, RetryMaxDelay: 0, RetryPolicyVersion: 0,
+		},
+	}
+
+	id, _, err := workflow.persistRun(t.Context(), plan)
+	require.NoError(t, err)
+	require.Equal(t, storage.RunID("attached-run"), id)
+	require.Len(t, runtime.wake, 1)
+}
 
 // TestWorkflowRunCreateRunPanicReleasesAdmission verifies that a CreateRun
 // panic releases admission and allows shutdown to complete.
@@ -820,11 +1107,7 @@ func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) 
 		allowCreate:   make(chan struct{}),
 		created:       make(chan storage.RunID, 1),
 		resultRead:    make(chan struct{}),
-		result: newResultStore(storage.RunResult{
-			Status: storage.RunRunning,
-			Output: nil,
-			Error:  nil,
-		}),
+		result:        newResultStore(testRunResult(storage.RunRunning, nil)),
 	}
 	runtime := newAdmissionTestRuntime(backend)
 	flow := runtime.From("persist-versus-close", admissionTestStep)
@@ -855,11 +1138,7 @@ func TestWorkflowRunPersistenceWinningShutdownRaceRemainsReported(t *testing.T) 
 	<-runtime.ctx.Done()
 	<-backend.resultRead
 
-	backend.result.set(storage.RunResult{
-		Status: storage.RunCompleted,
-		Output: storage.EncodedPayload("2"),
-		Error:  nil,
-	})
+	backend.result.set(testRunResult(storage.RunCompleted, storage.EncodedPayload("2")))
 	runtime.notifyCompletion(createdID)
 
 	outcome := <-runDone

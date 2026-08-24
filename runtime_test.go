@@ -24,6 +24,7 @@ func double(_ context.Context, value int) (int, error) {
 
 const (
 	heartbeatIntervalError = "heartbeat interval"
+	leaseTTLError          = "lease TTL"
 	maximumDelayError      = "maximum delay"
 )
 
@@ -36,11 +37,25 @@ func TestNew_OptionsValidatesSchedulerSettings(t *testing.T) {
 	}{
 		{name: "negative concurrency", options: cord.Options{Concurrency: -1}, error: "concurrency"},
 		{name: "negative poll interval", options: cord.Options{PollInterval: -1}, error: "poll interval"},
-		{name: "negative lease TTL", options: cord.Options{LeaseTTL: -1}, error: "lease TTL"},
-		{name: "sub-millisecond lease TTL", options: cord.Options{LeaseTTL: time.Millisecond - 1}, error: "lease TTL"},
+		{name: "negative lease TTL", options: cord.Options{LeaseTTL: -1}, error: leaseTTLError},
+		{
+			name: "sub-millisecond lease TTL", options: cord.Options{LeaseTTL: time.Millisecond - 1},
+			error: leaseTTLError,
+		},
+		{name: "one-millisecond lease TTL", options: cord.Options{LeaseTTL: time.Millisecond}, error: leaseTTLError},
+		{
+			name: "two-millisecond lease TTL", options: cord.Options{LeaseTTL: 2 * time.Millisecond},
+			error: leaseTTLError,
+		},
 		{name: "negative heartbeat", options: cord.Options{HeartbeatInterval: -1}, error: heartbeatIntervalError},
 		{name: "sub-millisecond heartbeat", options: cord.Options{
 			LeaseTTL: time.Second, HeartbeatInterval: time.Millisecond - 1,
+		}, error: heartbeatIntervalError},
+		{name: "heartbeat equals half lease", options: cord.Options{
+			LeaseTTL: time.Second, HeartbeatInterval: 500 * time.Millisecond,
+		}, error: heartbeatIntervalError},
+		{name: "heartbeat exceeds half lease", options: cord.Options{
+			LeaseTTL: time.Second, HeartbeatInterval: 501 * time.Millisecond,
 		}, error: heartbeatIntervalError},
 		{name: "heartbeat equals lease", options: cord.Options{
 			LeaseTTL: time.Second, HeartbeatInterval: time.Second,
@@ -185,9 +200,9 @@ func TestNew_OptionsLeasePrecisionBoundary(t *testing.T) {
 		options cord.Options
 	}{
 		{name: "derived heartbeat", options: cord.Options{LeaseTTL: 30 * time.Millisecond}},
-		{name: "clamped derived heartbeat", options: cord.Options{LeaseTTL: 2 * time.Millisecond}},
+		{name: "clamped derived heartbeat", options: cord.Options{LeaseTTL: 2*time.Millisecond + time.Nanosecond}},
 		{name: "one millisecond heartbeat", options: cord.Options{
-			LeaseTTL: 2 * time.Millisecond, HeartbeatInterval: time.Millisecond,
+			LeaseTTL: 2*time.Millisecond + time.Nanosecond, HeartbeatInterval: time.Millisecond,
 		}},
 	}
 
@@ -386,7 +401,7 @@ func TestNew_RejectsNewerSchema(t *testing.T) {
 
 	_, err = database.ExecContext(
 		t.Context(),
-		"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (4, 1)",
+		"INSERT INTO cord_schema_migrations (version_id, is_applied) VALUES (5, 1)",
 	)
 	require.NoError(t, err)
 

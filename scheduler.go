@@ -280,18 +280,11 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	defer func() { <-c.slots; c.signalScheduler() }()
 
 	c.mu.RLock()
-	registered, ok := c.registry[claim.FunctionKey]
+	invocation, ok := c.registry[claim.FunctionKey]
 	c.mu.RUnlock()
 
-	if !ok || registered.signature != claim.SignatureHash {
+	if !ok || invocation.signature != claim.SignatureHash {
 		c.releaseClaim(claim, errors.New("cord: claimed node registration is unavailable"))
-
-		return
-	}
-
-	inputs, err := c.store.LoadNodeInputs(c.ctx, claim.RunID, claim.NodeID)
-	if err != nil {
-		c.releaseClaim(claim, fmt.Errorf("cord: load claimed node inputs: %w", err))
 
 		return
 	}
@@ -302,11 +295,13 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	heartbeatDone := make(chan bool, 1)
 	go c.heartbeat(executionCtx, claim, cancel, heartbeatDone)
 
-	output, invokeErr := invokeSafely(executionCtx, registered.invoke, inputs)
-
-	cancel()
-
-	leaseHeld := <-heartbeatDone
+	output, leaseHeld, invokeErr := c.invokeClaim(
+		executionCtx,
+		claim,
+		invocation,
+		cancel,
+		heartbeatDone,
+	)
 	if !leaseHeld || c.ctx.Err() != nil {
 		return
 	}
@@ -314,15 +309,109 @@ func (c *Cord) executeClaim(claim *storage.Claim) {
 	commitCtx, commitCancel := context.WithTimeout(context.Background(), terminalCommitTimeout)
 	defer commitCancel()
 
+	var transitionErr error
 	if invokeErr == nil {
-		err = c.completeClaim(commitCtx, claim, output)
+		transitionErr = c.completeClaim(commitCtx, claim, output)
 	} else {
-		err = c.handleFailure(commitCtx, claim, invokeErr)
+		transitionErr = c.handleFailure(commitCtx, claim, invokeErr)
 	}
 
-	if err != nil {
-		c.reportSchedulerError(err)
+	if transitionErr != nil {
+		c.reportClaimTransitionError(transitionErr)
 	}
+}
+
+func (c *Cord) invokeClaim(
+	executionCtx context.Context,
+	claim *storage.Claim,
+	invocation registeredInvocation,
+	cancel context.CancelFunc,
+	heartbeatDone <-chan bool,
+) (storage.EncodedPayload, bool, error) {
+	unregister, err := c.registerActiveAttempt(executionCtx, claim, cancel)
+	if err != nil {
+		leaseHeld := <-heartbeatDone
+		if leaseHeld && c.ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			c.releaseClaim(claim, err)
+		}
+
+		return nil, false, nil
+	}
+	defer unregister()
+
+	inputs, err := c.store.LoadNodeInputs(executionCtx, claim.RunID, claim.NodeID)
+	if err != nil {
+		cancel()
+
+		leaseHeld := <-heartbeatDone
+		if leaseHeld && c.ctx.Err() == nil {
+			c.releaseClaim(claim, fmt.Errorf("cord: load claimed node inputs: %w", err))
+		}
+
+		return nil, false, nil
+	}
+
+	output, invokeErr := invokeSafely(executionCtx, invocation.invoke, inputs)
+
+	cancel()
+
+	return output, <-heartbeatDone, invokeErr
+}
+
+func (c *Cord) registerActiveAttempt(
+	executionCtx context.Context,
+	claim *storage.Claim,
+	cancel context.CancelFunc,
+) (unregister func(), registrationErr error) {
+	// Register before the durable check so a local cancellation racing this
+	// query either finds the attempt or is observed by the query afterward.
+	c.activeMu.Lock()
+	unregister = c.registerActiveAttemptLocked(claim, cancel)
+	c.activeMu.Unlock()
+
+	result, err := c.store.GetRunResult(executionCtx, claim.RunID)
+	if err != nil {
+		unregister()
+		cancel()
+
+		if executionCtx.Err() != nil {
+			return noopUnregister, fmt.Errorf("cord: verify claimed run status: %w", executionCtx.Err())
+		}
+
+		return noopUnregister, fmt.Errorf("cord: verify claimed run status: %w", err)
+	}
+
+	if result.Status != storage.RunRunning {
+		unregister()
+		cancel()
+
+		return noopUnregister, nil
+	}
+
+	return unregister, nil
+}
+
+func noopUnregister() {
+	// The active attempt was already unregistered before this callback was returned.
+}
+
+func (c *Cord) reportClaimTransitionError(err error) {
+	if isExpectedRejectedTransition(err) {
+		return
+	}
+
+	c.reportSchedulerError(err)
+}
+
+func isExpectedRejectedTransition(err error) bool {
+	rejected := &fencedTransitionError{}
+
+	if !errors.As(err, &rejected) {
+		return false
+	}
+
+	return rejected.class == fencedTransitionCancellationWon ||
+		rejected.class == fencedTransitionDurableWinner
 }
 
 func (c *Cord) completeClaim(
@@ -339,7 +428,7 @@ func (c *Cord) completeClaim(
 		return c.classifyRejectedTransition(ctx, claim.RunID, "node completion")
 	}
 
-	c.notifyCompletion(claim.RunID)
+	c.notifyWaiters(claim.RunID)
 
 	return nil
 }
@@ -363,7 +452,7 @@ func (c *Cord) handleFailure(ctx context.Context, claim *storage.Claim, invokeEr
 			return c.classifyRejectedTransition(ctx, claim.RunID, "node failure")
 		}
 
-		c.notifyCompletion(claim.RunID)
+		c.notifyWaiters(claim.RunID)
 
 		return nil
 	}
@@ -538,7 +627,12 @@ func (c *Cord) releaseClaim(claim *storage.Claim, cause error) {
 	if err != nil {
 		cause = errors.Join(cause, fmt.Errorf("cord: release unusable claim: %w", err))
 	} else if !accepted {
-		cause = errors.Join(cause, c.classifyRejectedTransition(ctx, claim.RunID, "claim release"))
+		rejectionErr := c.classifyRejectedTransition(ctx, claim.RunID, "claim release")
+		if isExpectedRejectedTransition(rejectionErr) {
+			return
+		}
+
+		cause = errors.Join(cause, rejectionErr)
 	}
 
 	c.reportSchedulerError(cause)

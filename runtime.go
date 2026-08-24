@@ -17,6 +17,7 @@ import (
 const (
 	migrationTimeout      = 30 * time.Second
 	heartbeatsPerLease    = 3
+	minimumLeaseTTL       = 2 * time.Millisecond
 	minimumLeasePrecision = time.Millisecond
 )
 
@@ -31,8 +32,9 @@ var (
 
 // Options configures scheduler behavior. Zero-valued fields use Cord's
 // defaults. Retry fields are defaulted independently, so callers may override
-// any subset of them. LeaseTTL and HeartbeatInterval must be at least one
-// millisecond, and HeartbeatInterval must be shorter than LeaseTTL.
+// any subset of them. LeaseTTL must be greater than two milliseconds,
+// HeartbeatInterval must be at least one millisecond, and HeartbeatInterval
+// must be less than half of LeaseTTL.
 type Options struct {
 	// OnSchedulerError reports scheduler storage errors serially from one runtime-
 	// owned goroutine. A callback panic is recovered. The callback may call Close or
@@ -157,12 +159,12 @@ func validateSchedulerSettings(
 		return errors.New("cord: poll interval must be positive")
 	}
 
-	if leaseTTL < minimumLeasePrecision {
-		return errors.New("cord: lease TTL must be at least one millisecond")
+	if leaseTTL <= minimumLeaseTTL {
+		return errors.New("cord: lease TTL must be greater than two milliseconds")
 	}
 
-	if heartbeatInterval < minimumLeasePrecision || heartbeatInterval >= leaseTTL {
-		return errors.New("cord: heartbeat interval must be at least one millisecond and shorter than lease TTL")
+	if heartbeatInterval < minimumLeasePrecision || heartbeatInterval >= leaseTTL-heartbeatInterval {
+		return errors.New("cord: heartbeat interval must be at least one millisecond and less than half the lease TTL")
 	}
 
 	return nil
