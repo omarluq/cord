@@ -255,7 +255,15 @@ func TestPostgresNodePageUsesPrimaryKeyKeysetPlan(t *testing.T) {
 func explainPostgres(t *testing.T, database *sql.DB, statement string, arguments ...any) string {
 	t.Helper()
 
-	rows, err := database.QueryContext(t.Context(), statement, arguments...)
+	transaction, err := database.BeginTx(t.Context(), nil)
+
+	require.NoError(t, err)
+	defer func() { require.NoError(t, transaction.Rollback()) }()
+
+	_, err = transaction.ExecContext(t.Context(), "SET LOCAL enable_seqscan = off")
+	require.NoError(t, err)
+
+	rows, err := transaction.QueryContext(t.Context(), statement, arguments...)
 
 	require.NoError(t, err)
 	defer func() { require.NoError(t, rows.Close()) }()
@@ -296,8 +304,6 @@ func analyzeInspectionTables(t *testing.T, database *sql.DB) {
 	t.Helper()
 
 	_, err := database.ExecContext(t.Context(), "ANALYZE cord_runs, cord_nodes")
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), "SET enable_seqscan = off")
 	require.NoError(t, err)
 }
 
