@@ -371,8 +371,10 @@ func TestStore_FailNodeIsFencedAndAtomic(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, accepted)
 	assertNodeState(t, database, claim.RunID, claim.NodeID, storage.NodeFailed, 0)
+	assertNodeReason(t, database, claim.RunID, claim.NodeID, storage.ReasonFailureNonRetryable)
 	assertNodeState(t, database, claim.RunID, "publish", storage.NodeCanceled, 1)
 	assertRunFailure(t, database, claim.RunID, []byte("permanent"))
+	assertRunReason(t, database, claim.RunID, storage.ReasonFailureNonRetryable)
 }
 
 func TestStore_CancelRunFencesRunningWorkAndPreservesCompletedNodes(t *testing.T) {
@@ -465,6 +467,39 @@ func assertRunFailure(t *testing.T, database *sql.DB, runID storage.RunID, failu
 	require.NoError(t, err)
 	assert.Equal(t, storage.RunFailed, status)
 	assert.Equal(t, failure, actual)
+}
+
+func assertNodeReason(
+	t *testing.T,
+	database *sql.DB,
+	runID storage.RunID,
+	nodeID storage.NodeID,
+	reason storage.TerminalReason,
+) {
+	t.Helper()
+
+	var actual storage.TerminalReason
+
+	err := database.QueryRowContext(t.Context(), `SELECT terminal_reason FROM cord_nodes
+		WHERE run_id = ? AND node_id = ?`, runID, nodeID).Scan(&actual)
+	require.NoError(t, err)
+	assert.Equal(t, reason, actual)
+}
+
+func assertRunReason(
+	t *testing.T,
+	database *sql.DB,
+	runID storage.RunID,
+	reason storage.TerminalReason,
+) {
+	t.Helper()
+
+	var actual storage.TerminalReason
+
+	err := database.QueryRowContext(t.Context(), `SELECT terminal_reason FROM cord_runs WHERE id = ?`, runID).
+		Scan(&actual)
+	require.NoError(t, err)
+	assert.Equal(t, reason, actual)
 }
 
 func openStoreDatabase(t *testing.T, path string) *sql.DB {

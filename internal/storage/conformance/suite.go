@@ -373,6 +373,16 @@ func runFailure(t *testing.T, harness Harness) {
 		t.Fatalf("failed result = %#v", result)
 	}
 
+	runReport := mustInspectRun(t, store, claim.RunID)
+	if runReport.Reason != storage.ReasonFailureNonRetryable {
+		t.Fatalf("failed run reason = %q, want %q", runReport.Reason, storage.ReasonFailureNonRetryable)
+	}
+
+	nodeReport := mustFindNode(t, store, claim.RunID, claim.NodeID)
+	if nodeReport.Reason != storage.ReasonFailureNonRetryable {
+		t.Fatalf("failed node reason = %q, want %q", nodeReport.Reason, storage.ReasonFailureNonRetryable)
+	}
+
 	if next, claimed, claimErr := claimAny(t.Context(), store, "other"); claimErr != nil || claimed {
 		t.Fatalf("claim after failure = %#v, claimed=%v err=%v", next, claimed, claimErr)
 	}
