@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -65,7 +66,7 @@ func TestMigrateConcurrentConnections(t *testing.T) {
 	}
 
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []int64{1, 2, 3, 4}, versions)
+	assert.Equal(t, []int64{1, 2, 3, 4, 5}, versions)
 }
 
 func TestVerifyReportsSchemaCompatibility(t *testing.T) {
@@ -93,11 +94,11 @@ func TestVerifyReportsSchemaCompatibility(t *testing.T) {
 		database := openDatabase(t, true)
 		require.NoError(t, sqlite.Migrate(t.Context(), database))
 		_, err := database.ExecContext(t.Context(), `INSERT INTO cord_schema_migrations
-			(version_id, is_applied, tstamp) VALUES (5, 1, datetime('now'))`)
+			(version_id, is_applied, tstamp) VALUES (6, 1, datetime('now'))`)
 		require.NoError(t, err)
 		err = sqlite.Verify(t.Context(), database)
 		require.ErrorIs(t, err, storage.ErrSchemaNewer)
-		assert.Contains(t, err.Error(), "current=5 required=4")
+		assert.Contains(t, err.Error(), "current=6 required=5")
 	})
 }
 
@@ -122,8 +123,9 @@ func TestVerifyRejectsStructurallyIncompatibleCurrentSchema(t *testing.T) {
 
 func incompatibleSchemaCases() []incompatibleSchemaCase {
 	cases := baseIncompatibleSchemaCases()
+	cases = append(cases, identityIncompatibleSchemaCases()...)
 
-	return append(cases, identityIncompatibleSchemaCases()...)
+	return append(cases, lifecycleIncompatibleSchemaCases()...)
 }
 
 func baseIncompatibleSchemaCases() []incompatibleSchemaCase {
@@ -234,6 +236,32 @@ func identityIncompatibleSchemaCases() []incompatibleSchemaCase {
 	}
 }
 
+func lifecycleIncompatibleSchemaCases() []incompatibleSchemaCase {
+	return []incompatibleSchemaCase{
+		{
+			name:       "missing run lifecycle column",
+			statements: []string{`ALTER TABLE cord_runs RENAME COLUMN terminal_reason TO missing_terminal_reason`},
+			wantError:  `column "cord_runs"."terminal_reason"`,
+		},
+		{
+			name: "wrong lifecycle column affinity",
+			statements: []string{
+				`ALTER TABLE cord_nodes RENAME COLUMN lifecycle_version TO old_lifecycle_version`,
+				`ALTER TABLE cord_nodes ADD COLUMN lifecycle_version TEXT`,
+			},
+			wantError: `column "cord_nodes"."lifecycle_version"`,
+		},
+		{
+			name: "non-null lifecycle column with default",
+			statements: []string{
+				`ALTER TABLE cord_runs RENAME COLUMN lifecycle_version TO old_lifecycle_version`,
+				`ALTER TABLE cord_runs ADD COLUMN lifecycle_version INTEGER NOT NULL DEFAULT 1`,
+			},
+			wantError: `column "cord_runs"."lifecycle_version"`,
+		},
+	}
+}
+
 func runIncompatibleSchemaCase(t *testing.T, testCase incompatibleSchemaCase) {
 	t.Helper()
 	database := openDatabase(t, false)
@@ -256,21 +284,274 @@ func runIncompatibleSchemaCase(t *testing.T, testCase incompatibleSchemaCase) {
 	assert.Contains(t, err.Error(), testCase.wantError)
 }
 
+func TestMigrateV5PreservesRowsFromEveryPriorSchema(t *testing.T) {
+	t.Parallel()
+
+	for version := int64(1); version < 5; version++ {
+		for _, state := range priorSchemaLifecycleStates() {
+			t.Run(fmt.Sprintf("v%d/%s-%s", version, state.runStatus, state.nodeStatus), func(t *testing.T) {
+				t.Parallel()
+
+				testMigrateV5PreservesPriorRow(t, version, state)
+			})
+		}
+	}
+}
+
+type priorSchemaLifecycleState struct {
+	runStatus  storage.RunStatus
+	nodeStatus storage.NodeStatus
+}
+
+func priorSchemaLifecycleStates() []priorSchemaLifecycleState {
+	return []priorSchemaLifecycleState{
+		{runStatus: storage.RunRunning, nodeStatus: storage.NodePending},
+		{runStatus: storage.RunRunning, nodeStatus: storage.NodeReady},
+		{runStatus: storage.RunRunning, nodeStatus: storage.NodeRunning},
+		{runStatus: storage.RunRunning, nodeStatus: storage.NodeRetryWait},
+		{runStatus: storage.RunCanceling, nodeStatus: storage.NodeRunning},
+		{runStatus: storage.RunCompleted, nodeStatus: storage.NodeCompleted},
+		{runStatus: storage.RunFailed, nodeStatus: storage.NodeFailed},
+		{runStatus: storage.RunFailed, nodeStatus: storage.NodeCanceled},
+		{runStatus: storage.RunCanceled, nodeStatus: storage.NodeCanceled},
+	}
+}
+
+func testMigrateV5PreservesPriorRow(t *testing.T, version int64, state priorSchemaLifecycleState) {
+	t.Helper()
+
+	database := openDatabase(t, true)
+	require.NoError(t, sqlite.MigrateToVersionForTest(t.Context(), database, version))
+
+	insertPriorSchemaRow(t, database, state)
+	beforeRun := readPriorRun(t, database, version)
+	beforeNode := readPriorNode(t, database)
+
+	err := sqlite.Verify(t.Context(), database)
+	require.ErrorIs(t, err, storage.ErrSchemaOutdated)
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	require.NoError(t, sqlite.Verify(t.Context(), database))
+
+	assert.Equal(t, beforeRun, readPriorRun(t, database, 5))
+	assert.Equal(t, beforeNode, readPriorNode(t, database))
+	assertPriorLifecycleNull(t, database)
+
+	store, err := sqlite.New(database)
+	require.NoError(t, err)
+	report, err := store.InspectRun(t.Context(), "legacy-run")
+	require.NoError(t, err)
+	assert.Equal(t, state.runStatus, report.State)
+	assert.Equal(t, legacyRunReason(state.runStatus), report.Reason)
+	page, err := store.ListRunNodes(t.Context(), "legacy-run", storage.NodeQuery{})
+	require.NoError(t, err)
+	require.Len(t, page.Nodes, 1)
+	assert.Equal(t, state.nodeStatus, page.Nodes[0].State)
+	assert.Equal(t, legacyNodeReason(state), page.Nodes[0].Reason)
+}
+
+func legacyRunReason(status storage.RunStatus) storage.TerminalReason {
+	reason, _ := status.LegacyReason()
+
+	return reason
+}
+
+func legacyNodeReason(state priorSchemaLifecycleState) storage.TerminalReason {
+	reason, _ := state.nodeStatus.LegacyReason(state.runStatus)
+
+	return reason
+}
+
+func insertPriorSchemaRow(t *testing.T, database *sql.DB, state priorSchemaLifecycleState) {
+	t.Helper()
+
+	terminal, _ := state.runStatus.Terminal()
+	nodeTerminal, _ := state.nodeStatus.Terminal()
+	attempt := 0
+
+	var (
+		runOutput, runError, runCompleted, nodeOutput, nodeError, nodeStarted, nodeCompleted any
+		leaseOwner, leaseExpires                                                             any
+	)
+
+	leaseGeneration := 0
+
+	if state.nodeStatus == storage.NodeRunning {
+		attempt = 2
+		leaseOwner = "legacy-owner"
+		leaseGeneration = 7
+		leaseExpires = "2099-01-02T03:06:05Z"
+		nodeStarted = "2024-01-02T03:04:35Z"
+	}
+
+	if nodeTerminal {
+		attempt = 2
+		nodeStarted = "2024-01-02T03:04:35Z"
+		nodeCompleted = "2024-01-02T05:06:07Z"
+
+		if state.nodeStatus == storage.NodeCompleted {
+			nodeOutput = []byte("node-output")
+		}
+
+		if state.nodeStatus == storage.NodeFailed {
+			nodeError = []byte("node-error")
+		}
+	}
+
+	if terminal {
+		runCompleted = "2024-01-02T05:06:07Z"
+
+		if state.runStatus == storage.RunCompleted {
+			runOutput = []byte("output")
+		}
+
+		if state.runStatus == storage.RunFailed {
+			runError = []byte("run-error")
+		}
+	}
+
+	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_runs (
+		id, workflow_name, definition_hash, status, input_payload, output_payload,
+		terminal_node_id, error_payload, created_at, updated_at, completed_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-run", "legacy-workflow", "legacy-definition", state.runStatus,
+		[]byte("input"), runOutput, "legacy-node", runError,
+		"2024-01-02T03:04:05Z", "2024-01-02T04:05:06Z", runCompleted)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `INSERT INTO cord_nodes (
+		run_id, node_id, function_key, signature_hash, status, remaining_deps,
+		attempt, available_at, lease_owner, lease_generation, lease_expires_at,
+		output_payload, error_payload, started_at, completed_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-run", "legacy-node", "legacy-function", "legacy-signature", state.nodeStatus, 0,
+		attempt, "2024-01-02T03:05:05Z", leaseOwner, leaseGeneration, leaseExpires,
+		nodeOutput, nodeError, nodeStarted, nodeCompleted)
+	require.NoError(t, err)
+}
+
+type priorRunRow struct {
+	ID, Workflow, Definition, Status, Input, Output, Terminal, Failure string
+	Created, Updated, Completed                                        string
+	MaxAttempts, RetryPolicyVersion                                    int
+	RetryBaseDelayNS, RetryMaxDelayNS                                  int64
+}
+
+func readPriorRun(t *testing.T, database *sql.DB, version int64) priorRunRow {
+	t.Helper()
+
+	var row priorRunRow
+
+	columns := `id, workflow_name, definition_hash, status,
+		quote(input_payload), quote(output_payload), terminal_node_id, quote(error_payload),
+		quote(created_at), quote(updated_at), quote(completed_at)`
+	destinations := []any{
+		&row.ID, &row.Workflow, &row.Definition, &row.Status, &row.Input, &row.Output,
+		&row.Terminal, &row.Failure, &row.Created, &row.Updated, &row.Completed,
+	}
+
+	if version >= 2 {
+		columns += `, max_attempts, retry_base_delay_ns, retry_max_delay_ns, retry_policy_version`
+
+		destinations = append(destinations,
+			&row.MaxAttempts, &row.RetryBaseDelayNS, &row.RetryMaxDelayNS, &row.RetryPolicyVersion,
+		)
+	} else {
+		row.MaxAttempts = 3
+		row.RetryBaseDelayNS = 500000000
+		row.RetryMaxDelayNS = 30000000000
+		row.RetryPolicyVersion = 1
+	}
+
+	err := database.QueryRowContext(t.Context(),
+		"SELECT "+columns+" FROM cord_runs WHERE id = 'legacy-run'",
+	).Scan(destinations...)
+	require.NoError(t, err)
+
+	return row
+}
+
+type priorNodeRow struct {
+	RunID, NodeID, Function, Signature, Status, Available, Owner, Expires string
+	Output, Failure, Started, Completed                                   string
+	Remaining, Attempt                                                    int
+	Generation                                                            int64
+}
+
+func readPriorNode(t *testing.T, database *sql.DB) priorNodeRow {
+	t.Helper()
+
+	var row priorNodeRow
+
+	err := database.QueryRowContext(t.Context(), `SELECT run_id, node_id, function_key, signature_hash,
+		status, remaining_deps, attempt, quote(available_at), quote(lease_owner), lease_generation,
+		quote(lease_expires_at), quote(output_payload), quote(error_payload), quote(started_at),
+		quote(completed_at) FROM cord_nodes
+		WHERE run_id = 'legacy-run' AND node_id = 'legacy-node'`).Scan(
+		&row.RunID, &row.NodeID, &row.Function, &row.Signature, &row.Status,
+		&row.Remaining, &row.Attempt, &row.Available, &row.Owner, &row.Generation,
+		&row.Expires, &row.Output, &row.Failure, &row.Started, &row.Completed,
+	)
+	require.NoError(t, err)
+
+	return row
+}
+
+func assertPriorLifecycleNull(t *testing.T, database *sql.DB) {
+	t.Helper()
+
+	var populated int
+
+	err := database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM cord_runs r
+		JOIN cord_nodes n ON n.run_id = r.id WHERE r.id = 'legacy-run' AND (
+		r.lifecycle_version IS NOT NULL OR r.started_at IS NOT NULL OR
+		r.terminal_reason IS NOT NULL OR r.terminal_runner_id IS NOT NULL OR
+		n.lifecycle_version IS NOT NULL OR n.state_changed_at IS NOT NULL OR
+		n.last_started_at IS NOT NULL OR n.last_runner_id IS NOT NULL OR
+		n.terminal_reason IS NOT NULL)`).Scan(&populated)
+	require.NoError(t, err)
+	assert.Zero(t, populated, "migration must not invent lifecycle history")
+}
+
+func TestMigrateV5AddsNoIndexes(t *testing.T) {
+	t.Parallel()
+
+	database := openDatabase(t, true)
+	require.NoError(t, sqlite.MigrateToVersionForTest(t.Context(), database, 4))
+
+	before := sqliteIndexes(t, database)
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	assert.Equal(t, before, sqliteIndexes(t, database))
+}
+
+func sqliteIndexes(t *testing.T, database *sql.DB) []string {
+	t.Helper()
+
+	rows, err := database.QueryContext(t.Context(), `SELECT name FROM sqlite_schema
+		WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name`)
+	require.NoError(t, err)
+
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var indexes []string
+
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		indexes = append(indexes, name)
+	}
+
+	require.NoError(t, rows.Err())
+
+	return indexes
+}
+
 func TestMigrateUpgradesV3RowsAndExecutesThem(t *testing.T) {
 	t.Parallel()
 
 	database := openDatabase(t, true)
-	require.NoError(t, sqlite.Migrate(t.Context(), database))
+	prepareV3Schema(t, database)
 
-	_, err := database.ExecContext(t.Context(), "DROP INDEX cord_runs_workflow_name_idempotency_key_idx")
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), "ALTER TABLE cord_runs DROP COLUMN idempotency_key")
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), "ALTER TABLE cord_runs DROP COLUMN submission_fingerprint")
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(),
-		"DELETE FROM cord_schema_migrations WHERE version_id = 4")
-	require.NoError(t, err)
+	var err error
 
 	const (
 		runID         = storage.RunID("pre-async-sqlite-run")
@@ -323,13 +604,39 @@ func TestMigrateUpgradesV3RowsAndExecutesThem(t *testing.T) {
 	assert.Equal(t, "pre-async-sqlite", result.WorkflowName)
 	assert.Equal(t, signatureHash, result.TerminalSignatureHash)
 
-	var key, fingerprint sql.NullString
+	var (
+		key, fingerprint            sql.NullString
+		runLifecycle, nodeLifecycle sql.NullInt64
+	)
 
-	err = database.QueryRowContext(t.Context(), `SELECT idempotency_key, submission_fingerprint
-		FROM cord_runs WHERE id = ?`, runID).Scan(&key, &fingerprint)
+	err = database.QueryRowContext(t.Context(), `SELECT idempotency_key, submission_fingerprint,
+		lifecycle_version FROM cord_runs WHERE id = ?`, runID).Scan(&key, &fingerprint, &runLifecycle)
 	require.NoError(t, err)
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		`SELECT lifecycle_version FROM cord_nodes WHERE run_id = ? AND node_id = ?`, runID, nodeID,
+	).Scan(&nodeLifecycle))
 	assert.False(t, key.Valid)
 	assert.False(t, fingerprint.Valid)
+	require.True(t, runLifecycle.Valid)
+	require.True(t, nodeLifecycle.Valid)
+	assert.EqualValues(t, 1, runLifecycle.Int64)
+	assert.EqualValues(t, 1, nodeLifecycle.Int64)
+}
+
+func prepareV3Schema(t *testing.T, database *sql.DB) {
+	t.Helper()
+
+	require.NoError(t, sqlite.Migrate(t.Context(), database))
+
+	_, err := database.ExecContext(t.Context(), "DROP INDEX cord_runs_workflow_name_idempotency_key_idx")
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), "ALTER TABLE cord_runs DROP COLUMN idempotency_key")
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), "ALTER TABLE cord_runs DROP COLUMN submission_fingerprint")
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(),
+		"DELETE FROM cord_schema_migrations WHERE version_id >= 4")
+	require.NoError(t, err)
 }
 
 func TestVerifyTreatsLatestRolledBackMigrationAsPreviousVersion(t *testing.T) {
@@ -338,7 +645,7 @@ func TestVerifyTreatsLatestRolledBackMigrationAsPreviousVersion(t *testing.T) {
 	database := openDatabase(t, true)
 	require.NoError(t, sqlite.Migrate(t.Context(), database))
 	_, err := database.ExecContext(t.Context(), `INSERT INTO cord_schema_migrations
-		(version_id, is_applied, tstamp) VALUES (5, 0, datetime('now'))`)
+		(version_id, is_applied, tstamp) VALUES (6, 0, datetime('now'))`)
 	require.NoError(t, err)
 	require.NoError(t, sqlite.Verify(t.Context(), database))
 }
