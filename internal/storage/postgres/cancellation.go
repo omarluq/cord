@@ -19,14 +19,14 @@ func (s *Store) CancelRun(
 	err = runTransaction(ctx, s.pool, "cancel run", func(transaction *sql.Tx) error {
 		outcome = ""
 
-		transitionedAt, timeErr := databaseInstant(ctx, transaction)
-		if timeErr != nil {
-			return timeErr
-		}
-
 		status, lockErr := lockRunForCancellation(ctx, transaction, runID)
 		if lockErr != nil {
 			return lockErr
+		}
+
+		transitionedAt, timeErr := databaseInstant(ctx, transaction)
+		if timeErr != nil {
+			return timeErr
 		}
 
 		terminalOutcome, terminal, outcomeErr := cancellationOutcome(runID, status)
