@@ -105,7 +105,9 @@ func TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable(t *t
 			DefinitionHash: "persisted-definition-hash", TerminalNodeID: nodeID,
 			Status: storage.RunRunning, Input: []byte("7"), Output: nil, Error: nil,
 			MaxAttempts: 3, RetryBaseDelay: 500 * time.Millisecond, RetryMaxDelay: 30 * time.Second,
-			RetryPolicyVersion: 1,
+			RetryPolicyVersion:    1,
+			IdempotencyKey:        nil,
+			SubmissionFingerprint: nil,
 		},
 		Nodes: []storage.Node{{
 			AvailableAt: now, CompletedAt: nil, StartedAt: nil,
