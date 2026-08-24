@@ -34,7 +34,9 @@ func (s *Store) RetryNode(
 			if beginErr != nil {
 				return fmt.Errorf("begin node retry: %w", beginErr)
 			}
-			defer func() { operationErr = rollbackError(transaction, "rollback node retry", operationErr) }()
+			defer func() {
+				operationErr = joinRollbackError(transaction.Rollback(), "rollback node retry", operationErr)
+			}()
 
 			transitionedAt, timeErr := databaseInstant(attemptCtx, transaction)
 			if timeErr != nil {
@@ -81,7 +83,9 @@ func (s *Store) PromoteRetries(ctx context.Context) (count int64, err error) {
 		if beginErr != nil {
 			return fmt.Errorf("begin retry promotion: %w", beginErr)
 		}
-		defer func() { operationErr = rollbackError(transaction, "rollback retry promotion", operationErr) }()
+		defer func() {
+			operationErr = joinRollbackError(transaction.Rollback(), "rollback retry promotion", operationErr)
+		}()
 
 		transitionedAt, timeErr := databaseInstant(attemptCtx, transaction)
 		if timeErr != nil {

@@ -55,8 +55,7 @@ func (s *Store) fencedTerminalTransitionOnce(
 	return true, nil
 }
 
-func rollbackError(transaction *sql.Tx, operation string, operationErr error) error {
-	rollbackErr := transaction.Rollback()
+func joinRollbackError(rollbackErr error, operation string, operationErr error) error {
 	if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
 		return errors.Join(operationErr, fmt.Errorf("%s: %w", operation, rollbackErr))
 	}

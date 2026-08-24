@@ -3,15 +3,18 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 )
 
-const claimQuery = `WITH registered(function_key, signature_hash) AS (VALUES %s), candidate AS (
+const claimQuery = `WITH registered(function_key, signature_hash) AS (
+	SELECT function_key, signature_hash
+	FROM jsonb_to_recordset($4::jsonb) AS registration(function_key text, signature_hash text)
+), candidate AS (
 	SELECT n.run_id, n.node_id
 	FROM cord_nodes n
 	JOIN cord_runs r ON r.id = n.run_id
@@ -76,14 +79,12 @@ func (s *Store) ClaimReadyNodeForFunctions(
 			return timeErr
 		}
 
-		values, arguments, valuesErr := registrationValues(owner, ttl, claimedAt, registrations)
+		arguments, valuesErr := registrationArguments(owner, ttl, claimedAt, registrations)
 		if valuesErr != nil {
 			return valuesErr
 		}
 
-		claim, valuesErr = scanClaim(
-			transaction.QueryRowContext(ctx, fmt.Sprintf(claimQuery, values), arguments...), owner,
-		)
+		claim, valuesErr = scanClaim(transaction.QueryRowContext(ctx, claimQuery, arguments...), owner)
 		if errors.Is(valuesErr, sql.ErrNoRows) {
 			claim = nil
 
@@ -112,35 +113,45 @@ func (s *Store) ClaimReadyNodeForFunctions(
 	return claim, claim != nil, nil
 }
 
-func registrationValues(
+type registrationRecord struct {
+	FunctionKey   string `json:"function_key"`
+	SignatureHash string `json:"signature_hash"`
+}
+
+func registrationArguments(
 	owner string,
 	ttl time.Duration,
 	claimedAt time.Time,
 	registrations []storage.FunctionRegistration,
-) (valueList string, arguments []any, err error) {
-	arguments = []any{owner, ttl.Microseconds(), claimedAt}
-	values := make([]string, 0, len(registrations))
+) ([]any, error) {
+	records := make([]registrationRecord, 0, len(registrations))
 	seen := make(map[string]struct{}, len(registrations))
 
 	for _, registration := range registrations {
 		if registration.Key == "" || registration.Signature == "" {
-			return "", nil, errors.New("claim ready node: function registration is incomplete")
+			return nil, errors.New("claim ready node: function registration is incomplete")
 		}
 
 		if _, exists := seen[registration.Key]; exists {
-			return "", nil, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"claim ready node: duplicate function registration %q",
 				registration.Key,
 			)
 		}
 
 		seen[registration.Key] = struct{}{}
-		arguments = append(arguments, registration.Key, registration.Signature)
-		position := len(arguments) - 1
-		values = append(values, fmt.Sprintf("($%d,$%d)", position, position+1))
+		records = append(records, registrationRecord{
+			FunctionKey:   registration.Key,
+			SignatureHash: registration.Signature,
+		})
 	}
 
-	return strings.Join(values, ","), arguments, nil
+	encoded, err := json.Marshal(records)
+	if err != nil {
+		return nil, fmt.Errorf("claim ready node: encode function registrations: %w", err)
+	}
+
+	return []any{owner, ttl.Microseconds(), claimedAt, string(encoded)}, nil
 }
 
 type rowScanner interface {

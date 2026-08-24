@@ -88,18 +88,28 @@ func (s *Store) terminal(
 			return timeErr
 		}
 
-		transitioned, transitionErr := transitionNode(
-			retryCtx, transaction, runID, nodeID, lease, payload, success, reason, transitionedAt,
-		)
+		transitioned, transitionErr := transitionNode(retryCtx, transaction, &transitionNodeParams{
+			runID:          runID,
+			nodeID:         nodeID,
+			lease:          lease,
+			payload:        payload,
+			success:        success,
+			reason:         reason,
+			transitionedAt: transitionedAt,
+		})
 		if transitionErr != nil || !transitioned {
 			return transitionErr
 		}
 
 		if success {
-			transitionErr = completeRunPath(
-				retryCtx, transaction, runID, nodeID, payload, lease.Owner,
-				nodeID == terminalNodeID, transitionedAt,
-			)
+			transitionErr = completeRunPath(retryCtx, transaction, &completeRunPathParams{
+				runID:          runID,
+				nodeID:         nodeID,
+				payload:        payload,
+				runnerID:       lease.Owner,
+				terminal:       nodeID == terminalNodeID,
+				transitionedAt: transitionedAt,
+			})
 		} else {
 			transitionErr = failRunPath(
 				retryCtx, transaction, runID, payload, lease.Owner, reason, transitionedAt,
@@ -142,16 +152,20 @@ func lockRunningRun(
 	return terminalNodeID, true, nil
 }
 
+type transitionNodeParams struct {
+	runID          storage.RunID
+	nodeID         storage.NodeID
+	reason         storage.TerminalReason
+	transitionedAt time.Time
+	payload        storage.EncodedPayload
+	lease          storage.Lease
+	success        bool
+}
+
 func transitionNode(
 	ctx context.Context,
 	transaction *sql.Tx,
-	runID storage.RunID,
-	nodeID storage.NodeID,
-	lease storage.Lease,
-	payload storage.EncodedPayload,
-	success bool,
-	reason storage.TerminalReason,
-	transitionedAt time.Time,
+	params *transitionNodeParams,
 ) (bool, error) {
 	const query = `UPDATE cord_nodes
 		SET status = $1,
@@ -179,18 +193,18 @@ func transitionNode(
 
 	nodeStatus := storage.NodeFailed
 
-	output, failure := any(nil), nullablePayload(payload)
-	if success {
-		nodeStatus, output, failure = storage.NodeCompleted, nullablePayload(payload), nil
+	output, failure := any(nil), nullablePayload(params.payload)
+	if params.success {
+		nodeStatus, output, failure = storage.NodeCompleted, nullablePayload(params.payload), nil
 	}
 
-	if success {
-		reason = storage.ReasonSucceeded
+	if params.success {
+		params.reason = storage.ReasonSucceeded
 	}
 
 	result, err := transaction.ExecContext(
-		ctx, query, nodeStatus, output, failure, runID, nodeID, lease.Owner, lease.Generation,
-		transitionedAt, reason,
+		ctx, query, nodeStatus, output, failure, params.runID, params.nodeID,
+		params.lease.Owner, params.lease.Generation, params.transitionedAt, params.reason,
 	)
 	if err != nil {
 		return false, fmt.Errorf("transition node state: %w", err)
@@ -204,15 +218,19 @@ func transitionNode(
 	return count == 1, nil
 }
 
+type completeRunPathParams struct {
+	runID          storage.RunID
+	nodeID         storage.NodeID
+	runnerID       string
+	transitionedAt time.Time
+	payload        storage.EncodedPayload
+	terminal       bool
+}
+
 func completeRunPath(
 	ctx context.Context,
 	transaction *sql.Tx,
-	runID storage.RunID,
-	nodeID storage.NodeID,
-	payload storage.EncodedPayload,
-	runnerID string,
-	terminal bool,
-	transitionedAt time.Time,
+	params *completeRunPathParams,
 ) error {
 	const releaseChildren = `UPDATE cord_nodes
 		SET remaining_deps = remaining_deps - 1,
@@ -233,11 +251,13 @@ func completeRunPath(
 				SELECT child_node_id FROM cord_edges
 				WHERE run_id = $1 AND parent_node_id = $2
 			)`
-	if _, err := transaction.ExecContext(ctx, releaseChildren, runID, nodeID, transitionedAt); err != nil {
+	if _, err := transaction.ExecContext(
+		ctx, releaseChildren, params.runID, params.nodeID, params.transitionedAt,
+	); err != nil {
 		return fmt.Errorf("release child nodes: %w", err)
 	}
 
-	if !terminal {
+	if !params.terminal {
 		return nil
 	}
 
@@ -257,8 +277,8 @@ func completeRunPath(
 		WHERE id = $3 AND status = 'running' AND terminal_node_id = $4`
 
 	result, err := transaction.ExecContext(
-		ctx, completeRun, storage.RunCompleted, nullablePayload(payload), runID, nodeID,
-		transitionedAt, storage.ReasonSucceeded, runnerID,
+		ctx, completeRun, storage.RunCompleted, nullablePayload(params.payload),
+		params.runID, params.nodeID, params.transitionedAt, storage.ReasonSucceeded, params.runnerID,
 	)
 	if err != nil {
 		return fmt.Errorf("complete run: %w", err)
@@ -269,7 +289,7 @@ func completeRunPath(
 	}
 
 	return cancelUnfinishedNodes(
-		ctx, transaction, runID, storage.ReasonCanceledByRunFailure, transitionedAt,
+		ctx, transaction, params.runID, storage.ReasonCanceledByRunFailure, params.transitionedAt,
 	)
 }
 
