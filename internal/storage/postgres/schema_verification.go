@@ -60,18 +60,16 @@ const schemaVerificationQuery = `WITH
 		('cord_nodes', ARRAY['run_id', 'node_id']::text[]),
 		('cord_edges', ARRAY['run_id', 'parent_node_id', 'child_node_id']::text[])
 	),
-	required_indexes(index_name, table_name, columns) AS (VALUES
-		('cord_nodes_status_available_at_idx', 'cord_nodes', ARRAY['status', 'available_at']::text[]),
+	required_indexes(index_name, table_name, columns, is_unique) AS (VALUES
+		('cord_nodes_status_available_at_idx', 'cord_nodes', ARRAY['status', 'available_at']::text[], false),
 		('cord_nodes_function_status_available_at_idx', 'cord_nodes',
-			ARRAY['function_key', 'status', 'available_at']::text[]),
-		('cord_nodes_run_status_idx', 'cord_nodes', ARRAY['run_id', 'status']::text[]),
-		('cord_nodes_lease_expires_at_idx', 'cord_nodes', ARRAY['lease_expires_at']::text[]),
+			ARRAY['function_key', 'status', 'available_at']::text[], false),
+		('cord_nodes_run_status_idx', 'cord_nodes', ARRAY['run_id', 'status']::text[], false),
+		('cord_nodes_lease_expires_at_idx', 'cord_nodes', ARRAY['lease_expires_at']::text[], false),
 		('cord_edges_run_child_parent_order_idx', 'cord_edges',
-			ARRAY['run_id', 'child_node_id', 'parent_order']::text[])
-	),
-	required_unique_indexes(index_name, table_name, columns) AS (VALUES
+			ARRAY['run_id', 'child_node_id', 'parent_order']::text[], false),
 		('cord_runs_workflow_name_idempotency_key_idx', 'cord_runs',
-			ARRAY['workflow_name', 'idempotency_key']::text[])
+			ARRAY['workflow_name', 'idempotency_key']::text[], true)
 	),
 	required_foreign_keys(source_table, source_columns, target_table, target_columns) AS (VALUES
 		('cord_nodes', ARRAY['run_id']::text[], 'cord_runs', ARRAY['id']::text[]),
@@ -114,20 +112,7 @@ const schemaVerificationQuery = `WITH
 			JOIN pg_catalog.pg_namespace n ON n.oid = tc.relnamespace
 			WHERE n.oid = pg_catalog.current_schema()::regnamespace
 				AND ic.relname = ri.index_name AND tc.relname = ri.table_name
-				AND NOT i.indisunique AND i.indpred IS NULL AND i.indexprs IS NULL
-				AND i.indnkeyatts = cardinality(ri.columns)
-				AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY key(attnum, position)
-					JOIN pg_catalog.pg_attribute a ON a.attrelid = tc.oid AND a.attnum = key.attnum
-					WHERE key.position <= i.indnkeyatts ORDER BY key.position) = ri.columns::text[]
-		)) +
-		(SELECT count(*) FROM required_unique_indexes ri WHERE NOT EXISTS (
-			SELECT 1 FROM pg_catalog.pg_index i
-			JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
-			JOIN pg_catalog.pg_class tc ON tc.oid = i.indrelid
-			JOIN pg_catalog.pg_namespace n ON n.oid = tc.relnamespace
-			WHERE n.oid = pg_catalog.current_schema()::regnamespace
-				AND ic.relname = ri.index_name AND tc.relname = ri.table_name
-				AND i.indisunique AND i.indpred IS NULL AND i.indexprs IS NULL
+				AND i.indisunique = ri.is_unique AND i.indpred IS NULL AND i.indexprs IS NULL
 				AND i.indnkeyatts = cardinality(ri.columns)
 				AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY key(attnum, position)
 					JOIN pg_catalog.pg_attribute a ON a.attrelid = tc.oid AND a.attnum = key.attnum

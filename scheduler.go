@@ -328,7 +328,7 @@ func (c *Cord) invokeClaim(
 	cancel context.CancelFunc,
 	heartbeatDone <-chan bool,
 ) (storage.EncodedPayload, bool, error) {
-	unregister, err := c.registerActiveAttempt(executionCtx, claim, cancel)
+	unregister, runnable, err := c.registerActiveAttempt(executionCtx, claim, cancel)
 	if err != nil {
 		leaseHeld := <-heartbeatDone
 		if leaseHeld && c.ctx.Err() == nil && !errors.Is(err, context.Canceled) {
@@ -337,6 +337,13 @@ func (c *Cord) invokeClaim(
 
 		return nil, false, nil
 	}
+
+	if !runnable {
+		<-heartbeatDone
+
+		return nil, false, nil
+	}
+
 	defer unregister()
 
 	inputs, err := c.store.LoadNodeInputs(executionCtx, claim.RunID, claim.NodeID)
@@ -362,7 +369,7 @@ func (c *Cord) registerActiveAttempt(
 	executionCtx context.Context,
 	claim *storage.Claim,
 	cancel context.CancelFunc,
-) (unregister func(), registrationErr error) {
+) (unregister func(), runnable bool, registrationErr error) {
 	// Register before the durable check so a local cancellation racing this
 	// query either finds the attempt or is observed by the query afterward.
 	c.activeMu.Lock()
@@ -371,24 +378,34 @@ func (c *Cord) registerActiveAttempt(
 
 	result, err := c.store.GetRunResult(executionCtx, claim.RunID)
 	if err != nil {
+		executionErr := executionCtx.Err()
+
 		unregister()
 		cancel()
 
-		if executionCtx.Err() != nil {
-			return noopUnregister, fmt.Errorf("cord: verify claimed run status: %w", executionCtx.Err())
+		if executionErr != nil {
+			return noopUnregister, false, fmt.Errorf("cord: verify claimed run status: %w", executionErr)
 		}
 
-		return noopUnregister, fmt.Errorf("cord: verify claimed run status: %w", err)
+		return noopUnregister, false, fmt.Errorf("cord: verify claimed run status: %w", err)
 	}
 
-	if result.Status != storage.RunRunning {
-		unregister()
-		cancel()
+	var statusErr error
 
-		return noopUnregister, nil
+	switch result.Status {
+	case storage.RunRunning:
+		return unregister, true, nil
+	case storage.RunCompleted, storage.RunFailed, storage.RunCanceling, storage.RunCanceled:
+	case storage.RunStatus(""):
+		statusErr = errors.New("cord: verify claimed run status: durable run status is empty")
+	default:
+		statusErr = fmt.Errorf("cord: verify claimed run status: invalid durable run status %q", result.Status)
 	}
 
-	return unregister, nil
+	unregister()
+	cancel()
+
+	return noopUnregister, false, statusErr
 }
 
 func noopUnregister() {
