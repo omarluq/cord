@@ -181,23 +181,9 @@ func queryNodePage(
 	query storage.NodeQuery,
 	limit int,
 ) (_ storage.NodePage, err error) {
-	const statement = `SELECT
-		n.run_id, n.node_id, n.function_key, n.status, n.terminal_reason,
-		n.attempt, r.max_attempts, n.available_at, n.started_at, n.last_started_at,
-		n.state_changed_at, n.completed_at, n.last_runner_id,
-		n.lease_owner, n.lease_generation, n.lease_expires_at
-	FROM cord_nodes n
-	JOIN cord_runs r ON r.id = n.run_id
-	WHERE n.run_id = $1
-		AND n.node_id > $2
-		AND ($3::text IS NULL OR n.status = $3)
-		AND ($4::text IS NULL OR n.terminal_reason = $4)
-	ORDER BY n.node_id
-	LIMIT $5`
-
 	rows, err := transaction.QueryContext(
 		ctx,
-		statement,
+		nodePageQuery,
 		runID,
 		query.ContinuationToken,
 		nodeStateFilter(query.State),
@@ -322,11 +308,11 @@ func validateRunReport(
 		report.Reason = storage.TerminalReason(reason.String)
 	}
 
-	if err := validateVersionedRunReason(report, reason, terminal); err != nil {
+	if err := validateRunReason(report, reason, terminal); err != nil {
 		return err
 	}
 
-	return validateVersionedRunTimestamps(report, terminal)
+	return validateRunTimestamps(report, terminal)
 }
 
 func validateRunMetadata(report *storage.RunReport, totalNodes int) error {
@@ -345,7 +331,7 @@ func validateRunMetadata(report *storage.RunReport, totalNodes int) error {
 	return nil
 }
 
-func validateVersionedRunReason(report *storage.RunReport, reason sql.NullString, terminal bool) error {
+func validateRunReason(report *storage.RunReport, reason sql.NullString, terminal bool) error {
 	if !report.State.AllowsReason(report.Reason) || (report.Reason != "" && !report.Reason.IsKnown()) {
 		return incompatible("run state %q has invalid reason %q", report.State, report.Reason)
 	}
@@ -376,7 +362,7 @@ func validateTerminalRunner(reason storage.TerminalReason, claimed bool) error {
 	return nil
 }
 
-func validateVersionedRunTimestamps(report *storage.RunReport, terminal bool) error {
+func validateRunTimestamps(report *storage.RunReport, terminal bool) error {
 	if terminal != (report.FinishedAt != nil) {
 		return incompatible("run terminal state and finish time disagree")
 	}
@@ -419,7 +405,7 @@ func validateNodeReport(report *storage.NodeReport, validation *nodeValidation) 
 		report.Reason = storage.TerminalReason(validation.reason.String)
 	}
 
-	if err := validateVersionedNodeReason(report, validation.reason, terminal); err != nil {
+	if err := validateNodeReason(report, validation.reason, terminal); err != nil {
 		return err
 	}
 
