@@ -554,59 +554,150 @@ func encodeFailure(claim *storage.Claim, err error) storage.EncodedPayload {
 }
 
 func (c *Cord) heartbeat(ctx context.Context, claim *storage.Claim, cancel context.CancelFunc, done chan<- bool) {
-	held := true
-
 	remaining := claim.Lease.Remaining
 	if remaining <= 0 {
 		remaining = c.leaseTTL
 	}
 
-	defer func() { done <- held }()
-
-	ticker := time.NewTicker(c.heartbeatInterval)
-	defer ticker.Stop()
-
-	// Remaining is measured by the database. time.Timer then tracks only local
-	// monotonic elapsed time, with one heartbeat interval reserved for retries.
-	leaseTimer := time.NewTimer(heartbeatSafetyWindow(remaining, c.heartbeatInterval))
-	defer leaseTimer.Stop()
+	state := newHeartbeatState(remaining, c.heartbeatInterval)
+	defer state.stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-leaseTimer.C:
-			held = false
+			done <- state.held
 
+			return
+		case <-state.leaseTimer.C:
 			cancel()
 
+			done <- false
+
 			return
-		case <-ticker.C:
-			outcome, newRemaining := c.heartbeatOnce(ctx, claim)
-			switch outcome {
-			case heartbeatAccepted:
-				claim.Lease.Remaining = newRemaining
-
-				if newRemaining <= c.heartbeatInterval {
-					held = false
-
-					cancel()
-
-					return
-				}
-
-				leaseTimer.Reset(heartbeatSafetyWindow(newRemaining, c.heartbeatInterval))
-			case heartbeatRetryable:
-				continue
-			case heartbeatLost:
-				held = false
-
+		case <-state.ticker.C:
+			c.startHeartbeatCall(ctx, claim, state)
+		case result := <-state.results:
+			if !c.applyHeartbeatResult(claim, state, result) {
 				cancel()
+
+				done <- false
 
 				return
 			}
 		}
 	}
+}
+
+type heartbeatState struct {
+	leaseTimer     *time.Timer
+	ticker         *time.Ticker
+	results        chan heartbeatResult
+	safetyDeadline time.Time
+	inFlight       bool
+	held           bool
+}
+
+func newHeartbeatState(remaining, heartbeatInterval time.Duration) *heartbeatState {
+	// Remaining is measured by the database. The local monotonic deadline keeps
+	// lease safety independent of a heartbeat call that blocks in a SQL driver.
+	safetyWindow := heartbeatSafetyWindow(remaining, heartbeatInterval)
+
+	return &heartbeatState{
+		leaseTimer:     time.NewTimer(safetyWindow),
+		ticker:         time.NewTicker(heartbeatInterval),
+		results:        make(chan heartbeatResult, 1),
+		safetyDeadline: time.Now().Add(safetyWindow),
+		held:           true,
+	}
+}
+
+func (state *heartbeatState) stop() {
+	state.leaseTimer.Stop()
+	state.ticker.Stop()
+}
+
+func (c *Cord) startHeartbeatCall(ctx context.Context, claim *storage.Claim, state *heartbeatState) {
+	if state.inFlight || !c.acquireHeartbeatCall(ctx) {
+		return
+	}
+
+	state.inFlight = true
+	callCtx, callCancel := context.WithDeadline(ctx, state.safetyDeadline)
+	claimCopy := *claim
+
+	go func() {
+		defer c.releaseHeartbeatCall()
+		defer callCancel()
+
+		outcome, remaining := c.heartbeatOnce(callCtx, &claimCopy)
+		select {
+		case state.results <- heartbeatResult{outcome: outcome, remaining: remaining}:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func (c *Cord) applyHeartbeatResult(
+	claim *storage.Claim,
+	state *heartbeatState,
+	result heartbeatResult,
+) bool {
+	state.inFlight = false
+	if !time.Now().Before(state.safetyDeadline) || result.outcome == heartbeatLost {
+		state.held = false
+
+		return false
+	}
+
+	if result.outcome == heartbeatRetryable {
+		return true
+	}
+
+	claim.Lease.Remaining = result.remaining
+	if result.remaining <= c.heartbeatInterval {
+		state.held = false
+
+		return false
+	}
+
+	safetyWindow := heartbeatSafetyWindow(result.remaining, c.heartbeatInterval)
+	state.safetyDeadline = time.Now().Add(safetyWindow)
+	resetTimer(state.leaseTimer, safetyWindow)
+
+	return true
+}
+
+func (c *Cord) acquireHeartbeatCall(ctx context.Context) bool {
+	c.lifecycleMu.Lock()
+	if c.heartbeatCalls == nil {
+		capacity := cap(c.slots)
+		if capacity == 0 {
+			capacity = 1
+		}
+
+		c.heartbeatCalls = make(chan struct{}, capacity)
+	}
+
+	heartbeatCalls := c.heartbeatCalls
+	c.lifecycleMu.Unlock()
+
+	select {
+	case heartbeatCalls <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+		return false
+	}
+}
+
+func (c *Cord) releaseHeartbeatCall() {
+	<-c.heartbeatCalls
+}
+
+type heartbeatResult struct {
+	remaining time.Duration
+	outcome   heartbeatOutcome
 }
 
 type heartbeatOutcome uint8
