@@ -765,6 +765,7 @@ func TestSuccessfulTerminalCompletionLeavesUnfinishedNodesNonterminal(t *testing
 	require.NoError(t, err)
 
 	const runID storage.RunID = "successful-terminal-with-unfinished-node"
+
 	plan := terminalRacePlan(runID)
 	require.NoError(t, store.CreateRun(t.Context(), &plan))
 
@@ -782,8 +783,11 @@ func TestSuccessfulTerminalCompletionLeavesUnfinishedNodesNonterminal(t *testing
 	require.NoError(t, err)
 	require.True(t, accepted)
 
-	var status storage.NodeStatus
-	var reason sql.NullString
+	var (
+		status storage.NodeStatus
+		reason sql.NullString
+	)
+
 	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT status, terminal_reason
 		FROM cord_nodes WHERE run_id = $1 AND node_id = $2`, runID, sibling.NodeID).Scan(&status, &reason))
 	assert.Equal(t, storage.NodeRunning, status)
