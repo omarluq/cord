@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -415,6 +416,99 @@ func TestWorkflowCancelRunningRun(t *testing.T) {
 
 	_, err = flow.Get(t.Context(), runID)
 	require.ErrorIs(t, err, cord.ErrRunCanceled)
+}
+
+func TestWorkflowCancelIsIndependentOfWorkflowGraphValidity(t *testing.T) {
+	t.Parallel()
+
+	_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
+	flow := runtime.From("async-cancel-run-id-only", completeAfterRelease)
+	activeDirectory := t.TempDir()
+	queuedDirectory := t.TempDir()
+	t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
+
+	_, err := flow.Submit(t.Context(), activeDirectory)
+	require.NoError(t, err)
+	waitMarker(t, activeDirectory, "started")
+
+	runID, err := flow.Submit(t.Context(), queuedDirectory)
+	require.NoError(t, err)
+
+	invalid := runtime.From("", completeAfterRelease)
+
+	require.NoError(t, invalid.Cancel(t.Context(), runID))
+	_, err = flow.Get(t.Context(), runID)
+	require.ErrorIs(t, err, cord.ErrRunCanceled)
+}
+
+func TestWorkflowCancelImmediatelyProducesAuthoritativeSnapshot(t *testing.T) {
+	t.Parallel()
+
+	_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
+	flow := runtime.From("async-cancel-inspect", completeAfterRelease)
+	activeDirectory := t.TempDir()
+	queuedDirectory := t.TempDir()
+	t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
+
+	_, err := flow.Submit(t.Context(), activeDirectory)
+	require.NoError(t, err)
+	waitMarker(t, activeDirectory, "started")
+
+	runID, err := flow.Submit(t.Context(), queuedDirectory)
+	require.NoError(t, err)
+	require.NoError(t, flow.Cancel(t.Context(), runID))
+
+	report, err := runtime.InspectRun(t.Context(), runID)
+	require.NoError(t, err)
+	assert.Equal(t, cord.RunStateCanceled, report.State)
+	assert.Equal(t, cord.ReasonCanceledByRequest, report.Reason)
+	require.NotNil(t, report.FinishedAt)
+	assert.Equal(t, report.StateChangedAt, *report.FinishedAt)
+	assert.Nil(t, report.TerminalRunnerID)
+	assert.Equal(t, 1, report.NodeCounts.Canceled)
+	assert.Zero(t, report.NodeCounts.Pending)
+	assert.Zero(t, report.NodeCounts.Ready)
+	assert.Zero(t, report.NodeCounts.Running)
+	assert.Zero(t, report.NodeCounts.RetryWait)
+
+	page, err := runtime.ListRunNodes(t.Context(), runID, cord.NodeQuery{PageSize: 1})
+	require.NoError(t, err)
+	require.Len(t, page.Nodes, 1)
+	assert.Equal(t, cord.NodeStateCanceled, page.Nodes[0].State)
+	assert.Equal(t, cord.ReasonCanceledByRequest, page.Nodes[0].Reason)
+	assert.Empty(t, page.ContinuationToken)
+}
+
+func TestWorkflowCancellationConvergesAcrossCallerCounts(t *testing.T) {
+	t.Parallel()
+
+	for _, callers := range []int{1, 2, 8, 100} {
+		t.Run(strconv.Itoa(callers), func(t *testing.T) {
+			t.Parallel()
+
+			_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
+			flow := runtime.From(fmt.Sprintf("async-cancel-callers-%d", callers), completeAfterRelease)
+			activeDirectory := t.TempDir()
+			queuedDirectory := t.TempDir()
+			t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
+
+			_, err := flow.Submit(t.Context(), activeDirectory)
+			require.NoError(t, err)
+			waitMarker(t, activeDirectory, "started")
+			runID, err := flow.Submit(t.Context(), queuedDirectory)
+			require.NoError(t, err)
+
+			for _, cancelErr := range concurrentCancelResults(callers, func() error {
+				return flow.Cancel(t.Context(), runID)
+			}) {
+				require.NoError(t, cancelErr)
+			}
+
+			report, inspectErr := runtime.InspectRun(t.Context(), runID)
+			require.NoError(t, inspectErr)
+			assert.Equal(t, cord.RunStateCanceled, report.State)
+		})
+	}
 }
 
 func TestWorkflowCancelCompletedRun(t *testing.T) {
