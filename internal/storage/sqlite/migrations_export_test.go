@@ -6,6 +6,11 @@ import (
 	"fmt"
 )
 
+// IsMigrationRetryableForTest exposes migration retry classification to external tests.
+func IsMigrationRetryableForTest(err error) bool {
+	return isMigrationRetryable(err)
+}
+
 // MigrateToVersionForTest applies SQLite migrations through the requested version.
 func MigrateToVersionForTest(ctx context.Context, database *sql.DB, version int64) error {
 	provider, err := newProvider(database, func(error) {})

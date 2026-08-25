@@ -2,10 +2,12 @@ package sqlite_test
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
 
+	ncruces "github.com/ncruces/go-sqlite3"
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -65,6 +67,32 @@ func TestMigrateConcurrentConnections(t *testing.T) {
 
 	require.NoError(t, rows.Err())
 	assert.Equal(t, []int64{1, 2, 3, 4, 5}, versions)
+}
+
+func TestMigrationRetryableClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		err  error
+		name string
+		want bool
+	}{
+		{name: "no error", err: nil, want: false},
+		{name: "busy", err: ncruces.BUSY, want: true},
+		{
+			name: "remote interrupt",
+			err:  errors.New(`Hrana stream error: code: "SQLITE_INTERRUPT"`),
+			want: true,
+		},
+		{name: "unstructured interrupt", err: errors.New("interrupted"), want: false},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, testCase.want, sqlite.IsMigrationRetryableForTest(testCase.err))
+		})
+	}
 }
 
 func TestVerifyReportsSchemaCompatibility(t *testing.T) {

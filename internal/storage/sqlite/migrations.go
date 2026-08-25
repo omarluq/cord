@@ -78,28 +78,42 @@ func migrateWithRetry(ctx context.Context, database *sql.DB) error {
 		return fmt.Errorf("create migration provider: %w", err)
 	}
 
-	err = retryContention(migrationCtx, "wait to retry migration", func(operationCtx context.Context) error {
-		_, upErr := provider.Up(operationCtx)
+	err = retry(
+		migrationCtx,
+		"wait to retry migration",
+		time.Time{},
+		isMigrationRetryable,
+		func(operationCtx context.Context) error {
+			_, upErr := provider.Up(operationCtx)
 
-		if ctx.Err() != nil {
-			return context.Cause(ctx)
-		}
+			if ctx.Err() != nil {
+				return context.Cause(ctx)
+			}
 
-		if cause := context.Cause(migrationCtx); cause != nil {
-			return fmt.Errorf("migration lock renewal failed: %w", cause)
-		}
+			if cause := context.Cause(migrationCtx); cause != nil {
+				return fmt.Errorf("migration lock renewal failed: %w", cause)
+			}
 
-		if upErr != nil {
-			return fmt.Errorf("run migration provider: %w", upErr)
-		}
+			if upErr != nil {
+				return fmt.Errorf("run migration provider: %w", upErr)
+			}
 
-		return nil
-	})
+			return nil
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
 	return nil
+}
+
+func isMigrationRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return IsBusy(err) || strings.Contains(err.Error(), `code: "SQLITE_INTERRUPT"`)
 }
 
 func newProvider(database *sql.DB, cancelMigration context.CancelCauseFunc) (*goose.Provider, error) {
