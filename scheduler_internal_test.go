@@ -484,6 +484,32 @@ func TestCord_RejectedFencedTransitionClassificationFailureIsReported(t *testing
 	require.ErrorContains(t, report, "classify rejected node completion")
 }
 
+func TestCord_HeartbeatPermitExhaustionIsReportedOnce(t *testing.T) {
+	t.Parallel()
+
+	runtime := &Cord{
+		ctx:              t.Context(),
+		heartbeatCalls:   make(chan struct{}, 1),
+		errorReports:     make(chan error, 2),
+		onSchedulerError: func(error) {},
+	}
+	runtime.heartbeatCalls <- struct{}{}
+
+	state := &heartbeatState{}
+
+	runtime.startHeartbeatCall(t.Context(), nil, state)
+	runtime.startHeartbeatCall(t.Context(), nil, state)
+
+	select {
+	case report := <-runtime.errorReports:
+		require.ErrorContains(t, report, "heartbeat call capacity exhausted")
+	default:
+		t.Fatal("heartbeat permit exhaustion was not reported")
+	}
+
+	require.Empty(t, runtime.errorReports)
+}
+
 func TestCord_HeartbeatFailureCancelsBeforeLeaseExpiry(t *testing.T) {
 	t.Parallel()
 
