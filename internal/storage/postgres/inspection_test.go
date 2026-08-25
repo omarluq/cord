@@ -79,28 +79,7 @@ func TestPostgresInspectionUsesRunScopedCountPlan(t *testing.T) {
 
 	database := prepareInspectionPlanDatabase(t)
 
-	const explain = `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT
-		r.id, r.workflow_name, r.status, r.terminal_reason,
-		r.created_at, r.started_at, r.updated_at, r.completed_at, r.terminal_runner_id,
-		counts.pending, counts.ready, counts.running, counts.retry_wait,
-		counts.completed, counts.failed, counts.canceled, counts.total
-	FROM cord_runs r
-	CROSS JOIN LATERAL (
-		SELECT
-			COUNT(*) FILTER (WHERE n.status = 'pending') AS pending,
-			COUNT(*) FILTER (WHERE n.status = 'ready') AS ready,
-			COUNT(*) FILTER (WHERE n.status = 'running') AS running,
-			COUNT(*) FILTER (WHERE n.status = 'retry_wait') AS retry_wait,
-			COUNT(*) FILTER (WHERE n.status = 'completed') AS completed,
-			COUNT(*) FILTER (WHERE n.status = 'failed') AS failed,
-			COUNT(*) FILTER (WHERE n.status = 'canceled') AS canceled,
-			COUNT(*) AS total
-		FROM cord_nodes n
-		WHERE n.run_id = r.id
-	) counts
-	WHERE r.id = $1`
-
-	plan := explainPostgres(t, database, explain, "plan")
+	plan := explainPostgres(t, database, postgresstore.InspectRunQueryForTest(), "plan")
 	assert.Contains(t, plan, "cord_nodes_run_status_idx")
 	assert.Contains(t, plan, "Index Cond: (run_id = r.id)")
 	assert.NotContains(t, plan, "Seq Scan on cord_nodes")
@@ -111,20 +90,6 @@ func TestPostgresNodePageUsesPrimaryKeyKeysetPlan(t *testing.T) {
 	t.Parallel()
 
 	database := prepareInspectionPlanDatabase(t)
-
-	const explain = `EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT
-		n.run_id, n.node_id, n.function_key, n.status, n.terminal_reason,
-		n.attempt, r.max_attempts, n.available_at, n.started_at, n.last_started_at,
-		n.state_changed_at, n.completed_at, n.last_runner_id,
-		n.lease_owner, n.lease_generation, n.lease_expires_at
-	FROM cord_nodes n
-	JOIN cord_runs r ON r.id = n.run_id
-	WHERE n.run_id = $1
-		AND n.node_id > $2
-		AND ($3::text IS NULL OR n.status = $3)
-		AND ($4::text IS NULL OR n.terminal_reason = $4)
-	ORDER BY n.node_id
-	LIMIT $5`
 
 	tests := []struct {
 		state  any
@@ -139,7 +104,7 @@ func TestPostgresNodePageUsesPrimaryKeyKeysetPlan(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			plan := explainPostgres(t, database, explain,
+			plan := explainPostgres(t, database, postgresstore.NodePageQueryForTest(),
 				"plan", "node-005", testCase.state, testCase.reason, 6)
 			assert.Contains(t, plan, "cord_nodes_pkey")
 			assert.Contains(t, plan, "node_id > 'node-005'::text")
@@ -159,7 +124,11 @@ func explainPostgres(t *testing.T, database *sql.DB, statement string, arguments
 	_, err = transaction.ExecContext(t.Context(), "SET LOCAL enable_seqscan = off")
 	require.NoError(t, err)
 
-	rows, err := transaction.QueryContext(t.Context(), statement, arguments...)
+	rows, err := transaction.QueryContext(
+		t.Context(),
+		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) "+statement,
+		arguments...,
+	)
 
 	require.NoError(t, err)
 	defer func() { require.NoError(t, rows.Close()) }()

@@ -13,12 +13,8 @@ import (
 const (
 	defaultNodePageSize = 50
 	maxNodePageSize     = 200
-)
 
-// InspectRun returns one consistent, payload-free snapshot of a run and its
-// node-state counts.
-func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.RunReport, error) {
-	const query = `SELECT
+	inspectRunQuery = `SELECT
 		r.id, r.workflow_name, r.status, r.terminal_reason,
 		r.created_at, r.started_at, r.updated_at, r.completed_at, r.terminal_runner_id,
 		counts.pending, counts.ready, counts.running, counts.retry_wait,
@@ -39,6 +35,24 @@ func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.Ru
 	) counts
 	WHERE r.id = $1`
 
+	nodePageQuery = `SELECT
+		n.run_id, n.node_id, n.function_key, n.status, n.terminal_reason,
+		n.attempt, r.max_attempts, n.available_at, n.started_at, n.last_started_at,
+		n.state_changed_at, n.completed_at, n.last_runner_id,
+		n.lease_owner, n.lease_generation, n.lease_expires_at
+	FROM cord_nodes n
+	JOIN cord_runs r ON r.id = n.run_id
+	WHERE n.run_id = $1
+		AND n.node_id > $2
+		AND ($3::text IS NULL OR n.status = $3)
+		AND ($4::text IS NULL OR n.terminal_reason = $4)
+	ORDER BY n.node_id
+	LIMIT $5`
+)
+
+// InspectRun returns one consistent, payload-free snapshot of a run and its
+// node-state counts.
+func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.RunReport, error) {
 	var (
 		report         storage.RunReport
 		reason         sql.NullString
@@ -48,7 +62,7 @@ func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.Ru
 		totalNodes     int
 	)
 
-	err := s.pool.QueryRowContext(ctx, query, runID).Scan(
+	err := s.pool.QueryRowContext(ctx, inspectRunQuery, runID).Scan(
 		&report.ID,
 		&report.WorkflowName,
 		&report.State,
@@ -424,7 +438,7 @@ func validateNodeMetadata(report *storage.NodeReport) error {
 	return nil
 }
 
-func validateVersionedNodeReason(
+func validateNodeReason(
 	report *storage.NodeReport,
 	reason sql.NullString,
 	terminal bool,

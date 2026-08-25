@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// InspectRunQueryForTest exposes the production run inspection query to plan tests.
+func InspectRunQueryForTest() string { return inspectRunQuery }
+
+// NodePageQueryForTest exposes the production node page query to plan tests.
+func NodePageQueryForTest() string { return nodePageQuery }
+
 // RetryableForTest exposes retryable-error classification to external tests.
 func RetryableForTest(err error) bool { return isRetryable(err) }
 
