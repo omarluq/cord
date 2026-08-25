@@ -720,12 +720,13 @@ func (s *Store) GetRunResult(
 		r.status, r.output_payload, r.error_payload, r.max_attempts,
 		r.retry_base_delay_ns, r.retry_max_delay_ns, r.retry_policy_version
 		FROM cord_runs AS r
-		JOIN cord_nodes AS terminal
+		LEFT JOIN cord_nodes AS terminal
 			ON terminal.run_id = r.id AND terminal.node_id = r.terminal_node_id
 		WHERE r.id = $1`
 
 	var (
 		result                            storage.RunResult
+		terminalSignature                 sql.NullString
 		output, failure                   []byte
 		retryBaseDelayNS, retryMaxDelayNS int64
 	)
@@ -733,7 +734,7 @@ func (s *Store) GetRunResult(
 	err := s.pool.QueryRowContext(ctx, query, runID).Scan(
 		&result.WorkflowName,
 		&result.DefinitionHash,
-		&result.TerminalSignatureHash,
+		&terminalSignature,
 		&result.Status,
 		&output,
 		&failure,
@@ -750,6 +751,15 @@ func (s *Store) GetRunResult(
 		return result, fmt.Errorf("read run result: %w", err)
 	}
 
+	if !terminalSignature.Valid {
+		return result, fmt.Errorf(
+			"read run result %q: terminal node is missing: %w",
+			runID,
+			storage.ErrRunIncompatible,
+		)
+	}
+
+	result.TerminalSignatureHash = terminalSignature.String
 	result.Output, result.Error = output, failure
 	result.RetryBaseDelay = time.Duration(retryBaseDelayNS)
 	result.RetryMaxDelay = time.Duration(retryMaxDelayNS)

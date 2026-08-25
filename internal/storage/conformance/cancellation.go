@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -123,6 +124,253 @@ func runCancellationStatesAndFences(t *testing.T, harness Harness) {
 	requireCancellationFences(t, opened.backend, running, retrying)
 	claim, claimed, claimErr := claimAny(t.Context(), opened.backend, "after-cancellation")
 	requireNotClaimed(t, claim, claimed, claimErr)
+}
+
+func runDeterministicCancellationOrderings(t *testing.T, harness Harness) {
+	t.Helper()
+
+	tests := []struct {
+		run  func(*testing.T, Harness, string, bool)
+		name string
+	}{
+		{name: "claim", run: runCancellationClaimOrdering},
+		{name: "heartbeat", run: runCancellationHeartbeatOrdering},
+		{name: "retry scheduling", run: runCancellationRetryOrdering},
+		{name: "retry promotion", run: runCancellationPromotionOrdering},
+		{name: "lease recovery", run: runCancellationRecoveryOrdering},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, cancelFirst := range []bool{true, false} {
+				name := "operation-before-cancel"
+				if cancelFirst {
+					name = "cancel-before-operation"
+				}
+
+				t.Run(name, func(t *testing.T) {
+					testCase.run(t, harness, testCase.name+"-"+name, cancelFirst)
+				})
+			}
+		})
+	}
+}
+
+func runCancellationClaimOrdering(t *testing.T, harness Harness, name string, cancelFirst bool) {
+	t.Helper()
+
+	ordering := openCancellationOrdering(t, harness, name)
+	opened, plan, second := ordering.opened, ordering.plan, ordering.second
+
+	if cancelFirst {
+		cancelRun(t, second, plan.Run.ID)
+		before := mustNodeSnapshot(t, opened.backend, plan.Run.ID)
+		claim, claimed, err := claimAny(t.Context(), opened.backend, workerA)
+		requireNotClaimed(t, claim, claimed, err)
+		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, "claim after cancellation")
+
+		return
+	}
+
+	claim := mustClaim(t, opened.backend, workerA)
+	before := mustFindNode(t, opened.backend, plan.Run.ID, claim.NodeID)
+	cancelRun(t, second, plan.Run.ID)
+
+	if before.State != storage.NodeRunning {
+		t.Fatalf("claimed node state = %q, want %q", before.State, storage.NodeRunning)
+	}
+
+	assertCanceledNode(t, opened.backend, plan.Run.ID)
+}
+
+func runCancellationHeartbeatOrdering(t *testing.T, harness Harness, name string, cancelFirst bool) {
+	t.Helper()
+
+	ordering := openCancellationOrdering(t, harness, name)
+	opened, plan, second := ordering.opened, ordering.plan, ordering.second
+
+	claim := mustClaim(t, opened.backend, workerA)
+	if cancelFirst {
+		cancelRun(t, second, plan.Run.ID)
+		before := mustNodeSnapshot(t, opened.backend, plan.Run.ID)
+
+		accepted, remaining, err := opened.backend.HeartbeatNode(
+			t.Context(), claim.RunID, claim.NodeID, claim.Lease, heartbeatExtension,
+		)
+		if err != nil || accepted || remaining != 0 {
+			t.Fatalf("heartbeat after cancellation: accepted=%v remaining=%s err=%v", accepted, remaining, err)
+		}
+
+		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, "heartbeat after cancellation")
+
+		return
+	}
+
+	accepted, remaining, err := opened.backend.HeartbeatNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, heartbeatExtension,
+	)
+	requireHeartbeat(t, accepted, remaining, claim.Lease.Remaining, err)
+	cancelRun(t, second, plan.Run.ID)
+	assertCanceledNode(t, opened.backend, plan.Run.ID)
+}
+
+func runCancellationRetryOrdering(t *testing.T, harness Harness, name string, cancelFirst bool) {
+	t.Helper()
+
+	ordering := openCancellationOrdering(t, harness, name)
+	opened, plan, second := ordering.opened, ordering.plan, ordering.second
+
+	claim := mustClaim(t, opened.backend, workerA)
+	if cancelFirst {
+		cancelRun(t, second, plan.Run.ID)
+		before := mustNodeSnapshot(t, opened.backend, plan.Run.ID)
+		accepted, err := opened.backend.RetryNode(
+			t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late retry"`), time.Hour,
+		)
+		requireRejected(t, "retry after cancellation", accepted, err)
+		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, "retry after cancellation")
+
+		return
+	}
+
+	accepted, err := opened.backend.RetryNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"retry"`), time.Hour,
+	)
+	requireAccepted(t, "retry before cancellation", accepted, err)
+	cancelRun(t, second, plan.Run.ID)
+	assertCanceledNode(t, opened.backend, plan.Run.ID)
+}
+
+func runCancellationPromotionOrdering(t *testing.T, harness Harness, name string, cancelFirst bool) {
+	t.Helper()
+
+	ordering := openCancellationOrdering(t, harness, name)
+	opened, plan, second := ordering.opened, ordering.plan, ordering.second
+	claim := mustClaim(t, opened.backend, workerA)
+	accepted, err := opened.backend.RetryNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"retry"`), 0,
+	)
+	requireAccepted(t, "schedule retry for promotion", accepted, err)
+
+	if cancelFirst {
+		cancelRun(t, second, plan.Run.ID)
+		before := mustNodeSnapshot(t, opened.backend, plan.Run.ID)
+
+		promoted, promoteErr := opened.backend.PromoteRetries(t.Context())
+		if promoteErr != nil || promoted != 0 {
+			t.Fatalf("promotion after cancellation: count=%d err=%v", promoted, promoteErr)
+		}
+
+		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, "promotion after cancellation")
+
+		return
+	}
+
+	promoted, promoteErr := opened.backend.PromoteRetries(t.Context())
+	requireSingleCount(t, "promotion before cancellation", promoted, promoteErr)
+	cancelRun(t, second, plan.Run.ID)
+	assertCanceledNode(t, opened.backend, plan.Run.ID)
+}
+
+func runCancellationRecoveryOrdering(t *testing.T, harness Harness, name string, cancelFirst bool) {
+	t.Helper()
+
+	ordering := openCancellationOrdering(t, harness, name)
+	opened, plan, second := ordering.opened, ordering.plan, ordering.second
+
+	claim := mustClaim(t, opened.backend, workerA)
+	if err := harness.ExpireLease(t.Context(), opened.database, claim.RunID, claim.NodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	if cancelFirst {
+		cancelRun(t, second, plan.Run.ID)
+		before := mustNodeSnapshot(t, opened.backend, plan.Run.ID)
+
+		recovered, err := opened.backend.RecoverExpiredLeases(t.Context())
+		if err != nil || recovered != 0 {
+			t.Fatalf("recovery after cancellation: count=%d err=%v", recovered, err)
+		}
+
+		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, "recovery after cancellation")
+
+		return
+	}
+
+	recovered, err := opened.backend.RecoverExpiredLeases(t.Context())
+	requireSingleCount(t, "recovery before cancellation", recovered, err)
+	cancelRun(t, second, plan.Run.ID)
+	assertCanceledNode(t, opened.backend, plan.Run.ID)
+}
+
+type cancellationOrdering struct {
+	second storage.Backend
+	plan   *storage.RunPlan
+	opened openedStore
+}
+
+func openCancellationOrdering(
+	t *testing.T,
+	harness Harness,
+	name string,
+) cancellationOrdering {
+	t.Helper()
+
+	opened := openStore(t, harness, "cancellation-ordering-"+name)
+
+	plan := singleNodePlan(storage.RunID("conformance-cancellation-"+name), name)
+	if err := opened.backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := harness.NewBackend(opened.database)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return cancellationOrdering{opened: opened, plan: &plan, second: second}
+}
+
+func cancelRun(t *testing.T, backend storage.Backend, runID storage.RunID) {
+	t.Helper()
+
+	outcome, err := backend.CancelRun(t.Context(), runID)
+	requireCancellationOutcome(t, outcome, err, storage.CancellationCanceled)
+}
+
+type nodeSnapshot struct {
+	report storage.NodeReport
+}
+
+func mustNodeSnapshot(t *testing.T, backend storage.Backend, runID storage.RunID) nodeSnapshot {
+	t.Helper()
+
+	return nodeSnapshot{report: mustFindNode(t, backend, runID, conformanceNodeID)}
+}
+
+func requireNodeSnapshotUnchanged(
+	t *testing.T,
+	backend storage.Backend,
+	runID storage.RunID,
+	before *nodeSnapshot,
+	operation string,
+) {
+	t.Helper()
+
+	after := mustNodeSnapshot(t, backend, runID)
+	if !reflect.DeepEqual(*before, after) {
+		t.Fatalf("%s mutated node:\nbefore=%#v\nafter=%#v", operation, *before, after)
+	}
+}
+
+func assertCanceledNode(t *testing.T, backend storage.Backend, runID storage.RunID) {
+	t.Helper()
+
+	node := mustFindNode(t, backend, runID, conformanceNodeID)
+	if node.State != storage.NodeCanceled || node.Reason != storage.ReasonCanceledByRequest ||
+		node.CurrentLease != nil {
+		t.Fatalf("canceled node = %#v", node)
+	}
 }
 
 func runConcurrentCancellation(t *testing.T, harness Harness) {

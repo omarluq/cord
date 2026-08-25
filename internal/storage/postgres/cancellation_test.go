@@ -93,6 +93,66 @@ func TestCancelRunCapturesTransitionAfterRunLock(t *testing.T) {
 	assert.Equal(t, updatedAt, completedAt)
 }
 
+func TestCancelRunRollsBackWhenNodeCancellationFails(t *testing.T) {
+	t.Parallel()
+
+	database, store := newPostgresCancellationStore(t)
+	plan := postgresReadyPlan("cancel-node-rollback", time.Now().UTC())
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	before := postgresDurableState(t, database, plan.Run.ID, postgresTestNode)
+
+	_, err := database.ExecContext(t.Context(), `CREATE FUNCTION reject_canceled_node() RETURNS trigger
+		LANGUAGE plpgsql AS $function$
+		BEGIN
+			RAISE EXCEPTION 'cancel boundary';
+		END
+		$function$;
+		CREATE TRIGGER reject_canceled_node BEFORE UPDATE OF status ON cord_nodes
+		FOR EACH ROW WHEN (NEW.status = 'canceled') EXECUTE FUNCTION reject_canceled_node()`)
+	require.NoError(t, err)
+
+	outcome, err := store.CancelRun(t.Context(), plan.Run.ID)
+	require.ErrorContains(t, err, "cancel boundary")
+	assert.Empty(t, outcome)
+	assert.Equal(t, before, postgresDurableState(t, database, plan.Run.ID, postgresTestNode))
+}
+
+func TestCancelRunRollsBackWhenFinalRunUpdateFails(t *testing.T) {
+	t.Parallel()
+
+	database, store := newPostgresCancellationStore(t)
+	plan := postgresReadyPlan("cancel-final-rollback", time.Now().UTC())
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+	claim := claimPostgresNode(t, store, "worker", "postgres.test", "signature")
+	before := postgresDurableState(t, database, claim.RunID, claim.NodeID)
+
+	_, err := database.ExecContext(t.Context(), `CREATE FUNCTION reject_canceled_run() RETURNS trigger
+		LANGUAGE plpgsql AS $function$
+		BEGIN
+			RAISE EXCEPTION 'final cancellation boundary';
+		END
+		$function$;
+		CREATE TRIGGER reject_canceled_run BEFORE UPDATE OF status ON cord_runs
+		FOR EACH ROW WHEN (NEW.status = 'canceled') EXECUTE FUNCTION reject_canceled_run()`)
+	require.NoError(t, err)
+
+	outcome, err := store.CancelRun(t.Context(), plan.Run.ID)
+	require.ErrorContains(t, err, "final cancellation boundary")
+	assert.Empty(t, outcome)
+	assert.Equal(t, before, postgresDurableState(t, database, claim.RunID, claim.NodeID))
+}
+
+func newPostgresCancellationStore(t *testing.T) (*sql.DB, *postgresstore.Store) {
+	t.Helper()
+
+	database := openPostgres(t, startPostgres(t))
+	require.NoError(t, postgresstore.Migrate(t.Context(), database))
+	store, err := postgresstore.New(database)
+	require.NoError(t, err)
+
+	return database, store
+}
+
 func configureCancellationConnection(t *testing.T, database, cancelDatabase *sql.DB) string {
 	t.Helper()
 

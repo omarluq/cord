@@ -145,6 +145,7 @@ func Run(t *testing.T, harness Harness) {
 		{name: "restart and resume", run: runRestartAndResume},
 		{name: "cancellation outcomes", run: runCancellationOutcomes},
 		{name: "cancellation states and fences", run: runCancellationStatesAndFences},
+		{name: "deterministic cancellation orderings", run: runDeterministicCancellationOrderings},
 		{name: "concurrent cancellation", run: runConcurrentCancellation},
 		{name: "migration idempotence", run: runMigrationIdempotence},
 		{name: "run deletion", run: runRunDeletion},
