@@ -959,7 +959,14 @@ func assertTerminalRaceState(
 	require.Len(t, statuses, 2)
 
 	if runStatus == storage.RunCompleted {
-		assert.ElementsMatch(t, []storage.NodeStatus{storage.NodeCanceled, storage.NodeCompleted}, statuses)
+		assert.ElementsMatch(t, []storage.NodeStatus{storage.NodeCompleted, storage.NodeRunning}, statuses)
+
+		var unfinishedReason sql.NullString
+		require.NoError(t, database.QueryRowContext(
+			t.Context(), `SELECT terminal_reason FROM cord_nodes
+				WHERE run_id = $1 AND status = $2`, runID, storage.NodeRunning,
+		).Scan(&unfinishedReason))
+		assert.False(t, unfinishedReason.Valid)
 	} else {
 		assert.ElementsMatch(t, []storage.NodeStatus{storage.NodeCanceled, storage.NodeFailed}, statuses)
 	}

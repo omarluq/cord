@@ -273,13 +273,7 @@ func completeRunPath(
 		return fmt.Errorf("complete run: %w", err)
 	}
 
-	if affectedErr := requireOneAffected(result, "run completion"); affectedErr != nil {
-		return affectedErr
-	}
-
-	return cancelUnfinishedNodes(
-		ctx, transaction, params.runID, storage.ReasonCanceledByRunFailure, params.transitionedAt,
-	)
+	return requireOneAffected(result, "run completion")
 }
 
 func failRunPath(
