@@ -53,6 +53,27 @@ func concurrentCancelResults(callers int, cancel func() error) []error {
 	return results
 }
 
+func submitBlockedQueuedRun(
+	t *testing.T,
+	workflowName string,
+) (*cord.Cord, cord.Workflow[string, string], cord.RunID) {
+	t.Helper()
+
+	_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
+	flow := runtime.From(workflowName, completeAfterRelease)
+	activeDirectory := t.TempDir()
+	t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
+
+	_, err := flow.Submit(t.Context(), activeDirectory)
+	require.NoError(t, err)
+	waitMarker(t, activeDirectory, "started")
+
+	runID, err := flow.Submit(t.Context(), t.TempDir())
+	require.NoError(t, err)
+
+	return runtime, flow, runID
+}
+
 func TestWorkflowSubmitAndGet(t *testing.T) {
 	t.Parallel()
 
@@ -421,41 +442,18 @@ func TestWorkflowCancelRunningRun(t *testing.T) {
 func TestWorkflowCancelIsIndependentOfWorkflowGraphValidity(t *testing.T) {
 	t.Parallel()
 
-	_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
-	flow := runtime.From("async-cancel-run-id-only", completeAfterRelease)
-	activeDirectory := t.TempDir()
-	queuedDirectory := t.TempDir()
-	t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
-
-	_, err := flow.Submit(t.Context(), activeDirectory)
-	require.NoError(t, err)
-	waitMarker(t, activeDirectory, "started")
-
-	runID, err := flow.Submit(t.Context(), queuedDirectory)
-	require.NoError(t, err)
-
+	runtime, flow, runID := submitBlockedQueuedRun(t, "async-cancel-run-id-only")
 	invalid := runtime.From("", completeAfterRelease)
 
 	require.NoError(t, invalid.Cancel(t.Context(), runID))
-	_, err = flow.Get(t.Context(), runID)
+	_, err := flow.Get(t.Context(), runID)
 	require.ErrorIs(t, err, cord.ErrRunCanceled)
 }
 
 func TestWorkflowCancelImmediatelyProducesAuthoritativeSnapshot(t *testing.T) {
 	t.Parallel()
 
-	_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
-	flow := runtime.From("async-cancel-inspect", completeAfterRelease)
-	activeDirectory := t.TempDir()
-	queuedDirectory := t.TempDir()
-	t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
-
-	_, err := flow.Submit(t.Context(), activeDirectory)
-	require.NoError(t, err)
-	waitMarker(t, activeDirectory, "started")
-
-	runID, err := flow.Submit(t.Context(), queuedDirectory)
-	require.NoError(t, err)
+	runtime, flow, runID := submitBlockedQueuedRun(t, "async-cancel-inspect")
 	require.NoError(t, flow.Cancel(t.Context(), runID))
 
 	report, err := runtime.InspectRun(t.Context(), runID)
@@ -486,17 +484,10 @@ func TestWorkflowCancellationConvergesAcrossCallerCounts(t *testing.T) {
 		t.Run(strconv.Itoa(callers), func(t *testing.T) {
 			t.Parallel()
 
-			_, runtime := newRuntime(t, cord.Options{Concurrency: 1})
-			flow := runtime.From(fmt.Sprintf("async-cancel-callers-%d", callers), completeAfterRelease)
-			activeDirectory := t.TempDir()
-			queuedDirectory := t.TempDir()
-			t.Cleanup(func() { assert.NoError(t, writeMarker(activeDirectory, "release")) })
-
-			_, err := flow.Submit(t.Context(), activeDirectory)
-			require.NoError(t, err)
-			waitMarker(t, activeDirectory, "started")
-			runID, err := flow.Submit(t.Context(), queuedDirectory)
-			require.NoError(t, err)
+			runtime, flow, runID := submitBlockedQueuedRun(
+				t,
+				fmt.Sprintf("async-cancel-callers-%d", callers),
+			)
 
 			for _, cancelErr := range concurrentCancelResults(callers, func() error {
 				return flow.Cancel(t.Context(), runID)
