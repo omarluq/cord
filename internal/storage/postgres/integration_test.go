@@ -756,6 +756,40 @@ func TestCancelRunOutcomesAndFencing(t *testing.T) {
 	assert.Equal(t, storage.CancellationNotFound, outcome)
 }
 
+func TestSuccessfulTerminalCompletionLeavesUnfinishedNodesNonterminal(t *testing.T) {
+	t.Parallel()
+
+	database := openPostgres(t, startPostgres(t))
+	require.NoError(t, postgresstore.Migrate(t.Context(), database))
+	store, err := postgresstore.New(database)
+	require.NoError(t, err)
+
+	const runID storage.RunID = "successful-terminal-with-unfinished-node"
+	plan := terminalRacePlan(runID)
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+
+	_, err = database.ExecContext(t.Context(), `UPDATE cord_nodes
+		SET status = $1, remaining_deps = 0
+		WHERE run_id = $2 AND node_id = $3`, storage.NodeReady, runID, "terminal")
+	require.NoError(t, err)
+
+	terminal := claimPostgresNode(t, store, "terminal-worker", "terminal-key", "terminal-signature")
+	sibling := claimPostgresNode(t, store, "sibling-worker", "sibling-key", "sibling-signature")
+
+	accepted, err := store.CompleteNode(
+		t.Context(), terminal.RunID, terminal.NodeID, terminal.Lease, []byte(`"done"`),
+	)
+	require.NoError(t, err)
+	require.True(t, accepted)
+
+	var status storage.NodeStatus
+	var reason sql.NullString
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT status, terminal_reason
+		FROM cord_nodes WHERE run_id = $1 AND node_id = $2`, runID, sibling.NodeID).Scan(&status, &reason))
+	assert.Equal(t, storage.NodeRunning, status)
+	assert.False(t, reason.Valid)
+}
+
 func TestTerminalTransitionsSerializeOnRun(t *testing.T) {
 	t.Parallel()
 
