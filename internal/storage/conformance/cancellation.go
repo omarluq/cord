@@ -8,6 +8,8 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
+const retryAfterCancellation = "retry after cancellation"
+
 func runCancellationOutcomes(t *testing.T, harness Harness) {
 	t.Helper()
 
@@ -227,8 +229,8 @@ func runCancellationRetryOrdering(t *testing.T, harness Harness, name string, ca
 		accepted, err := opened.backend.RetryNode(
 			t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"late retry"`), time.Hour,
 		)
-		requireRejected(t, "retry after cancellation", accepted, err)
-		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, "retry after cancellation")
+		requireRejected(t, retryAfterCancellation, accepted, err)
+		requireNodeSnapshotUnchanged(t, opened.backend, plan.Run.ID, &before, retryAfterCancellation)
 
 		return
 	}
@@ -489,7 +491,7 @@ func requireCancellationFences(
 	accepted, err = backend.RetryNode(
 		t.Context(), running.RunID, running.NodeID, running.Lease, []byte(`"late"`), 0,
 	)
-	requireRejected(t, "retry after cancellation", accepted, err)
+	requireRejected(t, retryAfterCancellation, accepted, err)
 	accepted, err = backend.FailNode(
 		t.Context(), running.RunID, running.NodeID, running.Lease, []byte(`"late"`),
 		storage.ReasonFailureNonRetryable,
