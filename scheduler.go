@@ -589,12 +589,13 @@ func (c *Cord) heartbeat(ctx context.Context, claim *storage.Claim, cancel conte
 }
 
 type heartbeatState struct {
-	leaseTimer     *time.Timer
-	ticker         *time.Ticker
-	results        chan heartbeatResult
-	safetyDeadline time.Time
-	inFlight       bool
-	held           bool
+	leaseTimer               *time.Timer
+	ticker                   *time.Ticker
+	results                  chan heartbeatResult
+	safetyDeadline           time.Time
+	inFlight                 bool
+	permitExhaustionReported bool
+	held                     bool
 }
 
 func newHeartbeatState(remaining, heartbeatInterval time.Duration) *heartbeatState {
@@ -617,16 +618,29 @@ func (state *heartbeatState) stop() {
 }
 
 func (c *Cord) startHeartbeatCall(ctx context.Context, claim *storage.Claim, state *heartbeatState) {
-	if state.inFlight || !c.acquireHeartbeatCall(ctx) {
+	if state.inFlight {
 		return
 	}
 
+	if !c.acquireHeartbeatCall(ctx) {
+		if ctx.Err() == nil && !state.permitExhaustionReported {
+			state.permitExhaustionReported = true
+
+			c.reportSchedulerError(errors.New("cord: heartbeat call capacity exhausted"))
+		}
+
+		return
+	}
+
+	state.permitExhaustionReported = false
 	state.inFlight = true
-	callCtx, callCancel := context.WithDeadline(ctx, state.safetyDeadline)
+	deadline := state.safetyDeadline
 	claimCopy := *claim
 
 	go func() {
 		defer c.releaseHeartbeatCall()
+
+		callCtx, callCancel := context.WithDeadline(ctx, deadline)
 		defer callCancel()
 
 		outcome, remaining := c.heartbeatOnce(callCtx, &claimCopy)
