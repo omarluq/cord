@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.26
 
-ARG GO_IMAGE=golang@sha256:65b6f280bf050ec5af12716857e8ea8439d694dbba8f31ceeb7630670071f2bb
+ARG GO_IMAGE=golang@sha256:0ecdc2a9f6156af6451080bfe3d8382a662fcc4e209608c6f919e643453514c1
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2
 
 FROM ${GO_IMAGE} AS build
