@@ -21,10 +21,11 @@ type Cord struct {
 	registry          map[string]registeredInvocation
 	onSchedulerError  func(error)
 	slots             chan struct{}
+	heartbeatCalls    chan struct{}
 	errorReports      chan error
 	errorReporterDone chan struct{}
 	completionWaiters map[storage.RunID]*completionPoll
-	activeAttempts    map[storage.RunID]map[uint64]context.CancelFunc
+	activeAttempts    map[storage.RunID]map[activeAttemptKey]*activeAttempt
 	shutdownDone      chan struct{}
 	owner             string
 	registrations     []storage.FunctionRegistration
@@ -32,7 +33,6 @@ type Cord struct {
 	admittedRuns      int
 	activeGoroutines  int
 	nextWaiterID      uint64
-	nextAttemptID     uint64
 	pollInterval      time.Duration
 	leaseTTL          time.Duration
 	heartbeatInterval time.Duration
@@ -356,29 +356,57 @@ func (c *Cord) clearCompletionWaiters() {
 	}
 }
 
+type activeAttemptKey struct {
+	runID      storage.RunID
+	nodeID     storage.NodeID
+	leaseOwner string
+	generation int64
+}
+
+type activeAttempt struct {
+	cancel context.CancelFunc
+}
+
+func newActiveAttemptKey(claim *storage.Claim) activeAttemptKey {
+	return activeAttemptKey{
+		runID:      claim.RunID,
+		nodeID:     claim.NodeID,
+		leaseOwner: claim.Lease.Owner,
+		generation: claim.Lease.Generation,
+	}
+}
+
 func (c *Cord) registerActiveAttemptLocked(
 	claim *storage.Claim,
 	cancel context.CancelFunc,
 ) (unregister func()) {
-	c.nextAttemptID++
-	attemptID := c.nextAttemptID
+	key := newActiveAttemptKey(claim)
+	attempt := &activeAttempt{cancel: cancel}
 
 	if c.activeAttempts == nil {
-		c.activeAttempts = make(map[storage.RunID]map[uint64]context.CancelFunc)
+		c.activeAttempts = make(map[storage.RunID]map[activeAttemptKey]*activeAttempt)
 	}
 
 	if c.activeAttempts[claim.RunID] == nil {
-		c.activeAttempts[claim.RunID] = make(map[uint64]context.CancelFunc)
+		c.activeAttempts[claim.RunID] = make(map[activeAttemptKey]*activeAttempt)
 	}
 
-	c.activeAttempts[claim.RunID][attemptID] = cancel
+	if previous := c.activeAttempts[claim.RunID][key]; previous != nil {
+		previous.cancel()
+	}
+
+	c.activeAttempts[claim.RunID][key] = attempt
 
 	return func() {
 		c.activeMu.Lock()
 		defer c.activeMu.Unlock()
 
 		attempts := c.activeAttempts[claim.RunID]
-		delete(attempts, attemptID)
+		if attempts[key] != attempt {
+			return
+		}
+
+		delete(attempts, key)
 
 		if len(attempts) == 0 {
 			delete(c.activeAttempts, claim.RunID)
@@ -392,8 +420,8 @@ func (c *Cord) cancelActiveAttempts(runID storage.RunID) {
 	delete(c.activeAttempts, runID)
 	c.activeMu.Unlock()
 
-	for _, cancel := range attempts {
-		cancel()
+	for _, attempt := range attempts {
+		attempt.cancel()
 	}
 }
 
@@ -508,12 +536,13 @@ func newCordWithSettings(store storage.Backend, owner string, settings scheduler
 		leaseTTL: settings.leaseTTL, pollInterval: settings.pollInterval,
 		onSchedulerError: settings.onSchedulerError,
 		mu:               sync.RWMutex{}, registry: make(map[string]registeredInvocation), registrations: nil,
-		retry: settings.retry, slots: make(chan struct{}, settings.concurrency), store: store,
+		retry: settings.retry, slots: make(chan struct{}, settings.concurrency),
+		heartbeatCalls: make(chan struct{}, settings.concurrency), store: store,
 		wake: make(chan struct{}, 1), owner: owner, closeOnce: sync.Once{},
 		lifecycleMu: sync.Mutex{}, shutdownDone: make(chan struct{}),
 		admissionMu: sync.Mutex{}, acceptingRuns: true, waiterMu: sync.Mutex{},
 		completionWaiters: make(map[storage.RunID]*completionPoll),
-		activeAttempts:    make(map[storage.RunID]map[uint64]context.CancelFunc),
+		activeAttempts:    make(map[storage.RunID]map[activeAttemptKey]*activeAttempt),
 		errorReports:      make(chan error, schedulerErrorQueueCapacity), errorReporterDone: make(chan struct{}),
 	}
 
