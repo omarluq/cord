@@ -23,6 +23,7 @@ func newCompilationArtifact(
 		wasm:        wasm,
 		boundary:    multipart.NewWriter(io.Discard).Boundary(),
 		compression: &compressedRepresentation{},
+		identity:    &identityRepresentation{},
 	}, nil
 }
 
@@ -55,6 +56,21 @@ func (artifact *compilationArtifact) gzipBody() ([]byte, error) {
 	return artifact.compression.body, artifact.compression.err
 }
 
+func (artifact *compilationArtifact) identityLength() (int64, error) {
+	artifact.identity.once.Do(func() {
+		counter := &byteCounter{}
+		if err := writeArtifactBody(counter, artifact.boundary, artifact.graph, artifact.wasm); err != nil {
+			artifact.identity.err = fmt.Errorf("measure compilation response: %w", err)
+
+			return
+		}
+
+		artifact.identity.length = counter.bytes
+	})
+
+	return artifact.identity.length, artifact.identity.err
+}
+
 func writeArtifact(
 	response http.ResponseWriter,
 	artifact *compilationArtifact,
@@ -74,12 +90,12 @@ func writeArtifact(
 			return err
 		}
 	} else {
-		counter := &byteCounter{}
-		if err := writeArtifactBody(counter, artifact.boundary, artifact.graph, artifact.wasm); err != nil {
-			return fmt.Errorf("measure compilation response: %w", err)
-		}
+		var err error
 
-		identityLength = counter.bytes
+		identityLength, err = artifact.identityLength()
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := http.NewResponseController(response).SetWriteDeadline(

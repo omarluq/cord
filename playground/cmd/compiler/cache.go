@@ -13,9 +13,16 @@ import (
 
 type compilationArtifact struct {
 	compression *compressedRepresentation
+	identity    *identityRepresentation
 	boundary    string
 	wasm        []byte
 	graph       protocol.Graph
+}
+
+type identityRepresentation struct {
+	err    error
+	length int64
+	once   sync.Once
 }
 
 type compressedRepresentation struct {
