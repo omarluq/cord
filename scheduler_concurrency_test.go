@@ -91,7 +91,10 @@ func assertJoinPending(t *testing.T, database *sql.DB) {
 
 		err := database.QueryRowContext(t.Context(), `SELECT status, remaining_deps
 			FROM cord_nodes WHERE remaining_deps > 0`).Scan(&status, &remainingDependencies)
-		require.NoError(collect, err)
+		if !assert.NoError(collect, err) {
+			return
+		}
+
 		assert.Equal(collect, "pending", status)
 		assert.Equal(collect, 1, remainingDependencies)
 	}, 5*time.Second, 10*time.Millisecond)
@@ -106,12 +109,18 @@ func assertRunningNodes(t *testing.T, database *sql.DB, wantRuns, wantRunning in
 			running int
 		)
 
-		require.NoError(collect, database.QueryRowContext(
+		if !assert.NoError(collect, database.QueryRowContext(
 			t.Context(), "SELECT COUNT(*) FROM cord_runs",
-		).Scan(&runs))
-		require.NoError(collect, database.QueryRowContext(
+		).Scan(&runs)) {
+			return
+		}
+
+		if !assert.NoError(collect, database.QueryRowContext(
 			t.Context(), "SELECT COUNT(*) FROM cord_nodes WHERE status = 'running'",
-		).Scan(&running))
+		).Scan(&running)) {
+			return
+		}
+
 		assert.Equal(collect, wantRuns, runs)
 		assert.Equal(collect, wantRunning, running)
 	}, 5*time.Second, 10*time.Millisecond)

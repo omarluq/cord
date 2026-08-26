@@ -78,7 +78,10 @@ func TestScheduler_EagerRegistrationRecoversPersistedWork(t *testing.T) {
 
 		err := database.QueryRowContext(t.Context(),
 			"SELECT status, output_payload FROM cord_runs").Scan(&status, &output)
-		require.NoError(collect, err)
+		if !assert.NoError(collect, err) {
+			return
+		}
+
 		assert.Equal(collect, "completed", status)
 		assert.JSONEq(collect, `"recovered"`, output)
 	}, 5*time.Second, 10*time.Millisecond)
