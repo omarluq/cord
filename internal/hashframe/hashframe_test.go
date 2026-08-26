@@ -31,6 +31,16 @@ func TestSHA256_GoldenFraming(t *testing.T) {
 			want:  "5310a58788781ab25d5ad7c3f85035824b4eb7bdfa394e0ac2186271472b5492",
 		},
 		{
+			parts: []string{"ab", "c"},
+			name:  "different boundaries",
+			want:  "430fb1b4ac43316eca81fab27a1930ab8eff8fef6a1dc7903dce44bbc2790dc5",
+		},
+		{
+			parts: []string{"", "a"},
+			name:  "empty part is framed",
+			want:  "d4acf8e21a4a7ec1cbd82d09df7725195a40658c3427747b812fca25ff112466",
+		},
+		{
 			parts: []string{"é"},
 			name:  "unicode byte length",
 			want:  "2f23c71856587c2a6ffdb64f0e11e9940b35da318947308f6a02ee01898e6107",

@@ -16,6 +16,7 @@ func TestFullJitterBounds(t *testing.T) {
 		attempt int
 		maximum time.Duration
 	}{
+		{name: "nonpositive attempt", attempt: 0, maximum: time.Millisecond},
 		{name: "first", attempt: 1, maximum: time.Millisecond},
 		{name: "second", attempt: 2, maximum: 2 * time.Millisecond},
 		{name: "capped", attempt: 3, maximum: 4 * time.Millisecond},
