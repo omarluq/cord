@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
+	// Register modernc's database/sql driver for the remote-lock tests.
+	_ "modernc.org/sqlite"
 )
 
 func openDatabase(t *testing.T) (*sql.DB, *sql.Conn) {
