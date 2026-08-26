@@ -39,9 +39,8 @@ func validateRunReport(report *RunReport) error {
 		)
 	}
 
-	terminal, _ := report.State.Terminal()
-	if terminal != (report.FinishedAt != nil) {
-		return incompatibleSnapshot("run %q has inconsistent terminal timestamps", report.ID)
+	if err := validateRunTimestamps(report); err != nil {
+		return err
 	}
 
 	return validateRunMetadata(report)
@@ -82,13 +81,22 @@ func validateTerminalRunner(report *RunReport) error {
 		return incompatibleSnapshot("canceled run %q has a terminal runner", report.ID)
 	}
 
+	return nil
+}
+
+func validateRunTimestamps(report *RunReport) error {
 	if report.StateChangedAt.Before(report.SubmittedAt) ||
 		(report.FirstStartedAt != nil && report.FirstStartedAt.Before(report.SubmittedAt)) {
 		return incompatibleSnapshot("run %q has inconsistent lifecycle timestamps", report.ID)
 	}
 
+	terminal, _ := report.State.Terminal()
+	if terminal != (report.FinishedAt != nil) {
+		return incompatibleSnapshot("run %q state and finished timestamp disagree", report.ID)
+	}
+
 	if report.FinishedAt != nil && !report.FinishedAt.Equal(report.StateChangedAt) {
-		return incompatibleSnapshot("run %q has inconsistent terminal timestamps", report.ID)
+		return incompatibleSnapshot("run %q finished and state-changed timestamps disagree", report.ID)
 	}
 
 	return nil
