@@ -3,10 +3,7 @@ package sqlstore_test
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
-	"fmt"
-	"io"
 	"testing"
 	"time"
 
@@ -114,6 +111,47 @@ func TestDetectTreatsSQLiteBusyAsSQLite(t *testing.T) {
 	require.NotContains(t, err.Error(), "PostgreSQL capability probe")
 }
 
+func TestNewBootstrapsSQLite(t *testing.T) {
+	t.Parallel()
+
+	database, err := sql.Open("sqlite", ":memory:?_pragma=foreign_keys(1)")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	backend, err := sqlstore.New(t.Context(), database)
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+
+	var migrationCount int
+	require.NoError(t, database.QueryRowContext(
+		t.Context(),
+		"SELECT COUNT(*) FROM cord_schema_migrations WHERE is_applied = 1",
+	).Scan(&migrationCount))
+	assert.Positive(t, migrationCount)
+
+	var nodeTable string
+	require.NoError(t, database.QueryRowContext(
+		t.Context(),
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cord_nodes'",
+	).Scan(&nodeTable))
+	assert.Equal(t, "cord_nodes", nodeTable)
+}
+
+func TestDetectCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	database := openProbeDatabase(t, map[string]probeResponse{})
+
+	_, err := sqlstore.Detect(ctx, database)
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorContains(t, err, "detect SQL storage backend")
+}
+
 func TestNewDispatchesPostgres(t *testing.T) {
 	t.Parallel()
 
@@ -127,89 +165,4 @@ func TestNewDispatchesPostgres(t *testing.T) {
 	assert.Nil(t, backend)
 	require.ErrorContains(t, err, "migrate PostgreSQL storage")
 	require.ErrorContains(t, err, "transactions are not supported")
-}
-
-type probeResponse struct {
-	value driver.Value
-	err   error
-}
-
-type probeConnector struct {
-	responses map[string]probeResponse
-}
-
-func (connector probeConnector) Connect(context.Context) (driver.Conn, error) {
-	return probeConnection(connector), nil
-}
-
-func (probeConnector) Driver() driver.Driver {
-	return probeDriver{}
-}
-
-type probeDriver struct{}
-
-func (probeDriver) Open(string) (driver.Conn, error) {
-	return nil, errors.New("probe driver requires its connector")
-}
-
-type probeConnection struct {
-	responses map[string]probeResponse
-}
-
-func (probeConnection) Prepare(string) (driver.Stmt, error) {
-	return nil, errors.New("prepare is not supported")
-}
-
-func (probeConnection) Close() error { return nil }
-
-func (probeConnection) Begin() (driver.Tx, error) {
-	return nil, errors.New("transactions are not supported")
-}
-
-func (connection probeConnection) QueryContext(
-	_ context.Context,
-	query string,
-	_ []driver.NamedValue,
-) (driver.Rows, error) {
-	response, ok := connection.responses[query]
-	if !ok {
-		return nil, fmt.Errorf("unexpected query %q", query)
-	}
-
-	if response.err != nil {
-		return nil, response.err
-	}
-
-	return &probeRows{value: response.value, read: false}, nil
-}
-
-type probeRows struct {
-	value driver.Value
-	read  bool
-}
-
-func (*probeRows) Columns() []string { return []string{"capability"} }
-func (*probeRows) Close() error      { return nil }
-
-func (rows *probeRows) Next(values []driver.Value) error {
-	if rows.read {
-		return io.EOF
-	}
-
-	values[0] = rows.value
-	rows.read = true
-
-	return nil
-}
-
-func openProbeDatabase(t *testing.T, responses map[string]probeResponse) *sql.DB {
-	t.Helper()
-
-	database := sql.OpenDB(probeConnector{responses: responses})
-
-	t.Cleanup(func() {
-		require.NoError(t, database.Close())
-	})
-
-	return database
 }
