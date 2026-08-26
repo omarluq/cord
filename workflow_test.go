@@ -120,7 +120,10 @@ func TestWorkflow_RunContextCancellationStopsWaitingWithoutCancelingDurableRun(t
 			"SELECT status FROM cord_runs WHERE workflow_name = ?",
 			"context-cancellation",
 		).Scan(&status)
-		require.NoError(collect, err)
+		if !assert.NoError(collect, err) {
+			return
+		}
+
 		assert.Equal(collect, "completed", status)
 	}, 5*time.Second, 10*time.Millisecond)
 }
