@@ -77,6 +77,31 @@ func (s *Store) InspectRun(ctx context.Context, runID storage.RunID) (storage.Ru
 	return report, nil
 }
 
+func populateRunTimes(
+	report *storage.RunReport,
+	createdAt, updatedAt string,
+	startedAt, completedAt sql.NullString,
+) error {
+	var err error
+	if report.SubmittedAt, err = parseRequiredTime(createdAt); err != nil {
+		return fmt.Errorf("invalid submitted timestamp: %w", err)
+	}
+
+	if report.StateChangedAt, err = parseRequiredTime(updatedAt); err != nil {
+		return fmt.Errorf("invalid state-change timestamp: %w", err)
+	}
+
+	if err = parseOptionalTime(startedAt, &report.FirstStartedAt); err != nil {
+		return fmt.Errorf("invalid first-start timestamp: %w", err)
+	}
+
+	if err = parseOptionalTime(completedAt, &report.FinishedAt); err != nil {
+		return fmt.Errorf("invalid finish timestamp: %w", err)
+	}
+
+	return nil
+}
+
 func validateRunReport(report *storage.RunReport, reason sql.NullString) error {
 	terminal, err := validateRunBasics(report)
 	if err != nil {
@@ -137,17 +162,5 @@ func validateTerminalRunner(report *storage.RunReport, terminal bool) error {
 }
 
 func validateRunReason(report *storage.RunReport, reason sql.NullString, terminal bool) error {
-	if reason.Valid {
-		report.Reason = storage.TerminalReason(reason.String)
-	}
-
-	if terminal != reason.Valid {
-		return errors.New("terminal state and reason disagree")
-	}
-
-	if !report.State.AllowsReason(report.Reason) || (report.Reason != "" && !report.Reason.IsKnown()) {
-		return fmt.Errorf("reason %q is invalid for state %q", report.Reason, report.State)
-	}
-
-	return nil
+	return validateReason(&report.Reason, reason, terminal, string(report.State), report.State.AllowsReason)
 }

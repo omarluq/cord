@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 )
@@ -74,31 +73,6 @@ func scanNodeReport(
 	return report, nil
 }
 
-func populateRunTimes(
-	report *storage.RunReport,
-	createdAt, updatedAt string,
-	startedAt, completedAt sql.NullString,
-) error {
-	var err error
-	if report.SubmittedAt, err = parseRequiredTime(createdAt); err != nil {
-		return fmt.Errorf("invalid submitted timestamp: %w", err)
-	}
-
-	if report.StateChangedAt, err = parseRequiredTime(updatedAt); err != nil {
-		return fmt.Errorf("invalid state-change timestamp: %w", err)
-	}
-
-	if err = parseOptionalTime(startedAt, &report.FirstStartedAt); err != nil {
-		return fmt.Errorf("invalid first-start timestamp: %w", err)
-	}
-
-	if err = parseOptionalTime(completedAt, &report.FinishedAt); err != nil {
-		return fmt.Errorf("invalid finish timestamp: %w", err)
-	}
-
-	return nil
-}
-
 func populateNodeTimes(
 	report *storage.NodeReport,
 	availableAt string,
@@ -149,51 +123,4 @@ func populateCurrentLease(
 	}
 
 	return nil
-}
-
-func setOptionalRunnerID(destination **storage.RunnerID, value sql.NullString) {
-	if value.Valid {
-		runnerID := storage.RunnerID(value.String)
-		*destination = &runnerID
-	}
-}
-
-func parseRequiredTime(value string) (time.Time, error) {
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse RFC3339 timestamp: %w", err)
-	}
-
-	return parsed.UTC(), nil
-}
-
-func parseOptionalTime(value sql.NullString, destination **time.Time) error {
-	if !value.Valid {
-		return nil
-	}
-
-	parsed, err := parseRequiredTime(value.String)
-	if err != nil {
-		return err
-	}
-
-	*destination = &parsed
-
-	return nil
-}
-
-func incompatibleRun(runID storage.RunID, format string, arguments ...any) error {
-	return fmt.Errorf("inspect run %q: %s: %w", runID, fmt.Sprintf(format, arguments...), storage.ErrRunIncompatible)
-}
-
-func incompatibleNode(
-	runID storage.RunID,
-	nodeID storage.NodeID,
-	format string,
-	arguments ...any,
-) error {
-	return fmt.Errorf(
-		"inspect node %q for run %q: %s: %w",
-		nodeID, runID, fmt.Sprintf(format, arguments...), storage.ErrRunIncompatible,
-	)
 }

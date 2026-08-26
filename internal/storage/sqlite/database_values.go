@@ -53,6 +53,37 @@ func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
+func parseRequiredTime(value string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse RFC3339 timestamp: %w", err)
+	}
+
+	return parsed.UTC(), nil
+}
+
+func parseOptionalTime(value sql.NullString, destination **time.Time) error {
+	if !value.Valid {
+		return nil
+	}
+
+	parsed, err := parseRequiredTime(value.String)
+	if err != nil {
+		return err
+	}
+
+	*destination = &parsed
+
+	return nil
+}
+
+func setOptionalRunnerID(destination **storage.RunnerID, value sql.NullString) {
+	if value.Valid {
+		runnerID := storage.RunnerID(value.String)
+		*destination = &runnerID
+	}
+}
+
 func databaseInstant(ctx context.Context, transaction *sql.Tx) (time.Time, error) {
 	var value string
 	if err := transaction.QueryRowContext(
