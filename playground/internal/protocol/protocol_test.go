@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/omarluq/cord/playground/internal/protocol"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,6 +49,26 @@ func TestWireContractRoundTrip(t *testing.T) {
 	})
 
 	t.Run("artifact", testArtifactRoundTrip)
+}
+
+func TestGraphWireShape(t *testing.T) {
+	t.Parallel()
+
+	graph := protocol.Graph{
+		Nodes: []protocol.Node{{ID: "load", Label: "Load report"}},
+		Edges: []protocol.Edge{{From: "load", To: "format"}},
+	}
+
+	encoded, err := json.Marshal(graph)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"nodes":[{"id":"load","label":"Load report"}],
+		"edges":[{"from":"load","to":"format"}]
+	}`, string(encoded))
+
+	var decoded protocol.Graph
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, graph, decoded)
 }
 
 func testArtifactRoundTrip(t *testing.T) {
