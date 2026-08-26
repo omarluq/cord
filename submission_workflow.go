@@ -162,15 +162,21 @@ func (w Workflow[I, O]) persistRun(
 
 	id, _, err = w.runtime.store.CreateOrAttachRun(ctx, runPlan)
 	if err != nil {
+		id = ""
+
 		if errors.Is(err, storage.ErrRunConflict) {
-			return "", shutdownOverlappedPersistence, fmt.Errorf(
+			err = fmt.Errorf(
 				"cord: persist run: %w: %w",
 				ErrRunConflict,
 				err,
 			)
+
+			return
 		}
 
-		return "", shutdownOverlappedPersistence, fmt.Errorf("cord: persist run: %w", err)
+		err = fmt.Errorf("cord: persist run: %w", err)
+
+		return
 	}
 
 	w.runtime.signalScheduler()
