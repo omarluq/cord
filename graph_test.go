@@ -52,23 +52,23 @@ func TestWorkflow_LogicalIDsRemainCompatible(t *testing.T) {
 
 	assert.Equal(t, []persistedNode{
 		{
-			id:          "6c5b0f920fab45ba04a898c2184e4f6596f4c41149f1977ada36064320aad502",
+			id:          "7ec7945a1d72dcbe1d44f5b72959394b0fd92ad2cd63c0df6d8fbf37b897528c",
 			functionKey: "github.com/omarluq/cord_test.passThrough", parentOrder: -1,
 		},
 		{
-			id:          "d3520af02af0e023646959e71f5f92fa9bb3e9fc5835f20d8ceb6f56a082d359",
+			id:          "53e504a3091423e8bda834b085afb0da52e1f73ec1e264524c462c2269f98046",
 			functionKey: "github.com/omarluq/cord_test.subtract", parentOrder: 0,
 		},
 		{
-			id:          "d3520af02af0e023646959e71f5f92fa9bb3e9fc5835f20d8ceb6f56a082d359",
+			id:          "53e504a3091423e8bda834b085afb0da52e1f73ec1e264524c462c2269f98046",
 			functionKey: "github.com/omarluq/cord_test.subtract", parentOrder: 1,
 		},
 		{
-			id:          "6fbdd28d1bc3c313568e0890b1f226ce01619ca5091b470dc062ea9df9d4769c",
+			id:          "a58dd399a6b8e2153df796055e781b2c720b56e05f343acb2bb35fb25d5364b0",
 			functionKey: "github.com/omarluq/cord_test.timesTwo", parentOrder: 0,
 		},
 		{
-			id:          "8158a09227bd0063bb6c05da7851e22e616ede5150c49ac9841e38c64e9ee77e",
+			id:          "f1e66e8cc7b6977db5067f077df40824d06401a9ec9e4ea6e7545753696bc31a",
 			functionKey: "github.com/omarluq/cord_test.timesTwo", parentOrder: 0,
 		},
 	}, persisted)
@@ -77,7 +77,7 @@ func TestWorkflow_LogicalIDsRemainCompatible(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(
 		t.Context(), "SELECT definition_hash FROM cord_runs",
 	).Scan(&definitionHash))
-	assert.Equal(t, "e8c3056968153fedc8eead9b6dbbeba36199834b789845ff75f926042eea251b", definitionHash)
+	assert.Equal(t, "844aa38288a392d43d41a13c5af217291ca9541a93c38d9e0b4a0d483e9b9660", definitionHash)
 }
 
 func TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable(t *testing.T) {
@@ -129,7 +129,10 @@ func TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable(t *t
 
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
 		result, resultErr := store.GetRunResult(t.Context(), runID)
-		require.NoError(collect, resultErr)
+		if !assert.NoError(collect, resultErr) {
+			return
+		}
+
 		assert.Equal(collect, storage.RunCompleted, result.Status)
 		assert.JSONEq(collect, "7", string(result.Output))
 	}, 5*time.Second, 10*time.Millisecond)

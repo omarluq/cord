@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	planVersion                  = "cord/run-plan/v1"
+	planVersion                  = "cord/run-plan/v2"
 	submissionFingerprintVersion = "cord/submission-fingerprint/v1"
 )
 
@@ -23,9 +23,9 @@ func definitionHash(
 	edges []storage.Edge,
 	retry retryPolicy,
 ) string {
-	parents := make(map[storage.NodeID][]string, len(nodes))
+	parents := make(map[storage.NodeID][]storage.Edge, len(nodes))
 	for _, edge := range edges {
-		parents[edge.Child] = append(parents[edge.Child], string(edge.Parent))
+		parents[edge.Child] = append(parents[edge.Child], edge)
 	}
 
 	sorted := append([]storage.Node{}, nodes...)
@@ -46,10 +46,18 @@ func definitionHash(
 	for index := range sorted {
 		current := &sorted[index]
 		currentParents := parents[current.ID]
-		sort.Strings(currentParents)
+		sort.Slice(currentParents, func(left, right int) bool {
+			if currentParents[left].ParentOrder != currentParents[right].ParentOrder {
+				return currentParents[left].ParentOrder < currentParents[right].ParentOrder
+			}
+
+			return currentParents[left].Parent < currentParents[right].Parent
+		})
 
 		parts = append(parts, string(current.ID), current.FunctionKey, current.SignatureHash)
-		parts = append(parts, currentParents...)
+		for _, edge := range currentParents {
+			parts = append(parts, strconv.Itoa(edge.ParentOrder), string(edge.Parent))
+		}
 	}
 
 	return hashframe.SHA256(parts...)
