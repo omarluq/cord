@@ -34,7 +34,9 @@ func TestCompilationCacheFirstWaiterCancellationDoesNotCancelSharedWork(t *testi
 		close(started)
 		<-release
 
-		return compilationArtifact{compression: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{}}, nil
+		return compilationArtifact{
+			compression: nil, identity: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{},
+		}, nil
 	}
 
 	firstContext, cancelFirst := context.WithCancel(t.Context())
@@ -83,7 +85,9 @@ func TestCompilationCacheFinishesAfterAllWaitersCancel(t *testing.T) {
 		<-release
 		close(finished)
 
-		return compilationArtifact{compression: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{}}, nil
+		return compilationArtifact{
+			compression: nil, identity: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{},
+		}, nil
 	}
 
 	firstContext, cancelFirst := context.WithCancel(t.Context())
@@ -181,7 +185,9 @@ func TestCompilationCacheDoesNotCacheLoaderFailure(t *testing.T) {
 			return compilationArtifact{}, errors.New("loader failed")
 		}
 
-		return compilationArtifact{compression: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{}}, nil
+		return compilationArtifact{
+			compression: nil, identity: nil, boundary: "", wasm: []byte("wasm"), graph: protocol.Graph{},
+		}, nil
 	}
 
 	_, err := cache.load(t.Context(), t.Context(), "source", loader)
