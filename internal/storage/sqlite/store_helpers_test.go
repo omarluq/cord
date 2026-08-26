@@ -4,14 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/omarluq/cord/internal/storage/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	// Register modernc's database/sql driver for the storage tests.
 	_ "modernc.org/sqlite"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 const (
