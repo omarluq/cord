@@ -48,7 +48,7 @@ func (c *Cord) reportClaimTransitionError(err error) {
 }
 
 func isExpectedRejectedTransition(err error) bool {
-	rejected := &fencedTransitionError{}
+	var rejected *fencedTransitionError
 
 	if !errors.As(err, &rejected) {
 		return false
