@@ -71,7 +71,7 @@ func (c *Cord) invokeSchedulerErrorCallback(err error) {
 }
 
 func recoverSchedulerErrorCallback() {
-	if recovered := recover(); recovered != nil {
+	if recover() != nil {
 		return
 	}
 }
