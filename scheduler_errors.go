@@ -70,8 +70,6 @@ func (c *Cord) invokeSchedulerErrorCallback(err error) {
 	c.onSchedulerError(err)
 }
 
-func recoverSchedulerErrorCallback() {
-	if recover() != nil {
-		return
-	}
+func recoverSchedulerErrorCallback() any {
+	return recover()
 }
