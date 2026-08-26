@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMigratePreflightsNewerSchema verifies that migration rejects a newer persisted schema.
 func TestMigratePreflightsNewerSchema(t *testing.T) {
 	t.Parallel()
 

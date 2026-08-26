@@ -74,6 +74,7 @@ func TestNewJSONCodec_RejectsUnsupportedTypes(t *testing.T) {
 	}
 }
 
+// TestJSONCodec_RejectsDynamicInterfaceValues verifies that unsupported dynamic values are rejected.
 func TestJSONCodec_RejectsDynamicInterfaceValues(t *testing.T) {
 	t.Parallel()
 

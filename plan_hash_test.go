@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestWorkflow_ParentOrderChangesDefinitionHash verifies that parent order contributes to a workflow definition hash.
 func TestWorkflow_ParentOrderChangesDefinitionHash(t *testing.T) {
 	t.Parallel()
 
