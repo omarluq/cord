@@ -1,9 +1,7 @@
 package postgres
 
 import (
-	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/omarluq/cord/internal/storage"
 )
@@ -54,33 +52,4 @@ func nodeReasonFilter(reason *storage.TerminalReason) any {
 	}
 
 	return *reason
-}
-
-func utcTime(value sql.NullTime) *time.Time {
-	if !value.Valid {
-		return nil
-	}
-
-	instant := value.Time.UTC()
-
-	return &instant
-}
-
-func runnerID(value sql.NullString) *storage.RunnerID {
-	if !value.Valid || value.String == "" {
-		return nil
-	}
-
-	id := storage.RunnerID(value.String)
-
-	return &id
-}
-
-func sumNodeCounts(counts storage.NodeStateCounts) int {
-	return counts.Pending + counts.Ready + counts.Running + counts.RetryWait +
-		counts.Completed + counts.Failed + counts.Canceled
-}
-
-func incompatible(format string, arguments ...any) error {
-	return fmt.Errorf("%w: %s", storage.ErrRunIncompatible, fmt.Sprintf(format, arguments...))
 }
