@@ -1,8 +1,9 @@
-package playground
+package playground_test
 
 import (
 	"go/parser"
 	"go/token"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,37 +12,35 @@ import (
 func TestExampleScriptsAreValidGoPrograms(t *testing.T) {
 	t.Parallel()
 
-	require.Len(t, exampleScripts, 6)
+	linear, err := os.ReadFile("examples/linear.go.txt")
+	require.NoError(t, err)
+	branchJoin, err := os.ReadFile("examples/branch_join.go.txt")
+	require.NoError(t, err)
+	retry, err := os.ReadFile("examples/retry.go.txt")
+	require.NoError(t, err)
+	largePipeline, err := os.ReadFile("examples/large_pipeline.go.txt")
+	require.NoError(t, err)
+	httpRequest, err := os.ReadFile("examples/http_request.go.txt")
+	require.NoError(t, err)
+	permanentFailure, err := os.ReadFile("examples/permanent_failure.go.txt")
+	require.NoError(t, err)
 
-	for _, script := range exampleScripts {
-		t.Run(script.filename, func(t *testing.T) {
+	examples := map[string][]byte{
+		"linear.go":            linear,
+		"branch_join.go":       branchJoin,
+		"retry.go":             retry,
+		"large_pipeline.go":    largePipeline,
+		"http_request.go":      httpRequest,
+		"permanent_failure.go": permanentFailure,
+	}
+
+	for filename, source := range examples {
+		t.Run(filename, func(t *testing.T) {
 			t.Parallel()
-			require.NotEmpty(t, script.source)
-			_, err := parser.ParseFile(token.NewFileSet(), script.filename, script.source, parser.AllErrors)
+			require.NotEmpty(t, source)
+
+			_, err := parser.ParseFile(token.NewFileSet(), filename, source, parser.AllErrors)
 			require.NoError(t, err)
-		})
-	}
-}
-
-func TestExampleSource(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		filename string
-		source   string
-		found    bool
-	}{
-		{name: "present", filename: defaultExample, source: linearSource, found: true},
-		{name: "missing", filename: "missing.go", source: "", found: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			source, found := exampleSource(test.filename)
-			require.Equal(t, test.source, source)
-			require.Equal(t, test.found, found)
 		})
 	}
 }

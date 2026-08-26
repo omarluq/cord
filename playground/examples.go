@@ -25,17 +25,19 @@ var httpRequestSource string
 //go:embed examples/permanent_failure.go.txt
 var permanentFailureSource string
 
-var exampleScripts = []exampleScript{
-	{filename: "linear.go", source: linearSource},
-	{filename: "branch_join.go", source: branchJoinSource},
-	{filename: "retry.go", source: retrySource},
-	{filename: "large_pipeline.go", source: largePipelineSource},
-	{filename: "http_request.go", source: httpRequestSource},
-	{filename: "permanent_failure.go", source: permanentFailureSource},
+func exampleScripts() []exampleScript {
+	return []exampleScript{
+		{filename: "linear.go", source: linearSource},
+		{filename: "branch_join.go", source: branchJoinSource},
+		{filename: "retry.go", source: retrySource},
+		{filename: "large_pipeline.go", source: largePipelineSource},
+		{filename: "http_request.go", source: httpRequestSource},
+		{filename: "permanent_failure.go", source: permanentFailureSource},
+	}
 }
 
 func exampleSource(filename string) (string, bool) {
-	for _, script := range exampleScripts {
+	for _, script := range exampleScripts() {
 		if script.filename == filename {
 			return script.source, true
 		}

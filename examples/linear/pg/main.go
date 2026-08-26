@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/omarluq/cord/examples/linear"
@@ -10,8 +11,14 @@ import (
 	"github.com/omarluq/cord/internal/exampledb"
 )
 
+const exampleInput = 4
+
 func run(ctx context.Context) error {
-	return examplecmd.Run(ctx, exampledb.OpenPostgres, linear.Run, 4)
+	if err := examplecmd.Run(ctx, exampledb.OpenPostgres, linear.Run, exampleInput); err != nil {
+		return fmt.Errorf("run example: %w", err)
+	}
+
+	return nil
 }
 
 func main() {

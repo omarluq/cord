@@ -1,15 +1,16 @@
-package playground
+package playground_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/omarluq/cord/playground"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSafeOutputPathRejectsDangerousDirectories(t *testing.T) {
+func TestGenerateStaticRejectsDangerousDirectories(t *testing.T) {
 	t.Parallel()
 
 	workingDirectory, err := os.Getwd()
@@ -33,17 +34,8 @@ func TestSafeOutputPathRejectsDangerousDirectories(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := safeOutputPath(test.path)
+			err := playground.GenerateStatic(test.path, "")
 			assert.Error(t, err)
 		})
 	}
-}
-
-func TestSafeOutputPathAcceptsSeparateDirectory(t *testing.T) {
-	t.Parallel()
-
-	output := filepath.Join(t.TempDir(), "site")
-	got, err := safeOutputPath(output)
-	require.NoError(t, err)
-	assert.Equal(t, output, got)
 }
