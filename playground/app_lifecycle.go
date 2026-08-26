@@ -33,15 +33,7 @@ func (app *App) mount(ctx *goapp.Context) {
 				app.status = statusReady
 
 				ctx.Defer(func(ctx goapp.Context) {
-					if !app.callbackIsCurrent(generation, false) {
-						return
-					}
-
-					app.bridge.mountEditor(editorID, linearSource)
-					app.bridge.mountGraph(graphID)
-					app.mounted = true
-
-					ctx.Update()
+					app.mountBridge(&ctx, generation)
 				})
 			})
 		})
@@ -68,6 +60,23 @@ func (app *App) nextGeneration() uint64 {
 
 func (app *App) callbackIsCurrent(generation uint64, requireMounted bool) bool {
 	return app.active && app.generation == generation && (!requireMounted || app.mounted)
+}
+
+func (app *App) mountBridge(ctx *goapp.Context, generation uint64) {
+	if !app.callbackIsCurrent(generation, false) {
+		return
+	}
+
+	source, ok := exampleSource(app.selectedExample)
+	if !ok {
+		source = linearSource
+	}
+
+	app.bridge.mountEditor(editorID, source)
+	app.bridge.mountGraph(graphID)
+	app.mounted = true
+
+	ctx.Update()
 }
 
 func (app *App) cancelCompilation() {
