@@ -23,6 +23,9 @@ func TestValidateCompilerURL(t *testing.T) {
 		{name: "wrong path", value: "https://compiler.example/other", wantErr: true},
 		{name: "credentials", value: "https://user@compiler.example/compile", wantErr: true},
 		{name: "query", value: "https://compiler.example/compile?x=1", wantErr: true},
+		{name: "fragment", value: "https://compiler.example/compile#result", wantErr: true},
+		{name: "missing host", value: "https:///compile", wantErr: true},
+		{name: "malformed", value: "://compiler.example/compile", wantErr: true},
 	}
 
 	for _, test := range tests {
@@ -35,6 +38,33 @@ func TestValidateCompilerURL(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestRunRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		wantError string
+		arguments []string
+	}{
+		{name: "flag", arguments: []string{"-unknown"}, url: "", wantError: "parse flags"},
+		{
+			name:      "compiler URL",
+			arguments: nil,
+			url:       "http://compiler.example/compile",
+			wantError: "must be an HTTPS URL",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("CORD_COMPILER_URL", testCase.url)
+
+			err := run(testCase.arguments)
+
+			require.ErrorContains(t, err, testCase.wantError)
 		})
 	}
 }
