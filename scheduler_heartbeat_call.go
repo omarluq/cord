@@ -8,7 +8,7 @@ import (
 	"github.com/omarluq/cord/internal/storage"
 )
 
-func (c *Cord) acquireHeartbeatCall(ctx context.Context) bool {
+func (c *Cord) acquireHeartbeatCall(ctx context.Context) (chan struct{}, bool) {
 	c.lifecycleMu.Lock()
 	if c.heartbeatCalls == nil {
 		capacity := cap(c.slots)
@@ -24,16 +24,16 @@ func (c *Cord) acquireHeartbeatCall(ctx context.Context) bool {
 
 	select {
 	case heartbeatCalls <- struct{}{}:
-		return true
+		return heartbeatCalls, true
 	case <-ctx.Done():
-		return false
+		return nil, false
 	default:
-		return false
+		return nil, false
 	}
 }
 
-func (c *Cord) releaseHeartbeatCall() {
-	<-c.heartbeatCalls
+func releaseHeartbeatCall(heartbeatCalls chan struct{}) {
+	<-heartbeatCalls
 }
 
 func (c *Cord) heartbeatOnce(ctx context.Context, claim *storage.Claim) (heartbeatOutcome, time.Duration) {

@@ -77,7 +77,8 @@ func (c *Cord) startHeartbeatCall(ctx context.Context, claim *storage.Claim, sta
 		return
 	}
 
-	if !c.acquireHeartbeatCall(ctx) {
+	heartbeatCalls, acquired := c.acquireHeartbeatCall(ctx)
+	if !acquired {
 		if ctx.Err() == nil && !state.permitExhaustionReported {
 			state.permitExhaustionReported = true
 
@@ -93,7 +94,7 @@ func (c *Cord) startHeartbeatCall(ctx context.Context, claim *storage.Claim, sta
 	claimCopy := *claim
 
 	go func() {
-		defer c.releaseHeartbeatCall()
+		defer releaseHeartbeatCall(heartbeatCalls)
 
 		callCtx, callCancel := context.WithDeadline(ctx, deadline)
 		defer callCancel()
