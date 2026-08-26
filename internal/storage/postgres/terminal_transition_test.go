@@ -50,6 +50,36 @@ func TestSuccessfulTerminalCompletionLeavesUnfinishedNodesNonterminal(t *testing
 	assert.False(t, reason.Valid)
 }
 
+func TestFailNodeRejectsInvalidTerminalReason(t *testing.T) {
+	t.Parallel()
+
+	database := openPostgres(t, startPostgres(t))
+	require.NoError(t, postgres.Migrate(t.Context(), database))
+	store, err := postgres.New(database)
+	require.NoError(t, err)
+
+	const runID storage.RunID = "invalid-failure-reason"
+
+	plan := terminalRacePlan(runID)
+	require.NoError(t, store.CreateRun(t.Context(), &plan))
+
+	claim := claimPostgresNode(t, store, "worker", "sibling-key", "sibling-signature")
+	accepted, err := store.FailNode(
+		t.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte("failure"), storage.ReasonCanceledByRequest,
+	)
+	require.ErrorContains(t, err, `status "failed" does not allow terminal reason "canceled_by_request"`)
+	assert.False(t, accepted)
+
+	var status storage.NodeStatus
+	require.NoError(t, database.QueryRowContext(
+		t.Context(),
+		`SELECT status FROM cord_nodes WHERE run_id = $1 AND node_id = $2`,
+		claim.RunID,
+		claim.NodeID,
+	).Scan(&status))
+	assert.Equal(t, storage.NodeRunning, status)
+}
+
 func TestTerminalTransitionsSerializeOnRun(t *testing.T) {
 	t.Parallel()
 
