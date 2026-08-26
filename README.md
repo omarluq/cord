@@ -141,16 +141,65 @@ if err := flow.Cancel(ctx, runID); err != nil &&
 compatibility check. It is idempotent for an already canceled run. Missing IDs
 return an error matching `cord.ErrRunNotFound`, and cancellation that loses to
 successful or failed completion returns one matching `cord.ErrRunFinished`.
-Cancellation durably fences future Cord writes. An active attempt in the runtime
-that calls `Cancel` is signaled promptly; attempts in other runtimes observe the
-lost lease through heartbeat and are then canceled cooperatively. `Cancel` cannot
-forcibly stop arbitrary Go code, guarantee when a remote attempt observes
-cancellation, or undo external side effects already in progress.
+If the cancellation response is ambiguous, Cord rereads durable state before
+returning a definitive result; unresolved errors remain safe to retry with the
+same run ID. Cancellation durably fences future Cord writes. An active attempt
+in the runtime that calls `Cancel` is signaled promptly; attempts in other
+runtimes observe the lost lease through heartbeat and are then canceled
+cooperatively. `Cancel` cannot forcibly stop arbitrary Go code, guarantee when
+an external attempt observes cancellation, or undo external side effects
+already in progress.
 
 These sentinel outcomes describe durable state, not authorization: for example,
 `ErrRunNotFound` can reveal whether an ID exists. A `RunID` is not an
 authorization credential. Applications must authenticate callers and enforce
 tenant ownership before passing an untrusted run ID to `Get` or `Cancel`.
+
+## Inspect a run
+
+Use `InspectRun` to read a run's current durable state without waiting for it to
+finish. `ListRunNodes` returns its nodes in stable `NodeID` order:
+
+```go
+report, err := runtime.InspectRun(ctx, runID)
+if err != nil {
+    return err
+}
+fmt.Printf("%s: %s (%s)\n", report.ID, report.State, report.Reason)
+
+page, err := runtime.ListRunNodes(ctx, runID, cord.NodeQuery{PageSize: 50})
+if err != nil {
+    return err
+}
+for _, node := range page.Nodes {
+    fmt.Printf("%s: %s attempt %d/%d\n",
+        node.NodeID, node.State, node.Attempt, node.MaxAttempts)
+}
+```
+
+Run states are `running`, `canceling`, `completed`, `failed`, and `canceled`.
+Node states are `pending`, `ready`, `running`, `retry_wait`, `completed`,
+`failed`, and `canceled`. Terminal reports also include a reason such as
+`succeeded`, `canceled_by_request`, `failure_non_retryable`, or
+`failure_attempts_exhausted`.
+
+Reports include lifecycle timestamps and runner information for diagnostics.
+`runtime.RunnerID()` identifies the current runtime instance; it is not a
+hostname, credential, or lease token.
+
+Use `NodeQuery` to filter by state or terminal reason and to paginate large
+runs. The default page size is 50 and the maximum is 200. Pass each page's
+continuation token to the next query. Pages are read separately, so a running
+workflow may change between requests.
+
+Snapshots omit inputs, outputs, idempotency keys, and user error messages. Use
+`Workflow.Get` for the typed result or terminal error. Run IDs and continuation
+tokens do not grant access: authenticate callers and check ownership before
+exposing inspection APIs.
+
+When upgrading Cord, stop old processes before starting processes that may
+apply a database migration. Running mixed Cord versions against the same
+database is not supported.
 
 ## PostgreSQL with pgx
 
