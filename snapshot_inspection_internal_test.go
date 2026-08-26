@@ -83,34 +83,34 @@ func TestInspectRunValidationAndErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		ctx     context.Context
-		is      error
-		runtime *Cord
-		name    string
-		id      RunID
-		want    string
+		is         error
+		runtime    *Cord
+		name       string
+		id         RunID
+		want       string
+		nilContext bool
 	}{
 		{
 			name: "nil context", runtime: openSnapshotRuntime(&snapshotStore{}),
-			ctx: nil, id: snapshotRunID, want: "context is nil",
+			id: snapshotRunID, want: "context is nil", nilContext: true,
 		},
 		{
 			name: "empty run ID", runtime: openSnapshotRuntime(&snapshotStore{}),
-			ctx: t.Context(), want: "run ID is empty",
+			want: "run ID is empty",
 		},
-		{name: "nil runtime", ctx: t.Context(), id: snapshotRunID, want: "invalid runtime"},
+		{name: "nil runtime", id: snapshotRunID, want: "invalid runtime"},
 		{
 			name: "closed runtime", runtime: &Cord{store: &snapshotStore{}},
-			ctx: t.Context(), id: snapshotRunID, want: "runtime closed",
+			id: snapshotRunID, want: "runtime closed",
 		},
 		{
 			name: "not found", runtime: openSnapshotRuntime(&snapshotStore{runErr: storage.ErrRunNotFound}),
-			ctx: t.Context(), id: snapshotRunID, is: ErrRunNotFound,
+			id: snapshotRunID, is: ErrRunNotFound,
 		},
 		{
 			name:    "incompatible storage",
 			runtime: openSnapshotRuntime(&snapshotStore{runErr: storage.ErrRunIncompatible}),
-			ctx:     t.Context(), id: snapshotRunID, is: ErrRunIncompatible,
+			id:      snapshotRunID, is: ErrRunIncompatible,
 		},
 	}
 
@@ -118,7 +118,12 @@ func TestInspectRunValidationAndErrors(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := testCase.runtime.InspectRun(testCase.ctx, testCase.id)
+			ctx := t.Context()
+			if testCase.nilContext {
+				ctx = nil
+			}
+
+			_, err := testCase.runtime.InspectRun(ctx, testCase.id)
 			if testCase.want != "" {
 				require.ErrorContains(t, err, testCase.want)
 			}
