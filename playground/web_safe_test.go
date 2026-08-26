@@ -19,15 +19,18 @@ func TestGenerateStaticRejectsDangerousDirectories(t *testing.T) {
 	parent := filepath.Dir(workingDirectory)
 	root := filepath.VolumeName(workingDirectory) + string(filepath.Separator)
 
+	const containsWorkingDirectory = "contains the working directory"
+
 	tests := []struct {
-		name string
-		path string
+		name    string
+		path    string
+		wantErr string
 	}{
-		{name: "empty", path: ""},
-		{name: "current directory", path: "."},
-		{name: "working directory", path: workingDirectory},
-		{name: "parent", path: parent},
-		{name: "root", path: root},
+		{name: "empty", path: "", wantErr: "static output path is empty"},
+		{name: "current directory", path: ".", wantErr: containsWorkingDirectory},
+		{name: "working directory", path: workingDirectory, wantErr: containsWorkingDirectory},
+		{name: "parent", path: parent, wantErr: containsWorkingDirectory},
+		{name: "root", path: root, wantErr: "is a filesystem root"},
 	}
 
 	for _, test := range tests {
@@ -35,7 +38,8 @@ func TestGenerateStaticRejectsDangerousDirectories(t *testing.T) {
 			t.Parallel()
 
 			err := playground.GenerateStatic(test.path, "")
-			assert.Error(t, err)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, test.wantErr)
 		})
 	}
 }
