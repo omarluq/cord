@@ -149,6 +149,14 @@ func transitionNode(
 		params.reason = storage.ReasonSucceeded
 	}
 
+	if !nodeStatus.AllowsReason(params.reason) {
+		return false, fmt.Errorf(
+			"transition node state: status %q does not allow terminal reason %q",
+			nodeStatus,
+			params.reason,
+		)
+	}
+
 	result, err := transaction.ExecContext(
 		ctx, query, nodeStatus, output, failure, params.runID, params.nodeID,
 		params.lease.Owner, params.lease.Generation, params.transitionedAt, params.reason,
