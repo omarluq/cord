@@ -113,10 +113,11 @@ func (app *App) renderExecutionButton() goapp.UI {
 }
 
 func (app *App) renderFileTree() goapp.UI {
-	files := make([]goapp.UI, 0, len(exampleScripts))
+	scripts := exampleScripts()
+	files := make([]goapp.UI, 0, len(scripts))
 	disabled := !app.mounted || app.status == statusCompiling || app.status == statusRunning
 
-	for _, script := range exampleScripts {
+	for _, script := range scripts {
 		classes := []string{
 			"flex", "w-full", classItemsCenter, "gap-2", "px-3", "py-1.5", "text-left", "font-mono",
 			classTextExtraSmall, "text-nord-5", "hover:not-disabled:bg-nord-2",

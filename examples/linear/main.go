@@ -10,8 +10,10 @@ import (
 	"github.com/omarluq/cord"
 )
 
+const doubleFactor = 2
+
 func increment(_ context.Context, value int) (int, error) { return value + 1, nil }
-func double(_ context.Context, value int) (int, error)    { return value * 2, nil }
+func double(_ context.Context, value int) (int, error)    { return value * doubleFactor, nil }
 func formatResult(_ context.Context, value int) (string, error) {
 	return fmt.Sprintf("result: %d", value), nil
 }
@@ -29,5 +31,10 @@ func Run(ctx context.Context, database *sql.DB, input int) (_ string, err error)
 
 	flow := runtime.From("format-result", increment).Then(double).Then(formatResult)
 
-	return flow.Run(ctx, input)
+	result, err := flow.Run(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("run workflow: %w", err)
+	}
+
+	return result, nil
 }

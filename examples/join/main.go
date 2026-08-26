@@ -10,9 +10,14 @@ import (
 	"github.com/omarluq/cord"
 )
 
+const (
+	doubleFactor = 2
+	addend       = 3
+)
+
 func loadReport(_ context.Context, value int) (int, error) { return value, nil }
-func double(_ context.Context, value int) (int, error)     { return value * 2, nil }
-func addThree(_ context.Context, value int) (int, error)   { return value + 3, nil }
+func double(_ context.Context, value int) (int, error)     { return value * doubleFactor, nil }
+func addThree(_ context.Context, value int) (int, error)   { return value + addend, nil }
 func sum(_ context.Context, left, right int) (int, error)  { return left + right, nil }
 
 // Run executes the join example using a caller-owned database.
@@ -29,5 +34,10 @@ func Run(ctx context.Context, database *sql.DB, input int) (_ int, err error) {
 	root := runtime.From("report-summary", loadReport)
 	flow := cord.Join(root.Then(double), root.Then(addThree)).Then(sum)
 
-	return flow.Run(ctx, input)
+	result, err := flow.Run(ctx, input)
+	if err != nil {
+		return 0, fmt.Errorf("run workflow: %w", err)
+	}
+
+	return result, nil
 }

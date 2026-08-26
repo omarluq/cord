@@ -94,38 +94,18 @@ linters:
 
   exclusions:
     rules:
-      # Go 1.27 generic methods, the locked fluent API, and typed JSON decoding
-      # return concrete generic values; compile-plan tests are white-box.
-      - linters: [ireturn]
-        path: '(workflow|graph)\.go$|internal/serialization/json\.go$'
-      # Executable examples intentionally print their result and use small illustrative constants.
-      - linters: [forbidigo, mnd, wrapcheck]
-        path: "examples/"
-      # Embedded scripts and their immutable catalog must be package variables.
-      # app.go also holds configuredCompilerURL at package scope for -ldflags -X;
-      # evaluate any other globals carefully because this exclusion covers both files.
+      # go-app requires callbacks to receive its value Context type.
+      - linters: [gocritic]
+        path: "playground/app\\.go"
+        text: "hugeParam: (ctx|_) is heavy"
+      # configuredCompilerURL is an ldflags injection point and embedded assets must be variables.
       - linters: [gochecknoglobals]
         path: "playground/(app|examples)\\.go"
-      # go-app requires interface-returning render methods and value callback contexts.
-      - linters: [ireturn]
-        path: "playground/app_view.go"
-      # go-app's callback API requires its value Context type.
-      - linters: [gocritic]
-        path: "playground/(app|compiler_client)\\.go"
-        text: "hugeParam: (ctx|_) is heavy"
-      # These white-box tests exercise intentionally unexported package mechanics.
-      - linters: [testpackage]
-        path: "playground/(app|examples|web_safe)_test\\.go"
-      # Remote libSQL exposes one database per container; this semaphore keeps container-backed tests parallel-safe.
+        text: "(configuredCompilerURL|linearSource|branchJoinSource|retrySource|largePipelineSource|httpRequestSource|permanentFailureSource) is a global variable"
+      # Remote libSQL exposes one database per container; this exact semaphore serializes those tests.
       - linters: [gochecknoglobals]
         path: "internal/storage/sqlite/turso/driver_test\\.go"
-        text: "libSQLContainerSlot"
-      - linters: [all]
-        path: ".*\\.pb\\.go$"
-      - linters: [all]
-        path: ".*_generated\\.go$"
-      - linters: [lll]
-        source: "^//go:generate "
+        text: "libSQLContainerSlot is a global variable"
 
   settings:
     errcheck:
@@ -134,6 +114,15 @@ linters:
 
     govet:
       enable-all: true
+
+    ireturn:
+      allow:
+        - anon
+        - error
+        - empty
+        - stdlib
+        - generic
+        - github.com/maxence-charriere/go-app/v11/pkg/app.UI
 
     gocyclo:
       min-complexity: 10
