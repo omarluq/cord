@@ -80,33 +80,41 @@ func TestJSONCodec_RejectsDynamicInterfaceValues(t *testing.T) {
 	var typedNil *interfaceRecord
 
 	values := []struct {
-		value any
-		name  string
+		encode func() ([]byte, error)
+		name   string
 	}{
-		{name: "dynamic struct", value: interfaceRecord{Value: "dynamic"}},
-		{name: "integer", value: int64(9)},
-		{name: "typed nil pointer", value: typedNil},
+		{name: "dynamic struct", encode: func() ([]byte, error) {
+			var codec serialization.JSONCodec[any]
+
+			return codec.Encode(interfaceRecord{Value: "dynamic"})
+		}},
+		{name: "integer", encode: func() ([]byte, error) {
+			var codec serialization.JSONCodec[any]
+
+			return codec.Encode(int64(9))
+		}},
+		{name: "typed nil pointer", encode: func() ([]byte, error) {
+			var codec serialization.JSONCodec[any]
+
+			return codec.Encode(typedNil)
+		}},
+		{name: "named interface codec", encode: func() ([]byte, error) {
+			var codec serialization.JSONCodec[namer]
+
+			return codec.Encode(typedNil)
+		}},
 	}
 
 	for _, test := range values {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			var codec serialization.JSONCodec[any]
-
-			payload, err := codec.Encode(test.value)
+			payload, err := test.encode()
 			require.Error(t, err)
 			assert.Nil(t, payload)
 			assert.ErrorContains(t, err, "interface types are not supported")
 		})
 	}
-
-	var codec serialization.JSONCodec[namer]
-
-	payload, err := codec.Encode(typedNil)
-	require.Error(t, err)
-	assert.Nil(t, payload)
-	assert.ErrorContains(t, err, "interface types are not supported")
 }
 
 func jsonCodecConstructionError[T any]() error {

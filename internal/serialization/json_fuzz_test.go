@@ -2,12 +2,13 @@ package serialization_test
 
 import (
 	"testing"
+	"unicode/utf8"
 
 	"github.com/omarluq/cord/internal/serialization"
 )
 
 func FuzzJSONCodec_StringRoundTrip(f *testing.F) {
-	for _, seed := range []string{"", "cord", "workflow-世界", "\x00\n\t"} {
+	for _, seed := range []string{"", "cord", "workflow-世界", "\x00\n\t", "\xff\xfe"} {
 		f.Add(seed)
 	}
 
@@ -27,8 +28,15 @@ func FuzzJSONCodec_StringRoundTrip(f *testing.F) {
 			t.Fatalf("decode encoded payload %q: %v", payload, decodeErr)
 		}
 
-		if output != input {
-			t.Fatalf("round trip = %q, want %q", output, input)
+		expected := input
+		if !utf8.ValidString(input) {
+			// encoding/json replaces each invalid UTF-8 byte with Unicode's
+			// replacement rune when marshaling a string.
+			expected = string([]rune(input))
+		}
+
+		if output != expected {
+			t.Fatalf("round trip = %q, want %q", output, expected)
 		}
 	})
 }
