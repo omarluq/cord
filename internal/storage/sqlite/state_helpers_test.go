@@ -119,6 +119,7 @@ func openStoreDatabase(t *testing.T, path string) *sql.DB {
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 	database, err := sql.Open("sqlite", dsn)
 	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, database.Close()) })
 
 	return database
 }

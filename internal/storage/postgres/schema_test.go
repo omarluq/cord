@@ -20,7 +20,13 @@ func TestMigratePreflightsNewerSchema(t *testing.T) {
 		version_id BIGINT NOT NULL,
 		is_applied BOOLEAN NOT NULL,
 		tstamp TIMESTAMP NOT NULL DEFAULT now()
-	); INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (5, true)`)
+	)`)
+	require.NoError(t, err)
+
+	_, err = database.ExecContext(
+		t.Context(),
+		`INSERT INTO cord_schema_migrations(version_id, is_applied) VALUES (5, true)`,
+	)
 	require.NoError(t, err)
 
 	require.ErrorIs(t, postgres.Verify(t.Context(), database), storage.ErrSchemaNewer)

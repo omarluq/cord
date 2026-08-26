@@ -18,6 +18,7 @@ type staleLeaseOperation struct {
 	name string
 }
 
+// TestStaleLeasesRejectTransitionsWithoutMutation verifies PostgreSQL lease fencing.
 func TestStaleLeasesRejectTransitionsWithoutMutation(t *testing.T) {
 	t.Parallel()
 

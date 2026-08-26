@@ -109,18 +109,34 @@ func mustFindNode(
 ) storage.NodeReport {
 	t.Helper()
 
-	page, err := backend.ListRunNodes(t.Context(), runID, storage.NodeQuery{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	var token string
 
-	for index := range page.Nodes {
-		if page.Nodes[index].NodeID == nodeID {
-			return page.Nodes[index]
+	for {
+		page, err := backend.ListRunNodes(t.Context(), runID, storage.NodeQuery{
+			State: nil, Reason: nil, ContinuationToken: token, PageSize: 0,
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
+
+		for index := range page.Nodes {
+			if page.Nodes[index].NodeID == nodeID {
+				return page.Nodes[index]
+			}
+		}
+
+		if page.ContinuationToken == "" {
+			break
+		}
+
+		if page.ContinuationToken == token {
+			t.Fatalf("continuation token did not advance from %q", token)
+		}
+
+		token = page.ContinuationToken
 	}
 
-	t.Fatalf("node %q missing from page %#v", nodeID, page)
+	t.Fatalf("node %q missing from run %q", nodeID, runID)
 
 	return storage.NodeReport{}
 }

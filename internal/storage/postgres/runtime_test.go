@@ -29,6 +29,7 @@ func postgresRetryUntilFileExists(_ context.Context, path string) (string, error
 	return path, nil
 }
 
+// TestCordNewPublicWorkflowsAndCallerOwnership exercises Cord's public PostgreSQL workflow API.
 func TestCordNewPublicWorkflowsAndCallerOwnership(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +56,7 @@ type wrappedPGXConnector struct {
 	connector driver.Connector
 }
 
+// Connect delegates to the wrapped pgx connector.
 func (connector wrappedPGXConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	connection, err := connector.connector.Connect(ctx)
 	if err != nil {
@@ -64,6 +66,7 @@ func (connector wrappedPGXConnector) Connect(ctx context.Context) (driver.Conn, 
 	return connection, nil
 }
 
+// Driver returns a wrapped pgx driver.
 func (connector wrappedPGXConnector) Driver() driver.Driver {
 	return wrappedPGXDriver{driver: connector.connector.Driver()}
 }
@@ -72,6 +75,7 @@ type wrappedPGXDriver struct {
 	driver driver.Driver
 }
 
+// Open delegates to the wrapped pgx driver.
 func (wrapped wrappedPGXDriver) Open(name string) (driver.Conn, error) {
 	connection, err := wrapped.driver.Open(name)
 	if err != nil {
@@ -81,6 +85,7 @@ func (wrapped wrappedPGXDriver) Open(name string) (driver.Conn, error) {
 	return connection, nil
 }
 
+// TestCordNewDetectsPostgresThroughWrappedPGXConnector verifies wrapped pgx driver detection.
 func TestCordNewDetectsPostgresThroughWrappedPGXConnector(t *testing.T) {
 	t.Parallel()
 
