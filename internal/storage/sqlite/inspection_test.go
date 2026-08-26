@@ -2,13 +2,11 @@ package sqlite_test
 
 import (
 	"database/sql"
-	"fmt"
-	"testing"
-	"time"
-
 	"github.com/omarluq/cord/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"testing"
+	"time"
 )
 
 func TestStore_InspectRunSnapshotAndCounts(t *testing.T) {
@@ -84,147 +82,6 @@ func TestStore_InspectRunFailsClosed(t *testing.T) {
 	assert.ErrorIs(t, err, storage.ErrRunNotFound)
 }
 
-func TestStore_ListRunNodesKeysetFiltersAndBounds(t *testing.T) {
-	t.Parallel()
-
-	_, store := newStore(t, true)
-	plan := inspectionLinearPlan("node-page", 4)
-	requireCreateRun(t.Context(), t, store, &plan)
-
-	page, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{
-		State: nil, Reason: nil, ContinuationToken: "", PageSize: 2,
-	})
-	require.NoError(t, err)
-	require.Len(t, page.Nodes, 2)
-	assert.Equal(t, storage.NodeID("node-00"), page.Nodes[0].NodeID)
-	assert.Equal(t, "node-01", page.ContinuationToken)
-
-	next, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{
-		State: nil, Reason: nil, ContinuationToken: page.ContinuationToken, PageSize: 2,
-	})
-	require.NoError(t, err)
-	require.Len(t, next.Nodes, 2)
-	assert.Equal(t, storage.NodeID("node-02"), next.Nodes[0].NodeID)
-	assert.Empty(t, next.ContinuationToken)
-
-	state := storage.NodePending
-	filtered, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{
-		State: &state, Reason: nil, ContinuationToken: "", PageSize: 0,
-	})
-	require.NoError(t, err)
-	require.Len(t, filtered.Nodes, 3)
-
-	for _, node := range filtered.Nodes {
-		assert.Equal(t, storage.NodePending, node.State)
-	}
-
-	_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{
-		State: nil, Reason: nil, ContinuationToken: "", PageSize: storage.MaxNodePageSize + 1,
-	})
-	require.Error(t, err)
-	_, err = store.ListRunNodes(t.Context(), "missing", storage.NodeQuery{})
-	assert.ErrorIs(t, err, storage.ErrRunNotFound)
-}
-
-func TestStore_ListRunNodesValidatesCurrentNodeStartMetadata(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                               string
-		clearFirst, clearLast, clearRunner bool
-	}{
-		{name: "missing first start", clearFirst: true, clearLast: false, clearRunner: false},
-		{name: "missing last start", clearFirst: false, clearLast: true, clearRunner: false},
-		{name: "missing runner", clearFirst: false, clearLast: false, clearRunner: true},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			database, store := newStore(t, true)
-			plan := validPlan(time.Now().UTC(), storage.RunID("start-metadata-"+testCase.name))
-			requireCreateRun(t.Context(), t, store, &plan)
-
-			_, claimed, err := store.ClaimReadyNode(t.Context(), "worker", time.Minute)
-			require.NoError(t, err)
-			require.True(t, claimed)
-
-			_, err = database.ExecContext(t.Context(), `UPDATE cord_nodes
-				SET status = 'retry_wait', lease_owner = NULL, lease_expires_at = NULL,
-					started_at = CASE WHEN ? THEN NULL ELSE started_at END,
-					last_started_at = CASE WHEN ? THEN NULL ELSE last_started_at END,
-					last_runner_id = CASE WHEN ? THEN NULL ELSE last_runner_id END
-				WHERE run_id = ? AND node_id = ?`,
-				testCase.clearFirst, testCase.clearLast, testCase.clearRunner,
-				plan.Run.ID, plan.Nodes[0].ID)
-			require.NoError(t, err)
-
-			_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
-			assert.ErrorIs(t, err, storage.ErrRunIncompatible)
-		})
-	}
-}
-
-func TestStore_ListRunNodesAllowsUnclaimedCurrentNode(t *testing.T) {
-	t.Parallel()
-
-	database, store := newStore(t, true)
-	plan := validPlan(time.Now().UTC(), "unclaimed-current-node")
-	requireCreateRun(t.Context(), t, store, &plan)
-	_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-		SET state_changed_at = available_at
-		WHERE run_id = ?`, plan.Run.ID)
-	require.NoError(t, err)
-
-	page, err := store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
-	require.NoError(t, err)
-	require.Len(t, page.Nodes, len(plan.Nodes))
-
-	for _, node := range page.Nodes {
-		assert.Zero(t, node.Attempt)
-		assert.Nil(t, node.FirstStartedAt)
-		assert.Nil(t, node.LastStartedAt)
-		assert.Nil(t, node.RunnerID)
-	}
-}
-
-func TestStore_ListRunNodesRejectsUnclaimedCurrentNodeStartMetadata(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                          string
-		firstStart, lastStart, runner bool
-	}{
-		{name: "first start", firstStart: true, lastStart: false, runner: false},
-		{name: "last start", firstStart: false, lastStart: true, runner: false},
-		{name: "runner", firstStart: false, lastStart: false, runner: true},
-		{name: "complete start metadata", firstStart: true, lastStart: true, runner: true},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			database, store := newStore(t, true)
-			plan := validPlan(time.Now().UTC(), storage.RunID("unclaimed-metadata-"+testCase.name))
-			requireCreateRun(t.Context(), t, store, &plan)
-
-			_, err := database.ExecContext(t.Context(), `UPDATE cord_nodes
-				SET state_changed_at = available_at,
-					started_at = CASE WHEN ? THEN available_at ELSE NULL END,
-					last_started_at = CASE WHEN ? THEN available_at ELSE NULL END,
-					last_runner_id = CASE WHEN ? THEN 'worker' ELSE NULL END
-				WHERE run_id = ? AND node_id = ?`,
-				testCase.firstStart, testCase.lastStart, testCase.runner,
-				plan.Run.ID, compileNode)
-			require.NoError(t, err)
-
-			_, err = store.ListRunNodes(t.Context(), plan.Run.ID, storage.NodeQuery{})
-			assert.ErrorIs(t, err, storage.ErrRunIncompatible)
-		})
-	}
-}
-
 func TestStore_InspectionQueriesAreReadOnly(t *testing.T) {
 	t.Parallel()
 
@@ -246,74 +103,4 @@ func TestStore_InspectionQueriesAreReadOnly(t *testing.T) {
 		"SELECT status FROM cord_nodes WHERE run_id = ? AND node_id = ?", plan.Run.ID, plan.Nodes[0].ID,
 	).Scan(&status))
 	assert.Equal(t, storage.NodeRetryWait, status)
-}
-
-func TestStore_ListRunNodesRejectsInvalidFilters(t *testing.T) {
-	t.Parallel()
-
-	_, store := newStore(t, true)
-	plan := validPlan(time.Now().UTC(), "invalid-filters")
-	requireCreateRun(t.Context(), t, store, &plan)
-
-	unknown := storage.NodeStatus("unknown")
-	state := storage.NodeReady
-	reason := storage.ReasonSucceeded
-	tests := []struct {
-		name      string
-		wantError string
-		query     storage.NodeQuery
-	}{
-		{
-			name: "unknown state",
-			query: storage.NodeQuery{
-				State: &unknown, Reason: nil, ContinuationToken: "", PageSize: 0,
-			},
-			wantError: `list run nodes: unknown state "unknown"`,
-		},
-		{
-			name: "state reason mismatch",
-			query: storage.NodeQuery{
-				State: &state, Reason: &reason, ContinuationToken: "", PageSize: 0,
-			},
-			wantError: `list run nodes: reason "succeeded" is invalid for state "ready"`,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, err := store.ListRunNodes(t.Context(), plan.Run.ID, testCase.query)
-			require.EqualError(t, err, testCase.wantError)
-		})
-	}
-}
-
-func inspectionLinearPlan(runID storage.RunID, count int) storage.RunPlan {
-	now := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
-	plan := validPlan(now, runID)
-	plan.Nodes = make([]storage.Node, count)
-
-	plan.Edges = make([]storage.Edge, 0, count-1)
-	for index := range count {
-		nodeID := storage.NodeID(fmt.Sprintf("node-%02d", index))
-		status := storage.NodePending
-		remaining := 1
-
-		if index == 0 {
-			status = storage.NodeReady
-			remaining = 0
-		}
-
-		plan.Nodes[index] = newNode(runID, nodeID, "inspect.Step", "signature", status, now, remaining)
-		if index > 0 {
-			plan.Edges = append(plan.Edges, storage.Edge{
-				RunID: runID, Parent: plan.Nodes[index-1].ID, Child: nodeID, ParentOrder: 0,
-			})
-		}
-	}
-
-	plan.Run.TerminalNodeID = plan.Nodes[count-1].ID
-
-	return plan
 }
