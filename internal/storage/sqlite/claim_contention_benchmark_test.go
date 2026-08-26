@@ -11,6 +11,7 @@ import (
 	"testing"
 )
 
+// BenchmarkStore_ConcurrentClaims measures claim throughput under concurrent contention.
 func BenchmarkStore_ConcurrentClaims(b *testing.B) {
 	for _, claimants := range []int{1, 4, 8} {
 		b.Run(fmt.Sprintf("claimants=%d", claimants), func(b *testing.B) {

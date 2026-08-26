@@ -73,6 +73,7 @@ func postgresHarness(dsn string) conformance.Harness {
 	}
 }
 
+// TestPostgresConformance runs the shared storage contract against PostgreSQL.
 func TestPostgresConformance(t *testing.T) {
 	t.Parallel()
 
