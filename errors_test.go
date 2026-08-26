@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/omarluq/cord"
 	"github.com/stretchr/testify/require"
@@ -34,14 +35,19 @@ func TestWorkflow_DependenciesCompleteBeforeNodeStarts(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, rows.Close()) }()
 
-	var parentCompletions []string
+	var parentCompletions []time.Time
 
 	for rows.Next() {
-		var parentCompleted, joinedStart string
-		require.NoError(t, rows.Scan(&parentCompleted, &joinedStart))
-		require.NotEmpty(t, parentCompleted)
-		require.NotEmpty(t, joinedStart)
-		require.LessOrEqual(t, parentCompleted, joinedStart)
+		var parentCompletedText, joinedStartText string
+		require.NoError(t, rows.Scan(&parentCompletedText, &joinedStartText))
+		require.NotEmpty(t, parentCompletedText)
+		require.NotEmpty(t, joinedStartText)
+
+		parentCompleted, err := time.Parse(time.RFC3339Nano, parentCompletedText)
+		require.NoError(t, err)
+		joinedStart, err := time.Parse(time.RFC3339Nano, joinedStartText)
+		require.NoError(t, err)
+		require.False(t, parentCompleted.After(joinedStart))
 		parentCompletions = append(parentCompletions, parentCompleted)
 	}
 
