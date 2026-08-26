@@ -17,8 +17,25 @@ func TestRun(t *testing.T) {
 
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
 
-	result, err := linear.Run(context.Background(), database, 4)
+	tests := []struct {
+		name  string
+		want  string
+		input int
+	}{
+		{name: "positive", input: 4, want: "result: 10"},
+		{name: "zero", input: 0, want: "result: 2"},
+		{name: "negative", input: -2, want: "result: -2"},
+	}
 
-	require.NoError(t, err)
-	assert.Equal(t, "result: 10", result)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := linear.Run(context.Background(), database, testCase.input)
+
+			require.NoError(t, err)
+			assert.Equal(t, testCase.want, result)
+			require.NoError(t, database.PingContext(t.Context()), "Run must not close caller-owned database")
+		})
+	}
 }
