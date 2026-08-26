@@ -7,6 +7,7 @@ import (
 	"github.com/omarluq/cord/internal/serialization"
 )
 
+// FuzzJSONCodec_StringRoundTrip verifies that strings survive JSON codec round trips.
 func FuzzJSONCodec_StringRoundTrip(f *testing.F) {
 	for _, seed := range []string{"", "cord", "workflow-世界", "\x00\n\t", "\xff\xfe"} {
 		f.Add(seed)

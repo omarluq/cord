@@ -50,6 +50,7 @@ func TestSuccessfulTerminalCompletionLeavesUnfinishedNodesNonterminal(t *testing
 	assert.False(t, reason.Valid)
 }
 
+// TestFailNodeRejectsInvalidTerminalReason verifies that failed nodes reject incompatible terminal reasons.
 func TestFailNodeRejectsInvalidTerminalReason(t *testing.T) {
 	t.Parallel()
 

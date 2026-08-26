@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestWorkflow_LogicalIDsRemainCompatible verifies stable logical IDs and definition hashes.
 func TestWorkflow_LogicalIDsRemainCompatible(t *testing.T) {
 	t.Parallel()
 
@@ -80,6 +81,7 @@ func TestWorkflow_LogicalIDsRemainCompatible(t *testing.T) {
 	assert.Equal(t, "844aa38288a392d43d41a13c5af217291ca9541a93c38d9e0b4a0d483e9b9660", definitionHash)
 }
 
+// TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable verifies persisted-plan compatibility.
 func TestWorkflow_PersistedPlanFromBeforeLogicalIDRefactorRemainsExecutable(t *testing.T) {
 	t.Parallel()
 

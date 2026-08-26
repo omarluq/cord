@@ -88,6 +88,8 @@ func TestWorkflow_RunWithCanceledContext(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+// TestWorkflow_RunContextCancellationStopsWaitingWithoutCancelingDurableRun verifies that durable execution
+// outlives its caller.
 func TestWorkflow_RunContextCancellationStopsWaitingWithoutCancelingDurableRun(t *testing.T) {
 	t.Parallel()
 
