@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/omarluq/cord/internal/storage"
@@ -44,4 +45,24 @@ func nullableTimePointer(value *time.Time) any {
 	}
 
 	return *value
+}
+
+func utcTime(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+
+	instant := value.Time.UTC()
+
+	return &instant
+}
+
+func runnerID(value sql.NullString) *storage.RunnerID {
+	if !value.Valid || value.String == "" {
+		return nil
+	}
+
+	id := storage.RunnerID(value.String)
+
+	return &id
 }

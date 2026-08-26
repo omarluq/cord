@@ -28,6 +28,11 @@ func validateRunReport(
 	return validateRunTimestamps(report, terminal)
 }
 
+func sumNodeCounts(counts storage.NodeStateCounts) int {
+	return counts.Pending + counts.Ready + counts.Running + counts.RetryWait +
+		counts.Completed + counts.Failed + counts.Canceled
+}
+
 func validateRunMetadata(report *storage.RunReport, totalNodes int) error {
 	if report.ID == "" || report.WorkflowName == "" || report.SubmittedAt.IsZero() || report.StateChangedAt.IsZero() {
 		return incompatible("missing required run metadata")
