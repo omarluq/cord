@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/omarluq/cord/internal/storage"
 )
@@ -128,17 +127,5 @@ func currentNodeStartIncomplete(report *storage.NodeReport) bool {
 }
 
 func validateNodeReason(report *storage.NodeReport, reason sql.NullString, terminal bool) error {
-	if reason.Valid {
-		report.Reason = storage.TerminalReason(reason.String)
-	}
-
-	if terminal != reason.Valid {
-		return errors.New("terminal state and reason disagree")
-	}
-
-	if !report.State.AllowsReason(report.Reason) || (report.Reason != "" && !report.Reason.IsKnown()) {
-		return fmt.Errorf("reason %q is invalid for state %q", report.Reason, report.State)
-	}
-
-	return nil
+	return validateReason(&report.Reason, reason, terminal, string(report.State), report.State.AllowsReason)
 }
