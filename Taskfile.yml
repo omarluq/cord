@@ -230,6 +230,19 @@ tasks:
       - go run ./examples/linear/pg
       - go run ./examples/join/pg
 
+  benchmark:
+    desc: Record focused SQLite benchmark evidence without enforcing thresholds
+    cmds:
+      - go test -run='^$' -bench='^(BenchmarkCompletionNotification|BenchmarkScheduler_Throughput|BenchmarkSQLiteCancellation)' -benchmem -count=5 . ./internal/storage/sqlite
+
+  benchmark-postgres:
+    desc: Record focused PostgreSQL cancellation benchmark evidence
+    preconditions:
+      - sh: test -n "${CORD_POSTGRES_DSN:-}"
+        msg: CORD_POSTGRES_DSN is required
+    cmds:
+      - go test -run='^$' -bench='^BenchmarkPostgresCancellation' -benchmem -count=5 ./internal/storage/postgres
+
   playground-test-coverage:
     desc: Run playground tests and write a separate coverage profile
     cmds:
