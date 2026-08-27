@@ -67,6 +67,70 @@ func requireNodeSnapshotUnchanged(
 	}
 }
 
+type durableRunSnapshot struct {
+	nodes      []storage.NodeReport
+	nodeStates map[storage.NodeID]NodeState
+	result     storage.RunResult
+	report     storage.RunReport
+}
+
+func mustDurableRunSnapshot(
+	t *testing.T,
+	harness Harness,
+	opened openedStore,
+	runID storage.RunID,
+) durableRunSnapshot {
+	t.Helper()
+
+	result, err := opened.backend.GetRunResult(t.Context(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := harness.LoadNodeStates(t.Context(), opened.database, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return durableRunSnapshot{
+		result:     result,
+		report:     mustInspectRun(t, opened.backend, runID),
+		nodes:      mustListRunNodes(t, opened.backend, runID),
+		nodeStates: states,
+	}
+}
+
+func mustListRunNodes(t *testing.T, backend storage.Backend, runID storage.RunID) []storage.NodeReport {
+	t.Helper()
+
+	page, err := backend.ListRunNodes(t.Context(), runID, storage.NodeQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if page.ContinuationToken != "" {
+		t.Fatalf("unexpected continuation token for durable snapshot: %q", page.ContinuationToken)
+	}
+
+	return page.Nodes
+}
+
+func requireDurableRunSnapshotUnchanged(
+	t *testing.T,
+	harness Harness,
+	opened openedStore,
+	runID storage.RunID,
+	before *durableRunSnapshot,
+	operation string,
+) {
+	t.Helper()
+
+	after := mustDurableRunSnapshot(t, harness, opened, runID)
+	if !reflect.DeepEqual(*before, after) {
+		t.Fatalf("%s mutated durable run state:\nbefore=%#v\nafter=%#v", operation, *before, after)
+	}
+}
+
 func assertCanceledNode(t *testing.T, backend storage.Backend, runID storage.RunID) {
 	t.Helper()
 
