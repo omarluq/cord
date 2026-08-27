@@ -64,5 +64,86 @@ jobs:
         with:
           version: 3.53.1
 
+      - name: Record PostgreSQL version
+        run: |
+          mkdir -p evidence
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'requested_image=%s\n' '${{ matrix.postgres.image }}'
+            printf 'server_version='
+            docker exec "${{ job.services.postgres.id }}" postgres --version
+            go version
+          } | tee "evidence/postgresql-${{ matrix.postgres.major }}-version.txt"
+
       - name: Run PostgreSQL compatibility tests
-        run: task test-postgres
+        run: |
+          set -o pipefail
+          task test-postgres 2>&1 | tee "evidence/postgresql-${{ matrix.postgres.major }}-race-shuffle.txt"
+
+      - name: Record PostgreSQL cancellation benchmarks
+        run: |
+          set -o pipefail
+          task benchmark-postgres 2>&1 | tee "evidence/postgresql-${{ matrix.postgres.major }}-benchmarks.txt"
+
+      - name: Upload PostgreSQL evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: postgresql-compatibility-${{ matrix.postgres.major }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  performance:
+    name: Benchmark evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.0'
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.53.1
+
+      - name: Record benchmarks
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          task benchmark 2>&1 | tee evidence/benchmarks.txt
+
+      - name: Record evidence metadata
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p evidence
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            go version
+          } > evidence/metadata.txt
+
+      - name: Upload benchmark evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cancellation-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
