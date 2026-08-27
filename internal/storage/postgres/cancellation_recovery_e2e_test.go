@@ -51,6 +51,7 @@ type postCommitAcknowledgementLossConnector struct {
 	fault     *postCommitAcknowledgementLoss
 }
 
+// Connect opens a PostgreSQL connection with acknowledgement-loss injection.
 func (connector postCommitAcknowledgementLossConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	connection, err := connector.connector.Connect(ctx)
 	if err != nil {
@@ -60,6 +61,7 @@ func (connector postCommitAcknowledgementLossConnector) Connect(ctx context.Cont
 	return &postCommitAcknowledgementLossConn{Conn: connection, fault: connector.fault}, nil
 }
 
+// Driver returns the connector's underlying PostgreSQL driver.
 func (connector postCommitAcknowledgementLossConnector) Driver() driver.Driver {
 	return connector.connector.Driver()
 }
@@ -69,6 +71,7 @@ type postCommitAcknowledgementLossConn struct {
 	fault *postCommitAcknowledgementLoss
 }
 
+// BeginTx opens a transaction with acknowledgement-loss injection.
 func (connection *postCommitAcknowledgementLossConn) BeginTx(
 	ctx context.Context,
 	options driver.TxOptions,
@@ -78,12 +81,20 @@ func (connection *postCommitAcknowledgementLossConn) BeginTx(
 		return nil, errors.New("PostgreSQL acknowledgement-loss connection does not implement BeginTx")
 	}
 
-	transaction, err := beginner.BeginTx(ctx, options)
+	transaction, err := beginPostCommitAcknowledgementLossTx(beginner.BeginTx(ctx, options))
+	if err != nil {
+		return nil, err
+	}
+
+	return &postCommitAcknowledgementLossTx{Tx: transaction, fault: connection.fault}, nil
+}
+
+func beginPostCommitAcknowledgementLossTx(transaction driver.Tx, err error) (driver.Tx, error) {
 	if err != nil {
 		return nil, fmt.Errorf("begin PostgreSQL acknowledgement-loss transaction: %w", err)
 	}
 
-	return &postCommitAcknowledgementLossTx{Tx: transaction, fault: connection.fault}, nil
+	return transaction, nil
 }
 
 type postCommitAcknowledgementLossTx struct {
@@ -91,6 +102,7 @@ type postCommitAcknowledgementLossTx struct {
 	fault *postCommitAcknowledgementLoss
 }
 
+// Commit injects a configured acknowledgement loss after a successful commit.
 func (transaction *postCommitAcknowledgementLossTx) Commit() error {
 	if err := transaction.Tx.Commit(); err != nil {
 		return fmt.Errorf("commit PostgreSQL acknowledgement-loss transaction: %w", err)
@@ -128,6 +140,8 @@ func openPostCommitAcknowledgementLossPool(
 	return database
 }
 
+// TestPostgresCancellationSurvivesAcknowledgementLossAndRestart verifies that
+// committed cancellation remains authoritative after response loss and restart.
 func TestPostgresCancellationSurvivesAcknowledgementLossAndRestart(t *testing.T) {
 	t.Parallel()
 
