@@ -265,7 +265,18 @@ func TestPublicCancelWithBlockedHeartbeatAndBoundedShutdown(t *testing.T) {
 
 	shutdownCtx, cancelShutdown := context.WithCancel(t.Context())
 	cancelShutdown()
-	require.ErrorIs(t, worker.Shutdown(shutdownCtx), context.Canceled)
+
+	shutdownResult := make(chan error, 1)
+	go func() {
+		shutdownResult <- worker.Shutdown(shutdownCtx)
+	}()
+
+	select {
+	case shutdownErr := <-shutdownResult:
+		require.ErrorIs(t, shutdownErr, context.Canceled)
+	case <-time.After(cancellationAcceptanceHangGuard):
+		t.Fatal("timed out waiting for bounded worker shutdown")
+	}
 
 	report, err := controller.InspectRun(t.Context(), runID)
 	require.NoError(t, err)
