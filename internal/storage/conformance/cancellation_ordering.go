@@ -19,6 +19,7 @@ func runDeterministicCancellationOrderings(t *testing.T, harness Harness) {
 		{name: "retry scheduling", run: runCancellationRetryOrdering},
 		{name: "retry promotion", run: runCancellationPromotionOrdering},
 		{name: "lease recovery", run: runCancellationRecoveryOrdering},
+		{name: "final attempt lease recovery", run: runCancellationFinalAttemptRecoveryOrdering},
 	}
 
 	for _, testCase := range tests {
@@ -182,4 +183,108 @@ func runCancellationRecoveryOrdering(t *testing.T, harness Harness, name string,
 	requireSingleCount(t, "recovery before cancellation", recovered, err)
 	cancelRun(t, second, plan.Run.ID)
 	assertCanceledNode(t, opened.backend, plan.Run.ID)
+}
+
+func runCancellationFinalAttemptRecoveryOrdering(
+	t *testing.T,
+	harness Harness,
+	name string,
+	cancelFirst bool,
+) {
+	t.Helper()
+
+	opened := openStore(t, harness, "cancellation-ordering-"+name)
+	plan := joinPlan(storage.RunID("conformance-cancellation-" + name))
+
+	plan.Run.MaxAttempts = 1
+	if err := opened.backend.CreateRun(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+
+	exhausted := mustClaim(t, opened.backend, workerA)
+	sibling := mustClaim(t, opened.backend, workerB)
+
+	if err := harness.ExpireLease(t.Context(), opened.database, exhausted.RunID, exhausted.NodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := harness.NewBackend(opened.database)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cancelFirst {
+		cancelRun(t, second, plan.Run.ID)
+		before := mustDurableRunSnapshot(t, harness, opened, plan.Run.ID)
+
+		recovered, recoverErr := opened.backend.RecoverExpiredLeases(t.Context())
+		if recoverErr != nil || recovered != 0 {
+			t.Fatalf("final-attempt recovery after cancellation: count=%d err=%v", recovered, recoverErr)
+		}
+
+		requireDurableRunSnapshotUnchanged(
+			t, harness, opened, plan.Run.ID, &before, "final-attempt recovery after cancellation",
+		)
+		requireCanceledJoinRun(t, opened.backend, plan.Run.ID)
+
+		return
+	}
+
+	recovered, recoverErr := opened.backend.RecoverExpiredLeases(t.Context())
+	requireSingleCount(t, "final-attempt recovery before cancellation", recovered, recoverErr)
+	before := mustDurableRunSnapshot(t, harness, opened, plan.Run.ID)
+
+	outcome, cancelErr := second.CancelRun(t.Context(), plan.Run.ID)
+	requireCancellationOutcome(t, outcome, cancelErr, storage.CancellationFinished)
+	requireDurableRunSnapshotUnchanged(
+		t, harness, opened, plan.Run.ID, &before, "cancellation after final-attempt recovery",
+	)
+	requireFailedJoinRun(t, harness, opened, exhausted, sibling)
+}
+
+func requireCanceledJoinRun(t *testing.T, backend storage.Backend, runID storage.RunID) {
+	t.Helper()
+
+	const joinNodeCount = 3
+
+	result, err := backend.GetRunResult(t.Context(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requireRunResult(t, &result, storage.RunCanceled, nil, nil)
+	report := mustInspectRun(t, backend, runID)
+	requireInspectionRun(t, &report, runID, storage.RunCanceled, storage.ReasonCanceledByRequest,
+		storage.NodeStateCounts{
+			Pending: 0, Ready: 0, Running: 0, RetryWait: 0, Completed: 0, Failed: 0, Canceled: joinNodeCount,
+		})
+}
+
+func requireFailedJoinRun(
+	t *testing.T,
+	harness Harness,
+	opened openedStore,
+	exhausted, sibling *storage.Claim,
+) {
+	t.Helper()
+
+	const canceledSiblingCount = 2
+
+	result, err := opened.backend.GetRunResult(t.Context(), exhausted.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Status != storage.RunFailed {
+		t.Fatalf("final-attempt recovery run status = %q, want %q", result.Status, storage.RunFailed)
+	}
+
+	requireLeaseExpiryFailure(t, result.Error, exhausted)
+	requireFinalAttemptNodeStates(t, harness, opened, exhausted, sibling)
+	report := mustInspectRun(t, opened.backend, exhausted.RunID)
+	requireInspectionRun(t, &report, exhausted.RunID, storage.RunFailed,
+		storage.ReasonFailureLeaseExpired, storage.NodeStateCounts{
+			Pending: 0, Ready: 0, Running: 0, RetryWait: 0, Completed: 0, Failed: 1,
+			Canceled: canceledSiblingCount,
+		})
 }
