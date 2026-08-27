@@ -28,27 +28,15 @@ type cancellationBarrier struct {
 	address string
 }
 
-func interruptibleCancellationStep(ctx context.Context, address string) (_ string, err error) {
-	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		return "", fmt.Errorf("connect cancellation callback barrier: %w", err)
-	}
-	defer func() { err = errors.Join(err, connection.Close()) }()
-
-	if _, err = connection.Write([]byte{1}); err != nil {
-		return "", fmt.Errorf("signal cancellation callback start: %w", err)
-	}
-
-	<-ctx.Done()
-
-	if _, err = connection.Write([]byte{2}); err != nil {
-		return "", errors.Join(ctx.Err(), fmt.Errorf("signal cancellation callback stop: %w", err))
-	}
-
-	return "", fmt.Errorf("cancellation callback interrupted: %w", ctx.Err())
+func interruptibleCancellationStep(ctx context.Context, address string) (string, error) {
+	return runCancellationStep(ctx, address, false)
 }
 
-func nonCooperativeCancellationStep(ctx context.Context, address string) (_ string, err error) {
+func nonCooperativeCancellationStep(ctx context.Context, address string) (string, error) {
+	return runCancellationStep(ctx, address, true)
+}
+
+func runCancellationStep(ctx context.Context, address string, awaitRelease bool) (_ string, err error) {
 	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
 		return "", fmt.Errorf("connect cancellation callback barrier: %w", err)
@@ -63,6 +51,10 @@ func nonCooperativeCancellationStep(ctx context.Context, address string) (_ stri
 
 	if _, err = connection.Write([]byte{2}); err != nil {
 		return "", errors.Join(ctx.Err(), fmt.Errorf("signal cancellation callback stop: %w", err))
+	}
+
+	if !awaitRelease {
+		return "", fmt.Errorf("cancellation callback interrupted: %w", ctx.Err())
 	}
 
 	if _, err = io.ReadFull(connection, make([]byte, 1)); err != nil {
@@ -88,48 +80,48 @@ func newCancellationBarrier(t *testing.T, releaseCallback bool) *cancellationBar
 	}
 
 	go func() {
-		connection, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			barrier.done <- fmt.Errorf("accept cancellation callback barrier: %w", acceptErr)
-
-			return
-		}
-		defer func() {
-			if closeErr := connection.Close(); closeErr != nil {
-				barrier.done <- fmt.Errorf("close cancellation callback barrier: %w", closeErr)
-			}
-		}()
-
-		if _, readErr := io.ReadFull(connection, make([]byte, 1)); readErr != nil {
-			barrier.done <- fmt.Errorf("read cancellation callback start: %w", readErr)
-
-			return
-		}
-
-		close(barrier.started)
-
-		if _, readErr := io.ReadFull(connection, make([]byte, 1)); readErr != nil {
-			barrier.done <- fmt.Errorf("read cancellation callback stop: %w", readErr)
-
-			return
-		}
-
-		close(barrier.stopped)
-
-		if releaseCallback {
-			<-barrier.release
-
-			if _, writeErr := connection.Write([]byte{3}); writeErr != nil {
-				barrier.done <- fmt.Errorf("release cancellation callback: %w", writeErr)
-
-				return
-			}
-		}
-
-		barrier.done <- nil
+		barrier.done <- serveCancellationBarrier(listener, barrier, releaseCallback)
 	}()
 
 	return barrier
+}
+
+func serveCancellationBarrier(
+	listener net.Listener,
+	barrier *cancellationBarrier,
+	releaseCallback bool,
+) (err error) {
+	connection, err := listener.Accept()
+	if err != nil {
+		return fmt.Errorf("accept cancellation callback barrier: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, connection.Close())
+	}()
+
+	if _, err = io.ReadFull(connection, make([]byte, 1)); err != nil {
+		return fmt.Errorf("read cancellation callback start: %w", err)
+	}
+
+	close(barrier.started)
+
+	if _, err = io.ReadFull(connection, make([]byte, 1)); err != nil {
+		return fmt.Errorf("read cancellation callback stop: %w", err)
+	}
+
+	close(barrier.stopped)
+
+	if !releaseCallback {
+		return nil
+	}
+
+	<-barrier.release
+
+	if _, err = connection.Write([]byte{3}); err != nil {
+		return fmt.Errorf("release cancellation callback: %w", err)
+	}
+
+	return nil
 }
 
 func releaseCancellationBarrier(barrier *cancellationBarrier) {
@@ -170,6 +162,8 @@ func newCancellationRuntime(t *testing.T, database *sql.DB, options cord.Options
 	return runtime
 }
 
+// TestPublicCancelInterruptsCallbackInIndependentRuntime verifies that cancellation
+// from another runtime interrupts the active callback.
 func TestPublicCancelInterruptsCallbackInIndependentRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -218,12 +212,14 @@ func TestPublicCancelInterruptsCallbackInIndependentRuntime(t *testing.T) {
 	assert.Equal(t, cord.ReasonCanceledByRequest, report.Reason)
 }
 
+// TestPublicCancelWithBlockedHeartbeatAndBoundedShutdown verifies cancellation
+// and bounded shutdown while heartbeat persistence is blocked.
 func TestPublicCancelWithBlockedHeartbeatAndBoundedShutdown(t *testing.T) {
 	t.Parallel()
 
 	dsn := "file:" + t.TempDir() + "/blocked-heartbeat-cancellation.db" +
 		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
-	heartbeatStarted := make(chan struct{})
+	heartbeatStarted := make(chan struct{}, 1)
 	releaseHeartbeat := make(chan struct{})
 	workerDatabase := openBlockedHeartbeatSQLite(t, dsn, heartbeatStarted, releaseHeartbeat)
 	controllerDatabase, err := sql.Open("sqlite", dsn)
@@ -289,6 +285,7 @@ type blockedHeartbeatSQLiteConnector struct {
 	dsn              string
 }
 
+// Connect opens a SQLite connection that can block heartbeat queries.
 func (connector *blockedHeartbeatSQLiteConnector) Connect(_ context.Context) (driver.Conn, error) {
 	connection, err := connector.driver.Open(connector.dsn)
 	if err != nil {
@@ -302,6 +299,7 @@ func (connector *blockedHeartbeatSQLiteConnector) Connect(_ context.Context) (dr
 	}, nil
 }
 
+// Driver returns the connector's underlying SQLite driver.
 func (connector *blockedHeartbeatSQLiteConnector) Driver() driver.Driver {
 	return connector.driver
 }
@@ -312,6 +310,7 @@ type blockedHeartbeatSQLiteConnection struct {
 	releaseHeartbeat <-chan struct{}
 }
 
+// QueryContext blocks heartbeat queries until the test releases them.
 func (connection *blockedHeartbeatSQLiteConnection) QueryContext(
 	ctx context.Context,
 	query string,
@@ -339,6 +338,7 @@ func (connection *blockedHeartbeatSQLiteConnection) QueryContext(
 	return rows, nil
 }
 
+// PrepareContext delegates statement preparation to the wrapped connection.
 func (connection *blockedHeartbeatSQLiteConnection) PrepareContext(
 	ctx context.Context,
 	query string,
@@ -356,6 +356,7 @@ func (connection *blockedHeartbeatSQLiteConnection) PrepareContext(
 	return statement, nil
 }
 
+// BeginTx delegates transaction creation to the wrapped connection.
 func (connection *blockedHeartbeatSQLiteConnection) BeginTx(
 	ctx context.Context,
 	options driver.TxOptions,
@@ -365,7 +366,10 @@ func (connection *blockedHeartbeatSQLiteConnection) BeginTx(
 		return nil, errors.New("blocked-heartbeat SQLite connection does not implement BeginTx")
 	}
 
-	transaction, err := beginner.BeginTx(ctx, options)
+	return wrapBlockedHeartbeatTransaction(beginner.BeginTx(ctx, options))
+}
+
+func wrapBlockedHeartbeatTransaction(transaction driver.Tx, err error) (driver.Tx, error) {
 	if err != nil {
 		return nil, fmt.Errorf("begin blocked-heartbeat SQLite transaction: %w", err)
 	}
@@ -373,6 +377,7 @@ func (connection *blockedHeartbeatSQLiteConnection) BeginTx(
 	return transaction, nil
 }
 
+// ExecContext delegates query execution to the wrapped connection.
 func (connection *blockedHeartbeatSQLiteConnection) ExecContext(
 	ctx context.Context,
 	query string,
@@ -391,6 +396,7 @@ func (connection *blockedHeartbeatSQLiteConnection) ExecContext(
 	return result, nil
 }
 
+// CheckNamedValue delegates argument validation to the wrapped connection.
 func (connection *blockedHeartbeatSQLiteConnection) CheckNamedValue(value *driver.NamedValue) error {
 	checker, ok := connection.Conn.(driver.NamedValueChecker)
 	if !ok {
