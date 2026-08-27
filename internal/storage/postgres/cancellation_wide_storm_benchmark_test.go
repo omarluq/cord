@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,7 +12,9 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/benchmarktest"
 	postgresstore "github.com/omarluq/cord/internal/storage/postgres"
 )
 
@@ -75,9 +76,10 @@ func BenchmarkPostgresCancellationStorm(b *testing.B) {
 	seedPostgresCancellationRows(b.Context(), b, database, "postgres-storm-progress", 1)
 
 	if _, err := database.ExecContext(b.Context(), `UPDATE cord_nodes
-		SET function_key = 'benchmark.CancellationProgress',
-			signature_hash = 'cancellation-progress-v1'
-		WHERE run_id = 'postgres-storm-progress'`); err != nil {
+		SET function_key = $1, signature_hash = $2
+		WHERE run_id = 'postgres-storm-progress'`,
+		benchmarktest.FunctionKey, benchmarktest.Signature,
+	); err != nil {
 		b.Fatalf("configure progress node: %v", err)
 	}
 
@@ -106,7 +108,7 @@ func BenchmarkPostgresCancellationStorm(b *testing.B) {
 		group.Go(func() {
 			<-start
 
-			results <- advancePostgresCancellationProgress(b, store)
+			results <- benchmarktest.Advance(b, store)
 		})
 
 		close(start)
@@ -160,13 +162,14 @@ func postgresCancellationBenchmarkDSN(b *testing.B) string {
 	}
 
 	schema := "cord_benchmark_" + strings.ReplaceAll(uuid.Must(uuid.NewV4()).String(), "-", "")
+	quotedSchema := pgx.Identifier{schema}.Sanitize()
 
 	admin, err := sql.Open("pgx", baseDSN)
 	if err != nil {
 		b.Fatalf("open PostgreSQL benchmark administrator: %v", err)
 	}
 
-	if _, err = admin.ExecContext(b.Context(), "CREATE SCHEMA "+schema); err != nil {
+	if _, err = admin.ExecContext(b.Context(), "CREATE SCHEMA "+quotedSchema); err != nil {
 		closeErr := admin.Close()
 		b.Fatalf("create PostgreSQL benchmark schema: %v (close: %v)", err, closeErr)
 	}
@@ -175,7 +178,7 @@ func postgresCancellationBenchmarkDSN(b *testing.B) string {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
 
-		if _, dropErr := admin.ExecContext(cleanupCtx, "DROP SCHEMA "+schema+" CASCADE"); dropErr != nil {
+		if _, dropErr := admin.ExecContext(cleanupCtx, "DROP SCHEMA "+quotedSchema+" CASCADE"); dropErr != nil {
 			b.Errorf("drop PostgreSQL benchmark schema: %v", dropErr)
 		}
 
@@ -194,50 +197,6 @@ func postgresCancellationBenchmarkDSN(b *testing.B) string {
 	}
 
 	return baseDSN + " search_path=" + schema
-}
-
-func advancePostgresCancellationProgress(b *testing.B, store *postgresstore.Store) error {
-	b.Helper()
-
-	claim, claimed, err := store.ClaimReadyNodeForFunctions(
-		b.Context(),
-		"postgres-progress-worker",
-		time.Minute,
-		[]storage.FunctionRegistration{{
-			Key: "benchmark.CancellationProgress", Signature: "cancellation-progress-v1",
-		}},
-	)
-	if err != nil {
-		return fmt.Errorf("claim unrelated progress node: %w", err)
-	}
-
-	if !claimed {
-		return errors.New("claim unrelated progress node: no claim")
-	}
-
-	accepted, _, err := store.HeartbeatNode(
-		b.Context(), claim.RunID, claim.NodeID, claim.Lease, time.Minute,
-	)
-	if err != nil {
-		return fmt.Errorf("heartbeat unrelated progress node: %w", err)
-	}
-
-	if !accepted {
-		return errors.New("heartbeat unrelated progress node: rejected")
-	}
-
-	accepted, err = store.CompleteNode(
-		b.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"done"`),
-	)
-	if err != nil {
-		return fmt.Errorf("complete unrelated progress node: %w", err)
-	}
-
-	if !accepted {
-		return errors.New("complete unrelated progress node: rejected")
-	}
-
-	return nil
 }
 
 func resetPostgresCancellationBenchmark(b *testing.B, database *sql.DB) {
@@ -280,16 +239,16 @@ func TestPostgresCancellationQueryPlanCapture(t *testing.T) {
 		t.Fatalf("analyze cancellation plan fixture: %v", err)
 	}
 
-	const statement = `UPDATE cord_nodes
+	const explainCancellation = `EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, GENERIC_PLAN)
+		UPDATE cord_nodes
 		SET status = 'canceled', lease_owner = NULL, lease_expires_at = NULL,
 			completed_at = $2, state_changed_at = $2, terminal_reason = 'canceled_by_request'
 		WHERE run_id = $1 AND status IN ('pending', 'ready', 'running', 'retry_wait')`
 
+	requirePostgresGenericPlan(t, database)
+
 	rows, err := database.QueryContext(
-		t.Context(),
-		"EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, GENERIC_PLAN) "+statement,
-		storage.RunID("query-plan"),
-		time.Now().UTC(),
+		t.Context(), explainCancellation, storage.RunID("query-plan"), time.Now().UTC(),
 	)
 	if err != nil {
 		t.Fatalf("explain cancellation update: %v", err)
@@ -317,6 +276,19 @@ func TestPostgresCancellationQueryPlanCapture(t *testing.T) {
 	}
 
 	t.Logf("PostgreSQL cancellation query plan:\n%s", plan.String())
+}
+
+func requirePostgresGenericPlan(t *testing.T, database *sql.DB) {
+	t.Helper()
+
+	var serverVersion int
+	if err := database.QueryRowContext(t.Context(), "SHOW server_version_num").Scan(&serverVersion); err != nil {
+		t.Fatalf("read PostgreSQL server version: %v", err)
+	}
+
+	if serverVersion < 160000 {
+		t.Skipf("generic query-plan capture requires PostgreSQL 16 or newer; server version: %d", serverVersion)
+	}
 }
 
 func seedPostgresCancellationRows(

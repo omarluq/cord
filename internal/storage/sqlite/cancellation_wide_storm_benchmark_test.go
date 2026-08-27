@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/omarluq/cord/internal/storage"
+	"github.com/omarluq/cord/internal/storage/benchmarktest"
 	cordsqlite "github.com/omarluq/cord/internal/storage/sqlite"
 )
 
@@ -77,9 +77,9 @@ func BenchmarkSQLiteCancellationStorm(b *testing.B) {
 	}
 
 	progressPlan := benchmarkLinearPlan("sqlite-storm-progress", 1)
-	progressPlan.Nodes[0].FunctionKey = "benchmark.CancellationProgress"
+	progressPlan.Nodes[0].FunctionKey = benchmarktest.FunctionKey
+	progressPlan.Nodes[0].SignatureHash = benchmarktest.Signature
 
-	progressPlan.Nodes[0].SignatureHash = "cancellation-progress-v1"
 	if err := store.CreateRun(b.Context(), &progressPlan); err != nil {
 		b.Fatalf("seed progress run: %v", err)
 	}
@@ -133,7 +133,7 @@ func runSQLiteCancellationStormIteration(
 	group.Go(func() {
 		<-start
 
-		results <- advanceSQLiteCancellationProgress(b, store)
+		results <- benchmarktest.Advance(b, store)
 	})
 
 	close(start)
@@ -149,49 +149,6 @@ func runSQLiteCancellationStormIteration(
 	}
 
 	return errors.Join(errs...)
-}
-
-func advanceSQLiteCancellationProgress(b *testing.B, store *cordsqlite.Store) error {
-	b.Helper()
-
-	registrations := []storage.FunctionRegistration{{
-		Key: "benchmark.CancellationProgress", Signature: "cancellation-progress-v1",
-	}}
-
-	claim, claimed, err := store.ClaimReadyNodeForFunctions(
-		b.Context(), "sqlite-progress-worker", time.Minute, registrations,
-	)
-	if err != nil {
-		return fmt.Errorf("claim unrelated progress node: %w", err)
-	}
-
-	if !claimed {
-		return errors.New("claim unrelated progress node: no claim")
-	}
-
-	accepted, _, err := store.HeartbeatNode(
-		b.Context(), claim.RunID, claim.NodeID, claim.Lease, time.Minute,
-	)
-	if err != nil {
-		return fmt.Errorf("heartbeat unrelated progress node: %w", err)
-	}
-
-	if !accepted {
-		return errors.New("heartbeat unrelated progress node: rejected")
-	}
-
-	accepted, err = store.CompleteNode(
-		b.Context(), claim.RunID, claim.NodeID, claim.Lease, []byte(`"done"`),
-	)
-	if err != nil {
-		return fmt.Errorf("complete unrelated progress node: %w", err)
-	}
-
-	if !accepted {
-		return errors.New("complete unrelated progress node: rejected")
-	}
-
-	return nil
 }
 
 func resetSQLiteCancellationBenchmark(b *testing.B, database *sql.DB) {
