@@ -1,0 +1,426 @@
+package cord_test
+
+import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/omarluq/cord"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	moderncsqlite "modernc.org/sqlite"
+)
+
+const cancellationAcceptanceHangGuard = 5 * time.Second
+
+type cancellationBarrier struct {
+	started chan struct{}
+	stopped chan struct{}
+	release chan struct{}
+	done    chan error
+	address string
+}
+
+func interruptibleCancellationStep(ctx context.Context, address string) (_ string, err error) {
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return "", fmt.Errorf("connect cancellation callback barrier: %w", err)
+	}
+	defer func() { err = errors.Join(err, connection.Close()) }()
+
+	if _, err = connection.Write([]byte{1}); err != nil {
+		return "", fmt.Errorf("signal cancellation callback start: %w", err)
+	}
+
+	<-ctx.Done()
+
+	if _, err = connection.Write([]byte{2}); err != nil {
+		return "", errors.Join(ctx.Err(), fmt.Errorf("signal cancellation callback stop: %w", err))
+	}
+
+	return "", fmt.Errorf("cancellation callback interrupted: %w", ctx.Err())
+}
+
+func nonCooperativeCancellationStep(ctx context.Context, address string) (_ string, err error) {
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return "", fmt.Errorf("connect cancellation callback barrier: %w", err)
+	}
+	defer func() { err = errors.Join(err, connection.Close()) }()
+
+	if _, err = connection.Write([]byte{1}); err != nil {
+		return "", fmt.Errorf("signal cancellation callback start: %w", err)
+	}
+
+	<-ctx.Done()
+
+	if _, err = connection.Write([]byte{2}); err != nil {
+		return "", errors.Join(ctx.Err(), fmt.Errorf("signal cancellation callback stop: %w", err))
+	}
+
+	if _, err = io.ReadFull(connection, make([]byte, 1)); err != nil {
+		return "", errors.Join(ctx.Err(), fmt.Errorf("await cancellation callback release: %w", err))
+	}
+
+	return "", fmt.Errorf("cancellation callback released after cancellation: %w", ctx.Err())
+}
+
+func newCancellationBarrier(t *testing.T, releaseCallback bool) *cancellationBarrier {
+	t.Helper()
+
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, listener.Close()) })
+
+	barrier := &cancellationBarrier{
+		started: make(chan struct{}),
+		stopped: make(chan struct{}),
+		release: make(chan struct{}),
+		done:    make(chan error, 1),
+		address: listener.Addr().String(),
+	}
+
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			barrier.done <- fmt.Errorf("accept cancellation callback barrier: %w", acceptErr)
+
+			return
+		}
+		defer func() {
+			if closeErr := connection.Close(); closeErr != nil {
+				barrier.done <- fmt.Errorf("close cancellation callback barrier: %w", closeErr)
+			}
+		}()
+
+		if _, readErr := io.ReadFull(connection, make([]byte, 1)); readErr != nil {
+			barrier.done <- fmt.Errorf("read cancellation callback start: %w", readErr)
+
+			return
+		}
+
+		close(barrier.started)
+
+		if _, readErr := io.ReadFull(connection, make([]byte, 1)); readErr != nil {
+			barrier.done <- fmt.Errorf("read cancellation callback stop: %w", readErr)
+
+			return
+		}
+
+		close(barrier.stopped)
+
+		if releaseCallback {
+			<-barrier.release
+
+			if _, writeErr := connection.Write([]byte{3}); writeErr != nil {
+				barrier.done <- fmt.Errorf("release cancellation callback: %w", writeErr)
+
+				return
+			}
+		}
+
+		barrier.done <- nil
+	}()
+
+	return barrier
+}
+
+func releaseCancellationBarrier(barrier *cancellationBarrier) {
+	select {
+	case <-barrier.release:
+	default:
+		close(barrier.release)
+	}
+}
+
+func awaitCancellationBarrierDone(t *testing.T, barrier *cancellationBarrier) {
+	t.Helper()
+
+	select {
+	case err := <-barrier.done:
+		require.NoError(t, err)
+	case <-time.After(cancellationAcceptanceHangGuard):
+		t.Fatal("timed out waiting for cancellation callback barrier to finish")
+	}
+}
+
+func awaitCancellationSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(cancellationAcceptanceHangGuard):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func newCancellationRuntime(t *testing.T, database *sql.DB, options cord.Options) *cord.Cord {
+	t.Helper()
+
+	runtime, err := cord.New(t.Context(), database, options)
+	require.NoError(t, err)
+
+	return runtime
+}
+
+func TestPublicCancelInterruptsCallbackInIndependentRuntime(t *testing.T) {
+	t.Parallel()
+
+	dsn := "file:" + t.TempDir() + "/cross-runtime-cancellation.db" +
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	workerDatabase, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, workerDatabase.Close()) })
+
+	controllerDatabase, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, controllerDatabase.Close()) })
+
+	worker := newCancellationRuntime(t, workerDatabase, cord.Options{
+		Concurrency:       1,
+		PollInterval:      time.Hour,
+		LeaseTTL:          time.Second,
+		HeartbeatInterval: 10 * time.Millisecond,
+	})
+	controller := newCancellationRuntime(t, controllerDatabase, cord.Options{
+		Concurrency:       1,
+		PollInterval:      time.Hour,
+		LeaseTTL:          time.Second,
+		HeartbeatInterval: 10 * time.Millisecond,
+	})
+	t.Cleanup(func() {
+		assert.NoError(t, controller.Close())
+		assert.NoError(t, worker.Close())
+	})
+
+	workerFlow := worker.From("cross-runtime-cancellation-callback", interruptibleCancellationStep)
+	controllerFlow := controller.From("cross-runtime-cancellation-callback", interruptibleCancellationStep)
+	barrier := newCancellationBarrier(t, false)
+
+	runID, err := workerFlow.Submit(t.Context(), barrier.address)
+	require.NoError(t, err)
+	awaitCancellationSignal(t, barrier.started, "worker callback to start")
+
+	require.NoError(t, controllerFlow.Cancel(t.Context(), runID))
+	awaitCancellationSignal(t, barrier.stopped, "independent runtime heartbeat to interrupt callback")
+	awaitCancellationBarrierDone(t, barrier)
+
+	report, err := controller.InspectRun(t.Context(), runID)
+	require.NoError(t, err)
+	assert.Equal(t, cord.RunStateCanceled, report.State)
+	assert.Equal(t, cord.ReasonCanceledByRequest, report.Reason)
+}
+
+func TestPublicCancelWithBlockedHeartbeatAndBoundedShutdown(t *testing.T) {
+	t.Parallel()
+
+	dsn := "file:" + t.TempDir() + "/blocked-heartbeat-cancellation.db" +
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	heartbeatStarted := make(chan struct{})
+	releaseHeartbeat := make(chan struct{})
+	workerDatabase := openBlockedHeartbeatSQLite(t, dsn, heartbeatStarted, releaseHeartbeat)
+	controllerDatabase, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, controllerDatabase.Close()) })
+
+	worker := newCancellationRuntime(t, workerDatabase, cord.Options{
+		Concurrency:       1,
+		PollInterval:      time.Hour,
+		LeaseTTL:          200 * time.Millisecond,
+		HeartbeatInterval: 50 * time.Millisecond,
+	})
+	controller := newCancellationRuntime(t, controllerDatabase, cord.Options{
+		Concurrency:       1,
+		PollInterval:      time.Hour,
+		LeaseTTL:          200 * time.Millisecond,
+		HeartbeatInterval: 50 * time.Millisecond,
+	})
+	t.Cleanup(func() { assert.NoError(t, controller.Close()) })
+
+	workerFlow := worker.From("blocked-heartbeat-cancellation-shutdown", nonCooperativeCancellationStep)
+	controllerFlow := controller.From("blocked-heartbeat-cancellation-shutdown", nonCooperativeCancellationStep)
+	barrier := newCancellationBarrier(t, true)
+	t.Cleanup(func() {
+		releaseCancellationBarrier(barrier)
+
+		select {
+		case <-releaseHeartbeat:
+		default:
+			close(releaseHeartbeat)
+		}
+
+		assert.NoError(t, worker.Close())
+	})
+
+	runID, err := workerFlow.Submit(t.Context(), barrier.address)
+	require.NoError(t, err)
+	awaitCancellationSignal(t, barrier.started, "non-cooperative callback to start")
+	awaitCancellationSignal(t, heartbeatStarted, "heartbeat storage call to block")
+
+	require.NoError(t, controllerFlow.Cancel(t.Context(), runID))
+	awaitCancellationSignal(t, barrier.stopped, "lease safety to cancel callback despite blocked heartbeat")
+
+	shutdownCtx, cancelShutdown := context.WithCancel(t.Context())
+	cancelShutdown()
+	require.ErrorIs(t, worker.Shutdown(shutdownCtx), context.Canceled)
+
+	report, err := controller.InspectRun(t.Context(), runID)
+	require.NoError(t, err)
+	assert.Equal(t, cord.RunStateCanceled, report.State)
+	assert.Equal(t, cord.ReasonCanceledByRequest, report.Reason)
+
+	releaseCancellationBarrier(barrier)
+	awaitCancellationBarrierDone(t, barrier)
+	close(releaseHeartbeat)
+	require.NoError(t, worker.Close())
+}
+
+type blockedHeartbeatSQLiteConnector struct {
+	driver           driver.Driver
+	releaseHeartbeat <-chan struct{}
+	heartbeatStarted chan<- struct{}
+	dsn              string
+}
+
+func (connector *blockedHeartbeatSQLiteConnector) Connect(_ context.Context) (driver.Conn, error) {
+	connection, err := connector.driver.Open(connector.dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open blocked-heartbeat SQLite connection: %w", err)
+	}
+
+	return &blockedHeartbeatSQLiteConnection{
+		Conn:             connection,
+		heartbeatStarted: connector.heartbeatStarted,
+		releaseHeartbeat: connector.releaseHeartbeat,
+	}, nil
+}
+
+func (connector *blockedHeartbeatSQLiteConnector) Driver() driver.Driver {
+	return connector.driver
+}
+
+type blockedHeartbeatSQLiteConnection struct {
+	driver.Conn
+	heartbeatStarted chan<- struct{}
+	releaseHeartbeat <-chan struct{}
+}
+
+func (connection *blockedHeartbeatSQLiteConnection) QueryContext(
+	ctx context.Context,
+	query string,
+	arguments []driver.NamedValue,
+) (driver.Rows, error) {
+	queryer, ok := connection.Conn.(driver.QueryerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+
+	if strings.Contains(query, "SET lease_expires_at") {
+		select {
+		case connection.heartbeatStarted <- struct{}{}:
+		default:
+		}
+
+		<-connection.releaseHeartbeat
+	}
+
+	rows, err := queryer.QueryContext(ctx, query, arguments)
+	if err != nil {
+		return nil, fmt.Errorf("query blocked-heartbeat SQLite connection: %w", err)
+	}
+
+	return rows, nil
+}
+
+func (connection *blockedHeartbeatSQLiteConnection) PrepareContext(
+	ctx context.Context,
+	query string,
+) (driver.Stmt, error) {
+	preparer, ok := connection.Conn.(driver.ConnPrepareContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+
+	statement, err := preparer.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("prepare blocked-heartbeat SQLite connection: %w", err)
+	}
+
+	return statement, nil
+}
+
+func (connection *blockedHeartbeatSQLiteConnection) BeginTx(
+	ctx context.Context,
+	options driver.TxOptions,
+) (driver.Tx, error) {
+	beginner, ok := connection.Conn.(driver.ConnBeginTx)
+	if !ok {
+		return nil, errors.New("blocked-heartbeat SQLite connection does not implement BeginTx")
+	}
+
+	transaction, err := beginner.BeginTx(ctx, options)
+	if err != nil {
+		return nil, fmt.Errorf("begin blocked-heartbeat SQLite transaction: %w", err)
+	}
+
+	return transaction, nil
+}
+
+func (connection *blockedHeartbeatSQLiteConnection) ExecContext(
+	ctx context.Context,
+	query string,
+	arguments []driver.NamedValue,
+) (driver.Result, error) {
+	execer, ok := connection.Conn.(driver.ExecerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+
+	result, err := execer.ExecContext(ctx, query, arguments)
+	if err != nil {
+		return nil, fmt.Errorf("execute blocked-heartbeat SQLite query: %w", err)
+	}
+
+	return result, nil
+}
+
+func (connection *blockedHeartbeatSQLiteConnection) CheckNamedValue(value *driver.NamedValue) error {
+	checker, ok := connection.Conn.(driver.NamedValueChecker)
+	if !ok {
+		return driver.ErrSkip
+	}
+
+	if err := checker.CheckNamedValue(value); err != nil {
+		return fmt.Errorf("check blocked-heartbeat SQLite argument: %w", err)
+	}
+
+	return nil
+}
+
+func openBlockedHeartbeatSQLite(
+	t *testing.T,
+	dsn string,
+	heartbeatStarted chan<- struct{},
+	releaseHeartbeat <-chan struct{},
+) *sql.DB {
+	t.Helper()
+
+	database := sql.OpenDB(&blockedHeartbeatSQLiteConnector{
+		dsn: dsn, driver: &moderncsqlite.Driver{},
+		heartbeatStarted: heartbeatStarted,
+		releaseHeartbeat: releaseHeartbeat,
+	})
+	database.SetMaxOpenConns(4)
+	database.SetMaxIdleConns(4)
+	require.NoError(t, database.PingContext(t.Context()))
+	t.Cleanup(func() { assert.NoError(t, database.Close()) })
+
+	return database
+}
