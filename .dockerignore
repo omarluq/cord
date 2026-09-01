@@ -4,6 +4,7 @@
 .librecode
 .task
 .tmp
+.vfox
 .gocache
 .gomodcache
 assets

@@ -2,7 +2,7 @@ root = "."
 tmp_dir = ".tmp/air-playground"
 
 [build]
-cmd = "task playground-build && go build -o .tmp/air-playground/serve ./playground/cmd/serve"
+cmd = "go tool task playground-build && go build -o .tmp/air-playground/serve ./playground/cmd/serve"
 entrypoint = [".tmp/air-playground/serve", "-dir", "dist/playground"]
 include_ext = ["go", "ts", "js", "css", "svg", "mod", "sum"]
 include_dir = ["playground", "internal", "docs"]

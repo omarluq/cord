@@ -7,7 +7,7 @@ pre-commit:
       stage_fixed: true
 
     go-test-short:
-      run: task test-short
+      run: go tool task test-short
 
   skip:
     - merge
@@ -16,10 +16,10 @@ pre-commit:
 pre-push:
   commands:
     go-test:
-      run: task test
+      run: go tool task test
 
     go-build:
-      run: task build
+      run: go tool task build
 
 commit-msg:
   commands:
