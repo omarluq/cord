@@ -44,11 +44,6 @@ jobs:
             go.sum
             playground/go.sum
 
-      - name: Setup Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          version: '3.53.1'
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -65,7 +60,7 @@ jobs:
             echo "::error::Set the CORD_COMPILER_URL repository variable to the HTTPS /compile endpoint."
             exit 1
           fi
-          task playground-build -- -prefix /cord
+          go tool task playground-build -- -prefix /cord
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6

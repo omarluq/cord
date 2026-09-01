@@ -4,7 +4,7 @@ tasks:
   default:
     desc: Show available tasks
     cmds:
-      - task --list
+      - go tool task --list
 
   build:
     desc: Build all packages in the workspace

@@ -9,23 +9,24 @@ cord is a Go library. Keep its public API small, idiomatic, documented, and back
 After code changes, run:
 
 ```bash
-mise exec -- go test ./...
-mise exec -- task build
-mise exec -- task ci
+vfox exec golang -- go test ./...
+vfox exec golang bun -- go tool task build
+vfox exec golang bun -- go tool task ci
 ```
 
-Use `mise exec --` for Task and Go tooling in this repository.
+Use `vfox exec` for pinned Go and Bun runtimes. Task, Lefthook, golangci-lint,
+and deadcode are pinned as Go tool dependencies and run with `go tool`.
 
 ## Common commands
 
 ```bash
-mise exec -- task build          # build all packages
-mise exec -- task test           # tests with race detection and shuffled order
-mise exec -- task test-coverage  # coverage profile
-mise exec -- task lint           # golangci-lint
-mise exec -- task fmt            # auto-format and auto-fix lint issues
-mise exec -- task fmt-check      # check formatting without modifying files
-mise exec -- task ci             # non-mutating full CI pipeline
+vfox exec golang bun -- go tool task build          # build all packages
+vfox exec golang bun -- go tool task test           # tests with race detection and shuffled order
+vfox exec golang bun -- go tool task test-coverage  # coverage profile
+vfox exec golang bun -- go tool task lint           # golangci-lint
+vfox exec golang bun -- go tool task fmt            # auto-format and auto-fix lint issues
+vfox exec golang bun -- go tool task fmt-check      # check formatting without modifying files
+vfox exec golang bun -- go tool task ci             # non-mutating full CI pipeline
 ```
 
 ## Project structure

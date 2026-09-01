@@ -59,11 +59,6 @@ jobs:
           check-latest: false
           cache: true
 
-      - name: Install Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          version: 3.53.1
-
       - name: Record PostgreSQL version
         run: |
           mkdir -p evidence
@@ -81,12 +76,12 @@ jobs:
       - name: Run PostgreSQL compatibility tests
         run: |
           set -o pipefail
-          task test-postgres 2>&1 | tee "evidence/postgresql-${{ matrix.postgres.major }}-race-shuffle.txt"
+          go tool task test-postgres 2>&1 | tee "evidence/postgresql-${{ matrix.postgres.major }}-race-shuffle.txt"
 
       - name: Record PostgreSQL cancellation benchmarks
         run: |
           set -o pipefail
-          task benchmark-postgres 2>&1 | tee "evidence/postgresql-${{ matrix.postgres.major }}-benchmarks.txt"
+          go tool task benchmark-postgres 2>&1 | tee "evidence/postgresql-${{ matrix.postgres.major }}-benchmarks.txt"
 
       - name: Upload PostgreSQL evidence
         if: ${{ !cancelled() }}
@@ -114,16 +109,11 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Install Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          version: 3.53.1
-
       - name: Record benchmarks
         run: |
           mkdir -p evidence
           set -o pipefail
-          task benchmark 2>&1 | tee evidence/benchmarks.txt
+          go tool task benchmark 2>&1 | tee evidence/benchmarks.txt
 
       - name: Record evidence metadata
         if: ${{ !cancelled() }}

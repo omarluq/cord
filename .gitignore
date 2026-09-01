@@ -27,6 +27,7 @@ __pycache__/
 /.gomodcache/
 /.tmp/
 /.task/
+/.vfox/
 
 # IDE files
 .idea/

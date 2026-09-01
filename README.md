@@ -515,25 +515,28 @@ complete API.
 
 ## Development
 
-This project uses [mise](https://mise.jdx.dev/) to pin Go, Task, and Bun. A
-fresh checkout can provision those tools and the lockfile-pinned browser
-packages with:
+This project uses [vfox](https://vfox.dev/) to pin Go and Bun. Task,
+Lefthook, golangci-lint, and deadcode are pinned in `go.mod` as Go tool
+dependencies. A fresh checkout can provision the runtimes and the
+lockfile-pinned browser packages with:
 
 ```bash
-mise install
-mise exec -- task playground-install
+vfox add golang
+vfox add bun
+vfox install --all --yes
+vfox exec golang bun -- go tool task playground-install
 ```
 
 Validation is split by portability and purpose:
 
 | Gate | Requirements | Coverage |
 |---|---|---|
-| `mise exec -- task build-library` | Go only; CGO disabled | Portable Cord library build |
-| `mise exec -- go test ./...` | Go, CGO toolchain, Docker | Library tests, including mandatory mattn and Turso/libSQL integration |
-| `CORD_POSTGRES_DSN=... mise exec -- task test-postgres` | Go and PostgreSQL | Mandatory PostgreSQL integration/conformance tests and executable pgx example |
-| `mise exec -- task build` | Go and CGO toolchain | All native workspace packages |
-| `mise exec -- task ci` | Go, Task, Bun, CGO toolchain, Docker | Formatting, lint, dead code, race-tested drivers (including Turso), portable and native builds, and playground assets |
-| `mise exec -- task playground-test` | CI prerequisites, Chromium system libraries, and network access for the first browser install | Browser smoke test |
+| `vfox exec golang -- go tool task build-library` | Go only; CGO disabled | Portable Cord library build |
+| `vfox exec golang -- go test ./...` | Go, CGO toolchain, Docker | Library tests, including mandatory mattn and Turso/libSQL integration |
+| `CORD_POSTGRES_DSN=... vfox exec golang -- go tool task test-postgres` | Go and PostgreSQL | Mandatory PostgreSQL integration/conformance tests and executable pgx example |
+| `vfox exec golang bun -- go tool task build` | Go and CGO toolchain | All native workspace packages |
+| `vfox exec golang bun -- go tool task ci` | Go, Bun, CGO toolchain, Docker | Formatting, lint, dead code, race-tested drivers (including Turso), portable and native builds, and playground assets |
+| `vfox exec golang bun -- go tool task playground-test` | CI prerequisites, Chromium system libraries, and network access for the first browser install | Browser smoke test |
 
 Docker is a hard prerequisite for the mandatory Turso tests; they do not
 silently skip. `test-postgres` likewise fails if `CORD_POSTGRES_DSN` is absent or
