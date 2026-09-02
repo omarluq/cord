@@ -13,7 +13,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/tursodatabase/go-libsql v0.0.0-20260424063416-3051e37e6e04
 	go.uber.org/goleak v1.3.0
-	modernc.org/sqlite v1.57.0
+	modernc.org/sqlite v1.58.0
 )
 
 require (
