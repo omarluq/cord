@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/gofrs/uuid/v5 v5.5.1
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/ncruces/go-sqlite3 v0.35.4
 	github.com/pressly/goose/v3 v3.28.0
